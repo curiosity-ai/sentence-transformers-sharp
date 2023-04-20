@@ -1,0 +1,7 @@
+.idea
+/.idea
+**/.idea
+.idea/*
+**/.idea/*
+**/obj/*
+**/bin/*

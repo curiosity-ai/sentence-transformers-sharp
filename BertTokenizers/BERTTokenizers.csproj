@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net5.0</TargetFrameworks>
+    <Authors>Nikola M. Zivkovic</Authors>
+    <Company>Rubik's Code (rubikscode.net)</Company>
+    <Copyright>Rubik's Code</Copyright>
+    <PackageIcon>logo.png</PackageIcon>
+    <PackageIconUrl />
+    <RepositoryType>S</RepositoryType>
+    <PackageLicenseExpression></PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/NMZivkovic/BertTokenizers</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/NMZivkovic/BertTokenizers</PackageProjectUrl>
+    <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
+    <Description>This package contains tokenizers for following models:
+    · BERT Base
+    · BERT Large
+    · BERT German
+    · BERT Multilingual
+    · BERT Base Uncased
+    · BERT Large Uncased</Description>
+    <PackageReleaseNotes>Open-source project for BERT tokenizers that can be used in C#.</PackageReleaseNotes>
+    <PackageTags>BERT, Tokenizer, charp, dotnet</PackageTags>
+    <Version>1.2.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Vocabularies\base_cased.txt" />
+    <None Remove="Vocabularies\base_cased_german.txt" />
+    <None Remove="Vocabularies\base_cased_large.txt" />
+    <None Remove="Vocabularies\base_cased_multilingual.txt" />
+    <None Remove="Vocabularies\base_uncased.txt" />
+    <None Remove="Vocabularies\base_uncased_large.txt" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <Folder Include="Vocabularies\" />
+  </ItemGroup>
+</Project>
