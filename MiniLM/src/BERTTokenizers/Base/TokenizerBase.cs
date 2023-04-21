@@ -108,12 +108,21 @@ namespace BERTTokenizers.Base
 
         private IEnumerable<(string Token, int VocabularyIndex)> TokenizeSubwords(string word)
         {
-            if (_vocabularyDict.ContainsKey(word))
+            if (_vocabularyDict.TryGetValue(word, out var wordIndex))
             {
-                return new (string, int)[] { (word, _vocabularyDict[word]) };
+                yield return (word, wordIndex);
+                yield break;
             }
 
-            var tokens = new List<(string, int)>();
+            foreach(var inner in TokenizeSubwordsInner(word))
+            {
+                yield return inner;
+            }
+        }
+
+        private List<(string token, int index)> TokenizeSubwordsInner(string word)
+        {
+            var tokens = new List<(string token, int index)>();
             var remaining = word;
 
             while (!string.IsNullOrEmpty(remaining) && remaining.Length > 2)
@@ -135,15 +144,17 @@ namespace BERTTokenizers.Base
                     break;
                 }
 
-                if (prefix == null)
+                if (string.IsNullOrEmpty(prefix))
                 {
                     tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown]));
 
                     return tokens;
                 }
 
-                var regex = new Regex(prefix);
-                remaining = regex.Replace(remaining, "##", 1);
+                //var regex = new Regex(prefix);
+                //remaining = regex.Replace(remaining, "##", 1);
+
+                remaining = ReplaceFirst(remaining, prefix, "##");
 
                 tokens.Add((prefix, _vocabularyDict[prefix]));
             }
@@ -154,6 +165,16 @@ namespace BERTTokenizers.Base
             }
 
             return tokens;
+        }
+
+        private static string ReplaceFirst(string text, string search, string replace)
+        {
+            int pos = text.IndexOf(search);
+            if (pos < 0)
+            {
+                return text;
+            }
+            return text.Substring(0, pos) + replace + text.Substring(pos + search.Length);
         }
 
         protected abstract IEnumerable<string> TokenizeSentence(string text);
