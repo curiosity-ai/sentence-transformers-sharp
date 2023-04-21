@@ -19,7 +19,9 @@ namespace BERTTokenizers.Base
             _vocabularyDict = new Dictionary<string, int>();
 
             for (int i = 0; i < _vocabulary.Count; i++)
+            {
                 _vocabularyDict[_vocabulary[i]] = i;
+            }
         }
 
         public List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> Encode(params string[] texts)
@@ -36,22 +38,6 @@ namespace BERTTokenizers.Base
                 var segmentIndexes = tokens.Select(token => token.SegmentIndex).Concat(padding).ToArray();
                 var inputMask = tokens.Select(o => 1L).Concat(padding).ToArray();
                 return (tokenIndexes, segmentIndexes, inputMask);
-            }).ToList();
-        }
-        public List<(long InputIds, long TokenTypeIds, long AttentionMask)[]> Encode(int sequenceLength, params string[] texts)
-        {
-            return Tokenize(texts).Select(tokens =>
-            {
-                var padding = Enumerable.Repeat(0L, sequenceLength - tokens.Length).ToList();
-
-                var tokenIndexes = tokens.Select(token => (long)token.VocabularyIndex).Concat(padding).ToArray();
-                var segmentIndexes = tokens.Select(token => token.SegmentIndex).Concat(padding).ToArray();
-                var inputMask = tokens.Select(o => 1L).Concat(padding).ToArray();
-
-                var output = tokenIndexes.Zip(segmentIndexes, Tuple.Create)
-                   .Zip(inputMask, (t, z) => Tuple.Create(t.Item1, t.Item2, z));
-
-                return output.Select(x => (InputIds: x.Item1, TokenTypeIds: x.Item2, AttentionMask: x.Item3)).ToArray();
             }).ToList();
         }
 

@@ -5,14 +5,15 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 using static MiniLM.DenseTensorHelpers;
 
 namespace MiniLM;
+
+public record struct EncodedChunk(string Text, float[] Vector);
+
 public sealed class SentenceEncoder : IDisposable
 {
     private readonly InferenceSession _session;
     private readonly TokenizerBase _tokenizer;
 
-    public static SentenceEncoder Instance = new SentenceEncoder();
-
-    private SentenceEncoder()
+    public SentenceEncoder()
     {
         _session = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"));
         _tokenizer = new MiniLMTokenizer();
@@ -21,6 +22,55 @@ public sealed class SentenceEncoder : IDisposable
     public void Dispose()
     {
         _session.Dispose();
+    }
+
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100)
+    {
+        var chunks = MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), ' ', chunkLength, chunkOverlap);
+        var vectors = Encode(chunks.ToArray());
+        return chunks.Zip(vectors, (c, v) => new EncodedChunk(c, v)).ToArray();
+    }
+
+    private List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkSize, int chunkOverlap)
+    {
+        const int separatorLength = 1;
+        var docs = new List<string>();
+        var currentDoc = new List<string>();
+        int total = 0;
+        foreach (string d in splits)
+        {
+            int len = d.Length;
+            
+            if (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkSize)
+            {
+                if (currentDoc.Count > 0)
+                {
+                    string doc = string.Join(separator, currentDoc);
+                    
+                    if (!string.IsNullOrWhiteSpace(doc))
+                    {
+                        docs.Add(doc);
+                    }
+
+                    while (total > chunkOverlap || (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkSize && total > 0))
+                    {
+                        total -= currentDoc[0].Length + (currentDoc.Count > 1 ? separatorLength : 0);
+                        currentDoc.RemoveAt(0);
+                    }
+                }
+            }
+            currentDoc.Add(d);
+            total += len + (currentDoc.Count > 1 ? separatorLength : 0);
+        }
+
+        string final_doc = string.Join(separator, currentDoc);
+
+        if (!string.IsNullOrWhiteSpace(final_doc))
+        {
+            docs.Add(final_doc);
+        }
+
+        return docs;
     }
 
     public float[][] Encode(string[] sentences)
@@ -67,6 +117,7 @@ public sealed class SentenceEncoder : IDisposable
         const int embDim = 384;
 
         var outputFlatten = new float[sentences.Length][];
+
         for(int s = 0; s < sentences.Length; s++)
         {
             var emb = new float[embDim];
