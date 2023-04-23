@@ -130,7 +130,9 @@ namespace BERTTokenizers.Base
                 string prefix = null;
                 int subwordLength = remaining.Length;
 
-                while (subwordLength >= 1) // was initially 2, which prevents using "character encoding"
+                int stopLimit = remaining.StartsWith("##") ? 2 : 1;
+
+                while (subwordLength >= stopLimit) // was initially 2, which prevents using "character encoding"
                 {
                     string subword = remaining.Substring(0, subwordLength);
 

@@ -6,6 +6,7 @@ var sentenceEncoder = new SentenceEncoder();
 
 var testSentences = new[] 
 {
+    "El Patrón Repositorio y sus falacias",
     "The cat sat on the mat.",
     "The dog sat on the mat.",
     "The kitten sat on the rug",
