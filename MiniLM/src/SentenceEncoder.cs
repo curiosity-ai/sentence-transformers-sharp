@@ -118,8 +118,9 @@ public sealed class SentenceEncoder : IDisposable
         using var registration = cancellationToken.Register(() => runOptions.Terminate = true);
 
         string[] outputNames = _session.OutputMetadata.Keys.ToArray();
-
         using var output = _session.Run(input, outputNames, runOptions);
+        
+        cancellationToken.ThrowIfCancellationRequested();
 
         var output_pooled = MeanPooling((DenseTensor<float>)output.First().Value, encoded);
         var output_pooled_normalized = Normalize(output_pooled);
