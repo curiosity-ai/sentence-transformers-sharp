@@ -10,17 +10,20 @@ public record struct EncodedChunk(string Text, float[] Vector);
 
 public sealed class SentenceEncoder : IDisposable
 {
+    private readonly SessionOptions _sessionOptions;
     private readonly InferenceSession _session;
     private readonly TokenizerBase _tokenizer;
 
-    public SentenceEncoder()
+    public SentenceEncoder(SessionOptions sessionOptions = null)
     {
-        _session = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"));
+        _sessionOptions = sessionOptions ?? new SessionOptions();
+        _session = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
         _tokenizer = new MiniLMTokenizer();
     }
 
     public void Dispose()
     {
+        _sessionOptions.Dispose();
         _session.Dispose();
     }
 
