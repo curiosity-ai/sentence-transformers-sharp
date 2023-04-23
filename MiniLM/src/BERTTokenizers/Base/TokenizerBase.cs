@@ -156,7 +156,19 @@ namespace BERTTokenizers.Base
                 //var regex = new Regex(prefix);
                 //remaining = regex.Replace(remaining, "##", 1);
 
-                remaining = ReplaceFirst(remaining, prefix, "##");
+                
+                var remainingAfter = ReplaceFirst(remaining, prefix, "##");
+
+                if(remaining == remainingAfter)
+                {
+                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown]));
+
+                    return tokens;
+                }
+                else
+                {
+                    remaining = remainingAfter;
+                }
 
                 tokens.Add((prefix, _vocabularyDict[prefix]));
             }
@@ -171,7 +183,7 @@ namespace BERTTokenizers.Base
 
         private static string ReplaceFirst(string text, string search, string replace)
         {
-            int pos = text.IndexOf(search);
+            int pos = text.IndexOf(search, StringComparison.Ordinal);
             if (pos < 0)
             {
                 return text;
