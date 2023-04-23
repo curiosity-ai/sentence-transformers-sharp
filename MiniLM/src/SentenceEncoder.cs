@@ -3,6 +3,8 @@ using BERTTokenizers.Base;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using static MiniLM.DenseTensorHelpers;
+using System.Linq;
+using System.Collections.Generic;
 
 namespace MiniLM;
 
@@ -76,7 +78,7 @@ public sealed class SentenceEncoder : IDisposable
         return docs;
     }
 
-    public float[][] Encode(string[] sentences)
+    public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default)
     {
         var numSentences = sentences.Length;
 
@@ -112,7 +114,12 @@ public sealed class SentenceEncoder : IDisposable
             NamedOnnxValue.CreateFromTensor("token_type_ids", new DenseTensor<long>(flattenTokenTypeIds, dimensions))
         };
 
-        using var output = _session.Run(input);
+        var runOptions = new RunOptions();
+        using var registration = cancellationToken.Register(() => runOptions.Terminate = true);
+
+        string[] outputNames = _session.OutputMetadata.Keys.ToArray();
+
+        using var output = _session.Run(input, outputNames, runOptions);
 
         var output_pooled = MeanPooling((DenseTensor<float>)output.First().Value, encoded);
         var output_pooled_normalized = Normalize(output_pooled);
