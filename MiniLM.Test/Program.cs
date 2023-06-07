@@ -29,6 +29,53 @@ for(int i = 0; i < testSentences.Length; i++)
     }
 }
 
+//Test that the encoder doesn't throw on large inputs
+var testEncodingAVeryLargeString = sentenceEncoder.Encode(new[] {
+@"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
+The city is famous for its exquisite architecture, charming cafes, and art museums.
+The Eiffel Tower, Notre-Dame Cathedral, and the Louvre Museum are just some of the iconic landmarks that draw millions of visitors to Paris each year.
+In addition to its rich culture and history, Paris is also renowned for its delicious cuisine and world-class shopping.
+With its enchanting atmosphere, Paris is a must-visit destination for anyone who loves romance, culture, and fine living.
+
+New York City, also known as the 'Big Apple,' is one of the most vibrant and diverse cities in the world.
+The city is home to some of the most iconic landmarks in the world, including the Empire State Building, the Statue of Liberty, and Central Park. 
+New York is a global hub for business, culture, and entertainment, with Broadway shows, world-class museums, and trendy restaurants. 
+The city is also known for its bustling nightlife, with an endless array of bars, clubs, and live music venues.
+Whether you are a tourist or a resident, New York City has something for everyone.
+
+Potatoes are one of the most versatile and widely consumed vegetables in the world.
+Potatoes are a staple food in many cultures and can be prepared in a variety of ways, from mashed potatoes and french fries to potato chips and roasted potatoes.
+Potatoes are also a good source of essential vitamins and minerals, including vitamin C, potassium, and dietary fiber.
+In addition, potatoes are a sustainable and affordable food source that can help address food security challenges in many parts of the world.
+
+Flags are powerful symbols of national identity, representing a country's history, culture, and values.
+Flags are used to identify nations, states, and organizations, and are often displayed during public events, such as parades and sporting events. 
+Flags can also be used to express solidarity or protest, such as the rainbow flag, which has become a symbol of the LGBTQ+ community.
+Flags can evoke strong emotions and have the power to unite or divide people, depending on their interpretation and meaning.
+
+Politics is the process by which groups of people make collective decisions.
+Politics is often associated with government and the exercise of power, but it also encompasses a wide range of social, economic, and cultural issues.
+Political systems vary widely around the world, with different forms of government, electoral systems, and political ideologies.
+Politics can be divisive, with different groups advocating for conflicting interests and values, but it can also be a tool for social change and progress.
+
+Colors are an essential part of human perception, influencing our emotions, behavior, and aesthetic preferences. 
+Colors are used in a variety of contexts, from art and design to advertising and branding. 
+Different colors have different associations and meanings, such as red, which can represent passion, anger, or danger, and blue, which can represent calmness, trust, or sadness. 
+Colors can also have cultural and historical significance, such as the colors of a country's flag or the use of specific colors in religious rituals. Overall, colors play an important role in our daily lives, shaping the way we perceive the world around us.
+
+Trains are an efficient and convenient mode of transportation that have been around for over two centuries.
+Trains are popular for their speed, comfort, and affordability, making them an ideal choice for commuters and travelers.
+Trains can take passengers from one city to another, often without the hassle of traffic or airport security.
+In addition, trains offer panoramic views of the countryside, allowing passengers to enjoy the scenery as they travel.
+With the advent of high-speed trains, travel times have been reduced significantly, making it easier than ever to explore new destinations.
+
+Airplanes revolutionized travel and made the world a smaller place.
+Airplanes are capable of transporting passengers to far-flung destinations in a matter of hours, making travel faster and more accessible than ever before.
+Air travel is also safer than it has ever been, with modern aircraft equipped with advanced safety features and technology.
+In addition, airlines offer a variety of classes and amenities, from economy class to first-class cabins, providing passengers with a comfortable and luxurious travel experience.
+With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life."
+});
+
 
 //var encodedChunks = sentenceEncoder.ChunkAndEncode(
 //@"

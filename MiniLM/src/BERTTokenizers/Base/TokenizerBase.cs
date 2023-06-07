@@ -26,17 +26,18 @@ namespace BERTTokenizers.Base
 
         public List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> Encode(params string[] texts)
         {
+            const int MaxTokens = 512; //Maximum token length supported by MiniLM model
             var tokenized = Tokenize(texts);
             
-            int sequenceLength = tokenized.Max(t => t.Length);
+            int sequenceLength = tokenized.Max(t => Math.Min(MaxTokens, t.Length));
 
             return tokenized.Select(tokens =>
             {
-                var padding = Enumerable.Repeat(0L, sequenceLength - tokens.Length).ToList();
+                var padding = Enumerable.Repeat(0L, sequenceLength - Math.Min(MaxTokens,tokens.Length)).ToList();
 
-                var tokenIndexes = tokens.Select(token => (long)token.VocabularyIndex).Concat(padding).ToArray();
-                var segmentIndexes = tokens.Select(token => token.SegmentIndex).Concat(padding).ToArray();
-                var inputMask = tokens.Select(o => 1L).Concat(padding).ToArray();
+                var tokenIndexes   = tokens.Take(MaxTokens).Select(token => (long)token.VocabularyIndex).Concat(padding).ToArray();
+                var segmentIndexes = tokens.Take(MaxTokens).Select(token => token.SegmentIndex).Concat(padding).ToArray();
+                var inputMask      = tokens.Take(MaxTokens).Select(o => 1L).Concat(padding).ToArray();
                 return (tokenIndexes, segmentIndexes, inputMask);
             }).ToList();
         }
