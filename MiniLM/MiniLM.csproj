@@ -27,7 +27,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.ML" Version="2.0.1" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.14.1" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.14.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.15.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.15.1" />
   </ItemGroup>
 </Project>
