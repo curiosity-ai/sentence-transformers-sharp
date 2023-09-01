@@ -9,6 +9,8 @@ using System.Collections.Generic;
 namespace MiniLM;
 
 public record struct EncodedChunk(string Text, float[] Vector);
+public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);
+public record struct TaggedChunk(string Text, string Tag);
 
 public sealed class SentenceEncoder : IDisposable
 {
@@ -34,6 +36,15 @@ public sealed class SentenceEncoder : IDisposable
         var chunks = MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), ' ', chunkLength, chunkOverlap);
         var vectors = Encode(chunks.ToArray());
         return chunks.Zip(vectors, (c, v) => new EncodedChunk(c, v)).ToArray();
+    }
+
+    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100)
+    {
+        var chunks = MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), ' ', chunkLength, chunkOverlap)
+                       .Select(chunk => stripTags(chunk))
+                       .ToArray();
+        var vectors = Encode(chunks.Select(c => c.Text).ToArray());
+        return chunks.Zip(vectors, (c, v) => new TaggedEncodedChunk(c.Text, v, c.Tag)).ToArray();
     }
 
     private List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkSize, int chunkOverlap)
