@@ -31,10 +31,10 @@ public sealed class SentenceEncoder : IDisposable
         _session.Dispose();
     }
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100)
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, CancellationToken cancellationToken = default)
     {
         var chunks = MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), ' ', chunkLength, chunkOverlap);
-        var vectors = Encode(chunks.ToArray());
+        var vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
         return chunks.Zip(vectors, (c, v) => new EncodedChunk(c, v)).ToArray();
     }
 
