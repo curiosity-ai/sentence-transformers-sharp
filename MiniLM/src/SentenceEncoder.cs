@@ -64,7 +64,7 @@ public sealed class SentenceEncoder : IDisposable
         {
             int len = d.Length;
             
-            if (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkSize)
+            if (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkLength)
             {
                 if (currentDoc.Count > 0)
                 {
@@ -75,7 +75,7 @@ public sealed class SentenceEncoder : IDisposable
                         docs.Add(doc);
                     }
 
-                    while (total > chunkOverlap || (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkSize && total > 0))
+                    while (total > chunkOverlap || (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkLength && total > 0))
                     {
                         total -= currentDoc[0].Length + (currentDoc.Count > 1 ? separatorLength : 0);
                         currentDoc.RemoveAt(0);
