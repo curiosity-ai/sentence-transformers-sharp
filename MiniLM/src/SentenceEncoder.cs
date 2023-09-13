@@ -33,21 +33,28 @@ public sealed class SentenceEncoder : IDisposable
 
     public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, CancellationToken cancellationToken = default)
     {
-        var chunks = MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), ' ', chunkLength, chunkOverlap);
+        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap);
         var vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
         return chunks.Zip(vectors, (c, v) => new EncodedChunk(c, v)).ToArray();
     }
 
     public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100)
     {
-        var chunks = MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), ' ', chunkLength, chunkOverlap)
+        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap)
                        .Select(chunk => stripTags(chunk))
                        .ToArray();
+
         var vectors = Encode(chunks.Select(c => c.Text).ToArray());
+
         return chunks.Zip(vectors, (c, v) => new TaggedEncodedChunk(c.Text, v, c.Tag)).ToArray();
     }
 
-    private List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkSize, int chunkOverlap)
+    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100)
+    {
+        return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap);
+    }
+
+    private static List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap)
     {
         const int separatorLength = 1;
         var docs = new List<string>();
