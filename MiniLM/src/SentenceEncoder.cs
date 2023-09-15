@@ -17,12 +17,14 @@ public sealed class SentenceEncoder : IDisposable
     private readonly SessionOptions _sessionOptions;
     private readonly InferenceSession _session;
     private readonly TokenizerBase _tokenizer;
+    private readonly string[] _outputNames;
 
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
         _session = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
         _tokenizer = new MiniLMTokenizer();
+        _outputNames = _session.OutputMetadata.Keys.ToArray();
     }
 
     public void Dispose()
@@ -132,11 +134,10 @@ public sealed class SentenceEncoder : IDisposable
             NamedOnnxValue.CreateFromTensor("token_type_ids", new DenseTensor<long>(flattenTokenTypeIds, dimensions))
         };
 
-        var runOptions = new RunOptions();
+        using var runOptions = new RunOptions();
         using var registration = cancellationToken.Register(() => runOptions.Terminate = true);
 
-        string[] outputNames = _session.OutputMetadata.Keys.ToArray();
-        using var output = _session.Run(input, outputNames, runOptions);
+        using var output = _session.Run(input, _outputNames, runOptions);
         
         cancellationToken.ThrowIfCancellationRequested();
 
