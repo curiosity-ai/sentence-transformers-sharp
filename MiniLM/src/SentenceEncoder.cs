@@ -9,18 +9,22 @@ using System.Collections.Generic;
 namespace MiniLM;
 
 public record struct EncodedChunk(string Text, float[] Vector);
+public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);
+public record struct TaggedChunk(string Text, string Tag);
 
 public sealed class SentenceEncoder : IDisposable
 {
     private readonly SessionOptions _sessionOptions;
     private readonly InferenceSession _session;
     private readonly TokenizerBase _tokenizer;
+    private readonly string[] _outputNames;
 
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
         _session = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
         _tokenizer = new MiniLMTokenizer();
+        _outputNames = _session.OutputMetadata.Keys.ToArray();
     }
 
     public void Dispose()
@@ -31,9 +35,8 @@ public sealed class SentenceEncoder : IDisposable
 
     public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = false, CancellationToken cancellationToken = default)
     {
-        var chunks = MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), ' ', chunkLength, chunkOverlap);
-        float[][] vectors;
-        
+        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap);
+
         var encodedChunks = new EncodedChunk[chunks.Count];
 
         if (sequentially)
@@ -41,6 +44,7 @@ public sealed class SentenceEncoder : IDisposable
             var oneChunk = new string[1];
             for (int i = 0; i < chunks.Count; i++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 oneChunk[0] = chunks[i];
                 var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                 encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
@@ -48,7 +52,7 @@ public sealed class SentenceEncoder : IDisposable
         }
         else
         {
-            vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
+            var vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
             for (int i = 0; i < encodedChunks.Length; i++)
             {
                 encodedChunks[i] = new EncodedChunk(chunks[i], vectors[i]);
@@ -58,7 +62,23 @@ public sealed class SentenceEncoder : IDisposable
         return encodedChunks;
     }
 
-    private List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkSize, int chunkOverlap)
+    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100)
+    {
+        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap)
+                       .Select(chunk => stripTags(chunk))
+                       .ToArray();
+
+        var vectors = Encode(chunks.Select(c => c.Text).ToArray());
+
+        return chunks.Zip(vectors, (c, v) => new TaggedEncodedChunk(c.Text, v, c.Tag)).ToArray();
+    }
+
+    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100)
+    {
+        return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap);
+    }
+
+    private static List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap)
     {
         const int separatorLength = 1;
         var docs = new List<string>();
@@ -68,7 +88,7 @@ public sealed class SentenceEncoder : IDisposable
         {
             int len = d.Length;
             
-            if (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkSize)
+            if (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkLength)
             {
                 if (currentDoc.Count > 0)
                 {
@@ -79,7 +99,7 @@ public sealed class SentenceEncoder : IDisposable
                         docs.Add(doc);
                     }
 
-                    while (total > chunkOverlap || (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkSize && total > 0))
+                    while (total > chunkOverlap || (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkLength && total > 0))
                     {
                         total -= currentDoc[0].Length + (currentDoc.Count > 1 ? separatorLength : 0);
                         currentDoc.RemoveAt(0);
@@ -136,11 +156,10 @@ public sealed class SentenceEncoder : IDisposable
             NamedOnnxValue.CreateFromTensor("token_type_ids", new DenseTensor<long>(flattenTokenTypeIds, dimensions))
         };
 
-        var runOptions = new RunOptions();
+        using var runOptions = new RunOptions();
         using var registration = cancellationToken.Register(() => runOptions.Terminate = true);
 
-        string[] outputNames = _session.OutputMetadata.Keys.ToArray();
-        using var output = _session.Run(input, outputNames, runOptions);
+        using var output = _session.Run(input, _outputNames, runOptions);
         
         cancellationToken.ThrowIfCancellationRequested();
 
