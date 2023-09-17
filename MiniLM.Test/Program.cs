@@ -94,8 +94,7 @@ With thousands of flights departing from airports around the world each day, air
 //In many ways, time is a mystery that we may never fully understand. It's a paradoxical concept that both shapes and is shaped by our lives. We try to measure it, control it, and make the most of it, but in the end, time always seems to slip away. It's a reminder of our impermanence and a challenge to live each moment to the fullest. So the next time you look at your watch or glance at a clock, remember that time is not just a number, but a complex and multifaceted part of the human experience.
 //");
 
-var answerTest = sentenceEncoder.ChunkAndEncode(
-@"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
+var longSentence = @"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
 The city is famous for its exquisite architecture, charming cafes, and art museums.
 The Eiffel Tower, Notre-Dame Cathedral, and the Louvre Museum are just some of the iconic landmarks that draw millions of visitors to Paris each year.
 In addition to its rich culture and history, Paris is also renowned for its delicious cuisine and world-class shopping.
@@ -137,7 +136,9 @@ Airplanes revolutionized travel and made the world a smaller place.
 Airplanes are capable of transporting passengers to far-flung destinations in a matter of hours, making travel faster and more accessible than ever before.
 Air travel is also safer than it has ever been, with modern aircraft equipped with advanced safety features and technology.
 In addition, airlines offer a variety of classes and amenities, from economy class to first-class cabins, providing passengers with a comfortable and luxurious travel experience.
-With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life.");
+With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life.";
+
+var answerTest = sentenceEncoder.ChunkAndEncode(longSentence);
 
 var questions = new[] {
                         "What are some of the best places to experience french culture and cuisine?",
@@ -158,6 +159,22 @@ foreach(var (question, questionVector) in questions.Zip(questionEmbeddings))
 }
 
 Console.ReadLine();
+
+//var sb = new StringBuilder();
+
+//for(int i = 0; i < 10; i++)
+//{
+//    for(int j = 0; j < 100; j++)
+//    {
+//        sb.AppendLine(longSentence);
+//    }
+
+//    var repeatedSentences = sb.ToString();
+//    var(mean, std) = Profile(1, () => sentenceEncoder.ChunkAndEncode(repeatedSentences));
+//    Console.WriteLine($"Sentence length: {sb.Length:n0} Mean {mean:F0}ms Std {std:F0}ms");
+//}
+
+
 
 var sentences = new[]
 {
@@ -188,7 +205,7 @@ for (int i = 0; i < 50; i++)
         var output = sentenceEncoder.Encode(s);
     });
 
-    Console.WriteLine($"Senctences {count} Mean {mean:F0}ms Std {std:F0}ms");
+    Console.WriteLine($"Sentences Count: {count:n0} Mean {mean:F0}ms Std {std:F0}ms");
     results.Add(new[] { count, mean, std });
 }
 

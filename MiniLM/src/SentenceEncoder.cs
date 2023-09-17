@@ -33,9 +33,9 @@ public sealed class SentenceEncoder : IDisposable
         _session.Dispose();
     }
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = false, CancellationToken cancellationToken = default)
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = false, int maxChunks = -1, CancellationToken cancellationToken = default)
     {
-        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap);
+        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
 
         var encodedChunks = new EncodedChunk[chunks.Count];
 
@@ -73,12 +73,12 @@ public sealed class SentenceEncoder : IDisposable
         return chunks.Zip(vectors, (c, v) => new TaggedEncodedChunk(c.Text, v, c.Tag)).ToArray();
     }
 
-    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100)
+    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = -1)
     {
-        return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap);
+        return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap, maxChunks);
     }
 
-    private static List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap)
+    private static List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
     {
         const int separatorLength = 1;
         var docs = new List<string>();
@@ -108,6 +108,8 @@ public sealed class SentenceEncoder : IDisposable
             }
             currentDoc.Add(d);
             total += len + (currentDoc.Count > 1 ? separatorLength : 0);
+
+            if (docs.Count > maxChunks) return docs;
         }
 
         string final_doc = string.Join(separator, currentDoc);
