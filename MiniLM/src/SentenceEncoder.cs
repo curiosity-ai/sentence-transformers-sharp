@@ -33,7 +33,7 @@ public sealed class SentenceEncoder : IDisposable
         _session.Dispose();
     }
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = false, int maxChunks = -1, CancellationToken cancellationToken = default)
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = false, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
     {
         var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
 
@@ -73,7 +73,7 @@ public sealed class SentenceEncoder : IDisposable
         return chunks.Zip(vectors, (c, v) => new TaggedEncodedChunk(c.Text, v, c.Tag)).ToArray();
     }
 
-    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = -1)
+    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
     {
         return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap, maxChunks);
     }
