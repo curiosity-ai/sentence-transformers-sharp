@@ -33,7 +33,7 @@ public sealed class SentenceEncoder : IDisposable
         _session.Dispose();
     }
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = false, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
     {
         var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
 
@@ -62,15 +62,35 @@ public sealed class SentenceEncoder : IDisposable
         return encodedChunks;
     }
 
-    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100)
+    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
     {
-        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap)
+        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
                        .Select(chunk => stripTags(chunk))
                        .ToArray();
 
-        var vectors = Encode(chunks.Select(c => c.Text).ToArray());
+        var encodedChunks = new TaggedEncodedChunk[chunks.Length];
 
-        return chunks.Zip(vectors, (c, v) => new TaggedEncodedChunk(c.Text, v, c.Tag)).ToArray();
+        if (sequentially)
+        {
+            var oneChunk = new string[1];
+            for (int i = 0; i < chunks.Length; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                oneChunk[0] = chunks[i].Text;
+                var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
+                encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector[0], chunks[i].Tag);
+            }
+        }
+        else
+        {
+            var vectors = Encode(chunks.Select(c => c.Text).ToArray(), cancellationToken: cancellationToken);
+            for (int i = 0; i < encodedChunks.Length; i++)
+            {
+                encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, vectors[i], chunks[i].Tag);
+            }
+        }
+        
+        return encodedChunks;
     }
 
     public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
