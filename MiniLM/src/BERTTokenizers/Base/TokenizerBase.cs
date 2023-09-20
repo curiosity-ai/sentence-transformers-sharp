@@ -28,7 +28,12 @@ namespace BERTTokenizers.Base
         {
             const int MaxTokens = 512; //Maximum token length supported by MiniLM model
             var tokenized = Tokenize(texts);
-            
+
+            if (tokenized.Count == 0)
+            {
+                return new List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)>();
+            }
+
             int sequenceLength = tokenized.Max(t => Math.Min(MaxTokens, t.Length));
 
             return tokenized.Select(tokens =>
