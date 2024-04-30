@@ -1,37 +1,86 @@
-﻿using System.Diagnostics;
+﻿extern alias MiniLMSnowflakeArcticEmbedXS;
+extern alias MiniLMallMiniLML6v2;
+using System.Diagnostics;
 using System.Text;
 using MiniLM;
+using MiniLM.Shared;
 
-var sentenceEncoder = new SentenceEncoder();
+Main.RunSimple(new MiniLMSnowflakeArcticEmbedXS::MiniLM.SentenceEncoder());
+Main.RunSimple(new MiniLMallMiniLML6v2::MiniLM.SentenceEncoder());
 
-var testSentences = new[] 
+public static class Main
 {
-    "El Patrón Repositorio y sus falacias",
-    "The cat sat on the mat.",
-    "The dog sat on the mat.",
-    "The kitten sat on the rug",
-    "The dog chased the ball.",
-    "The deadline for the project is tomorrow at noon.",
-    "This project needs to be delivered soon.",
-};
-
-var encodedTestSentences = sentenceEncoder.Encode(testSentences);
-
-var crossSimilarity = new float[testSentences.Length][];
-
-for(int i = 0; i < testSentences.Length; i++)
-{
-    crossSimilarity[i] = new float[testSentences.Length];
-    
-    for (int j = 0; j < testSentences.Length; j++)
+    public static void RunSimple(ISentenceEncoder sentenceEncoder)
     {
-        crossSimilarity[i][j] = 1f - HNSW.Net.CosineDistance.NonOptimized(encodedTestSentences[i], encodedTestSentences[j]);
+
+        var queries = new[]
+        {
+            "Represent this sentence for searching relevant passages: what is snowflake?",
+            "Represent this sentence for searching relevant passages: Where can I get the best tacos?",
+
+        };
+
+        var documents = new[]
+        {
+            "The Data Cloud!",
+            "Mexico City of Course!",
+        };
+
+        var encodedQueries   = sentenceEncoder.Encode(queries);
+        var encodedDocuments = sentenceEncoder.Encode(documents);
+
+
+        for (int i = 0; i < encodedQueries.Length; i++)
+        {
+            var results = new List<(float score, string sentence)>();
+
+            for (int j = 0; j < encodedDocuments.Length; j++)
+            {
+                var score = 1f - HNSW.Net.CosineDistance.NonOptimized(encodedQueries[i], encodedDocuments[j]);
+                results.Add((score, documents[j]));
+            }
+            Console.WriteLine($"Query: {queries[i]}");
+
+            foreach (var r in results.OrderBy(r => r.score).Reverse())
+            {
+                Console.WriteLine($"Doc ({r.score}): {r.sentence}");
+            }
+
+        }
+
     }
-}
+
+    public static void Run(ISentenceEncoder sentenceEncoder)
+    {
+        var testSentences = new[]
+        {
+            "El Patrón Repositorio y sus falacias",
+            "The cat sat on the mat.",
+            "The dog sat on the mat.",
+            "The kitten sat on the rug",
+            "The dog chased the ball.",
+            "The deadline for the project is tomorrow at noon.",
+            "This project needs to be delivered soon.",
+        };
+
+        var encodedTestSentences = sentenceEncoder.Encode(testSentences);
+
+        var crossSimilarity = new float[testSentences.Length][];
+
+        for (int i = 0; i < testSentences.Length; i++)
+        {
+            crossSimilarity[i] = new float[testSentences.Length];
+
+            for (int j = 0; j < testSentences.Length; j++)
+            {
+                crossSimilarity[i][j] = 1f - HNSW.Net.CosineDistance.NonOptimized(encodedTestSentences[i], encodedTestSentences[j]);
+            }
+        }
 
 //Test that the encoder doesn't throw on large inputs
-var testEncodingAVeryLargeString = sentenceEncoder.Encode(new[] {
-@"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
+        var testEncodingAVeryLargeString = sentenceEncoder.Encode(new[]
+        {
+            @"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
 The city is famous for its exquisite architecture, charming cafes, and art museums.
 The Eiffel Tower, Notre-Dame Cathedral, and the Louvre Museum are just some of the iconic landmarks that draw millions of visitors to Paris each year.
 In addition to its rich culture and history, Paris is also renowned for its delicious cuisine and world-class shopping.
@@ -74,7 +123,7 @@ Airplanes are capable of transporting passengers to far-flung destinations in a 
 Air travel is also safer than it has ever been, with modern aircraft equipped with advanced safety features and technology.
 In addition, airlines offer a variety of classes and amenities, from economy class to first-class cabins, providing passengers with a comfortable and luxurious travel experience.
 With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life."
-});
+        });
 
 
 //var encodedChunks = sentenceEncoder.ChunkAndEncode(
@@ -94,7 +143,7 @@ With thousands of flights departing from airports around the world each day, air
 //In many ways, time is a mystery that we may never fully understand. It's a paradoxical concept that both shapes and is shaped by our lives. We try to measure it, control it, and make the most of it, but in the end, time always seems to slip away. It's a reminder of our impermanence and a challenge to live each moment to the fullest. So the next time you look at your watch or glance at a clock, remember that time is not just a number, but a complex and multifaceted part of the human experience.
 //");
 
-var longSentence = @"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
+        var longSentence = @"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
 The city is famous for its exquisite architecture, charming cafes, and art museums.
 The Eiffel Tower, Notre-Dame Cathedral, and the Louvre Museum are just some of the iconic landmarks that draw millions of visitors to Paris each year.
 In addition to its rich culture and history, Paris is also renowned for its delicious cuisine and world-class shopping.
@@ -138,27 +187,28 @@ Air travel is also safer than it has ever been, with modern aircraft equipped wi
 In addition, airlines offer a variety of classes and amenities, from economy class to first-class cabins, providing passengers with a comfortable and luxurious travel experience.
 With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life.";
 
-var answerTest = sentenceEncoder.ChunkAndEncode(longSentence);
+        var answerTest = sentenceEncoder.ChunkAndEncode(longSentence);
 
-var questions = new[] {
-                        "What are some of the best places to experience french culture and cuisine?",
-                        "What are some of the most interesting neighborhoods to explore in NY?",
-                        "How has the technology behind trains evolved over the years, and what impact has it had on transportation?",
-                        "What are some of the latest innovations in flying technology?",
-                       };
+        var questions = new[]
+        {
+            "What are some of the best places to experience french culture and cuisine?",
+            "What are some of the most interesting neighborhoods to explore in NY?",
+            "How has the technology behind trains evolved over the years, and what impact has it had on transportation?",
+            "What are some of the latest innovations in flying technology?",
+        };
 
-var questionEmbeddings = sentenceEncoder.Encode(questions);
+        var questionEmbeddings = sentenceEncoder.Encode(questions);
 
-foreach(var (question, questionVector) in questions.Zip(questionEmbeddings))
-{
-    var bestAnswer = answerTest.Select(c => (chunk: c, score: 1f - HNSW.Net.CosineDistance.NonOptimized(c.Vector, questionVector)))
-        .OrderByDescending(d => d.score)
-        .First();
+        foreach (var (question, questionVector) in questions.Zip(questionEmbeddings))
+        {
+            var bestAnswer = answerTest.Select(c => (chunk: c, score: 1f - HNSW.Net.CosineDistance.NonOptimized(c.Vector, questionVector)))
+               .OrderByDescending(d => d.score)
+               .First();
 
-    Console.WriteLine($"Question: {question}\nAnswer: [{bestAnswer.score}:n2] {bestAnswer.chunk.Text}\n\n------------------------\n");
-}
+            Console.WriteLine($"Question: {question}\nAnswer: [{bestAnswer.score}:n2] {bestAnswer.chunk.Text}\n\n------------------------\n");
+        }
 
-Console.ReadLine();
+        Console.ReadLine();
 
 //var sb = new StringBuilder();
 
@@ -175,75 +225,76 @@ Console.ReadLine();
 //}
 
 
+        var sentences = new[]
+        {
+            "The deadline for the project is tomorrow at noon.",
+            "To access your account, please enter your username and password.",
+            "In order to improve your health, you should exercise regularly and eat a balanced diet.",
+            "The conference will take place next week in New York City.",
+            "If you have any questions or concerns, please don't hesitate to contact us.",
+            "To apply for the job, please submit your resume and cover letter.",
+            "The new policy will go into effect starting next month.",
+            "In order to succeed, you need to work hard and stay focused.",
+            "The company's profits have increased significantly over the past year.",
+            "To complete the task, you will need to gather all of the necessary materials.",
+        };
 
-var sentences = new[]
-{
-    "The deadline for the project is tomorrow at noon.",
-    "To access your account, please enter your username and password.",
-    "In order to improve your health, you should exercise regularly and eat a balanced diet.",
-    "The conference will take place next week in New York City.",
-    "If you have any questions or concerns, please don't hesitate to contact us.",
-    "To apply for the job, please submit your resume and cover letter.",
-    "The new policy will go into effect starting next month.",
-    "In order to succeed, you need to work hard and stay focused.",
-    "The company's profits have increased significantly over the past year.",
-    "To complete the task, you will need to gather all of the necessary materials.",
-};
+        var sentencesHundred = Enumerable.Range(0, 100).SelectMany(_ => sentences).ToArray();
 
-var sentencesHundred = Enumerable.Range(0, 100).SelectMany(_ => sentences).ToArray();
+        var results = new List<double[]>();
 
-var results = new List<double[]>();
+        for (int i = 0; i < 50; i++)
+        {
+            var count = i == 0 ? 1 : i * 10;
+            var s     = sentencesHundred.Take(count).ToArray();
+            count = s.Length;
 
-for (int i = 0; i < 50; i++)
-{
-    var count = i == 0 ? 1 : i * 10;
-    var s = sentencesHundred.Take(count).ToArray();
-    count = s.Length;
+            var (mean, std) = Profile(5, () =>
+            {
+                var output = sentenceEncoder.Encode(s);
+            });
 
-    var (mean, std) = Profile(5, () =>
-    {
-        var output = sentenceEncoder.Encode(s);
-    });
+            Console.WriteLine($"Sentences Count: {count:n0} Mean {mean:F0}ms Std {std:F0}ms");
+            results.Add(new[] { count, mean, std });
+        }
 
-    Console.WriteLine($"Sentences Count: {count:n0} Mean {mean:F0}ms Std {std:F0}ms");
-    results.Add(new[] { count, mean, std });
-}
+        foreach (var r in results)
+        {
+            Console.WriteLine($"{r[0]},{r[1]:F0},{r[2]:F0}");
+        }
 
-foreach (var r in results)
-{
-    Console.WriteLine($"{r[0]},{r[1]:F0},{r[2]:F0}");
-}
+        static (double mean, double avg) Profile(int iterations, Action func)
+        {
+            //Run at highest priority to minimize fluctuations caused by other processes/threads
+            Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
+            Thread.CurrentThread.Priority             = ThreadPriority.Highest;
 
-static (double mean, double avg) Profile(int iterations, Action func)
-{
-    //Run at highest priority to minimize fluctuations caused by other processes/threads
-    Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
-    Thread.CurrentThread.Priority = ThreadPriority.Highest;
+            // warm up 
+            func();
 
-    // warm up 
-    func();
+            // clean up
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
 
-    // clean up
-    GC.Collect();
-    GC.WaitForPendingFinalizers();
-    GC.Collect();
+            var times = new double[iterations];
 
-    var times = new double[iterations];
+            for (int i = 0; i < iterations; i++)
+            {
+                var watch = new Stopwatch();
+                watch.Start();
+                func();
+                watch.Stop();
+                times[i] = watch.Elapsed.TotalMilliseconds;
 
-    for (int i = 0; i < iterations; i++)
-    {
-        var watch = new Stopwatch();
-        watch.Start();
-        func();
-        watch.Stop();
-        times[i] = watch.Elapsed.TotalMilliseconds;
+                Console.WriteLine($"i: {i} time: {times[i]:F0}ms");
 
-        Console.WriteLine($"i: {i} time: {times[i]:F0}ms");
-
-    }
+            }
 //    Console.Write(description);
 //    Console.WriteLine(" Time Elapsed {0} ms", watch.Elapsed.TotalMilliseconds);
-    var avg = times.Average();
-    var std = Math.Sqrt(times.Average(v => Math.Pow(v - avg, 2)));
-    return (avg, std);
+            var avg = times.Average();
+            var std = Math.Sqrt(times.Average(v => Math.Pow(v - avg, 2)));
+            return (avg, std);
+        }
+    }
 }
