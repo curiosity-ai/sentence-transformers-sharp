@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>netstandard2.1</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Platforms>AnyCPU</Platforms>
+        <LangVersion>latest</LangVersion>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <Authors>Curiosity GmbH, Othneil Drew</Authors>
+        <Copyright>(c) Copyright 2024 Curiosity GmbH - all right reserved, Copyright (c) 2021 Othneil Drew (Bert Tokenizers)</Copyright>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>www.curiosity.ai</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/curiosity-ai/sentence-transformers-sharp</RepositoryUrl>
+        <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+        <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+        <PackageId>SentenceTransformers.ArcticXs</PackageId>
+        <Description>The wrapper provides a simple and easy-to-use interface for loading the Snowflake's ArcticXS embeddings model and generating embeddings for input text.</Description>
+      <PackageTags>English, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings,Sentence Transformers, Data Science, Big Data, Artificial Intelligence, AI, NLP Library, Neural Networks, Deep Learning</PackageTags>
+    </PropertyGroup>
+    
+    <ItemGroup>
+        <EmbeddedResource Include="Resources\*.*" Visible="true" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.ML" Version="3.0.1" />
+        <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.16.3" />
+        <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.16.3" />
+    </ItemGroup>
+
+
+    <ItemGroup>
+        <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+    </ItemGroup>
+
+
+</Project>

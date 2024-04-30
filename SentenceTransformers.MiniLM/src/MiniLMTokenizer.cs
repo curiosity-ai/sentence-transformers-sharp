@@ -1,7 +1,7 @@
 using BERTTokenizers.Base;
-using MiniLM.Shared;
+using SentenceTransformers;
 
-namespace MiniLM;
+namespace SentenceTransformers.MiniLM;
 
 public class MiniLMTokenizer : UncasedTokenizer
 {

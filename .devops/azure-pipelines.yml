@@ -1,5 +1,7 @@
 variables:
-  project:  './MiniLM/MiniLM.all-MiniLM-L6-v2.csproj'
+  projectBase:     './SentenceTransformers/SentenceTransformers.csproj'
+  projectMiniLM:   './SentenceTransformers.MiniLM/SentenceTransformers.MiniLM.csproj'
+  projectArticXs:  './SentenceTransformers.ArticXs/SentenceTransformers.ArticXs.csproj'
   buildConfiguration: 'Release'
   targetVersion: yy.M.$(build.buildId)
   
@@ -26,10 +28,10 @@ steps:
       Write-Host "Updated targetVersion to '$newTargetVersion'"
 
 - task: UseDotNet@2
-  displayName: 'Use .NET 7.0 SDK'
+  displayName: 'Use .NET 8.0 SDK'
   inputs:
     packageType: sdk
-    version: 7.x
+    version: 8.x
     includePreviewVersions: false
     installationPath: $(Agent.ToolsDirectory)/dotnet
 
@@ -41,15 +43,37 @@ steps:
 
 
 - task: DotNetCoreCLI@2
+  displayName: 'build base project'
   inputs:
     command: 'build'
-    projects: '$(project)'
+    projects: '$(projectBase)'
+    arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
+
+- task: NuGetCommand@2
+  displayName: 'push base package first'
+  inputs:
+    command: 'push'
+    packagesToPush: '**/*.nupkg'
+    nuGetFeedType: 'external'
+    publishFeedCredentials: 'nuget-curiosity-org'
+
+
+- task: DotNetCoreCLI@2
+  inputs:
+    command: 'build MiniLM project'
+    projects: '$(projectMiniLM)'
+    arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
+
+- task: DotNetCoreCLI@2
+  inputs:
+    command: 'build ArticXS project'
+    projects: '$(projectArticXs)'
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
 - task: NuGetCommand@2
   displayName: 'push nuget'
   inputs:
     command: 'push'
-    packagesToPush: '**/*.nupkg'
+    packagesToPush: '**/SentenceTransformers.*.nupkg'
     nuGetFeedType: 'external'
     publishFeedCredentials: 'nuget-curiosity-org'

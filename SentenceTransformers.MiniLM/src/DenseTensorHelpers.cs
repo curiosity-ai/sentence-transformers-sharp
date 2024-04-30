@@ -1,6 +1,6 @@
 ﻿using Microsoft.ML.OnnxRuntime.Tensors;
 
-namespace MiniLM;
+namespace SentenceTransformers.MiniLM;
 
 public static class DenseTensorHelpers
 {

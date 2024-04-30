@@ -20,12 +20,12 @@
 
 
   <ItemGroup>
-    <ProjectReference Include="..\MiniLM.Shared\MiniLM.Shared.csproj" />
+    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj"/>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\MiniLM.all-MiniLM-L6-v2\MiniLM.all-MiniLM-L6-v2.csproj" Aliases="MiniLMallMiniLML6v2" />
+    <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\MiniLM.snowflake-arctic-embed-xs\MiniLM.snowflake-arctic-embed-xs.csproj" Aliases="MiniLMSnowflakeArcticEmbedXS" />
+    <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
   </ItemGroup>
 </Project>

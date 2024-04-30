@@ -1,10 +1,9 @@
 ﻿using Microsoft.ML.OnnxRuntime.Tensors;
 
-namespace MiniLM;
+namespace SentenceTransformers.ArcticXs;
 
 public static class DenseTensorHelpers
 {
-
     public static float[][] Normalize(DenseTensor<float> input_dense, float eps = 1e-12f)
     {
         //Computes sum(abs(x)^2)^(1/2)

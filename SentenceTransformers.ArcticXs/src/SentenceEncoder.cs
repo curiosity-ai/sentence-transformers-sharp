@@ -2,12 +2,12 @@
 using BERTTokenizers.Base;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using static MiniLM.DenseTensorHelpers;
+using static SentenceTransformers.ArcticXs.DenseTensorHelpers;
 using System.Linq;
 using System.Collections.Generic;
-using MiniLM.Shared;
+using SentenceTransformers;
 
-namespace MiniLM;
+namespace SentenceTransformers.ArcticXs;
 
 public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
 {
@@ -20,7 +20,7 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
         _session        = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
-        _tokenizer      = new MiniLMTokenizer();
+        _tokenizer      = new ArcticTokenizer();
         _outputNames    = _session.OutputMetadata.Keys.ToArray();
     }
 

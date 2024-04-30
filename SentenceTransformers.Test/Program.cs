@@ -1,12 +1,9 @@
-﻿extern alias MiniLMSnowflakeArcticEmbedXS;
-extern alias MiniLMallMiniLML6v2;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text;
-using MiniLM;
-using MiniLM.Shared;
+using SentenceTransformers;
 
-Main.RunSimple(new MiniLMSnowflakeArcticEmbedXS::MiniLM.SentenceEncoder());
-Main.RunSimple(new MiniLMallMiniLML6v2::MiniLM.SentenceEncoder());
+Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
+Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
 
 public static class Main
 {
@@ -15,20 +12,20 @@ public static class Main
 
         var queries = new[]
         {
-            "Represent this sentence for searching relevant passages: what is snowflake?",
-            "Represent this sentence for searching relevant passages: Where can I get the best tacos?",
-
+            "What is a snowflake?",
+            "Where can I get the best tacos?",
         };
 
         var documents = new[]
         {
-            "The Data Cloud!",
-            "Mexico City of Course!",
+            "A snowflake is a flake of snow, especially a feathery ice crystal, typically displaying delicate sixfold symmetry.",
+            "If you're looking for great food, try Mexico City!",
         };
 
         var encodedQueries   = sentenceEncoder.Encode(queries);
         var encodedDocuments = sentenceEncoder.Encode(documents);
 
+        Console.WriteLine($"Running model: {sentenceEncoder.GetType().FullName}");
 
         for (int i = 0; i < encodedQueries.Length; i++)
         {
@@ -43,10 +40,12 @@ public static class Main
 
             foreach (var r in results.OrderBy(r => r.score).Reverse())
             {
-                Console.WriteLine($"Doc ({r.score}): {r.sentence}");
+                Console.WriteLine($"Score:({r.score}) from sentence '{r.sentence}'");
             }
-
+            Console.WriteLine("\n");
         }
+
+        Console.WriteLine("\n\n\n");
 
     }
 

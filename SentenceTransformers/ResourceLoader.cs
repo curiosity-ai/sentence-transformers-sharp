@@ -1,6 +1,6 @@
 ﻿using System.Reflection;
 
-namespace MiniLM.Shared;
+namespace SentenceTransformers;
 
 public static class ResourceLoader
 {

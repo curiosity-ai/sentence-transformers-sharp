@@ -5,20 +5,20 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Platforms>AnyCPU</Platforms>
         <LangVersion>latest</LangVersion>
-        <RootNamespace>MiniLM.Shared</RootNamespace>
+        <RootNamespace>SentenceTransformers</RootNamespace>
     </PropertyGroup>
 
     <PropertyGroup>
         <Authors>Curiosity GmbH, Othneil Drew</Authors>
-        <Copyright>(c) Copyright 2023 Curiosity GmbH - all right reserved, Copyright (c) 2021 Othneil Drew (Bert Tokenizers)</Copyright>
+        <Copyright>(c) Copyright 2024 Curiosity GmbH - all right reserved, Copyright (c) 2021 Othneil Drew (Bert Tokenizers)</Copyright>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageProjectUrl>www.curiosity.ai</PackageProjectUrl>
-        <RepositoryUrl>https://github.com/curiosity-ai/MiniLM</RepositoryUrl>
+        <RepositoryUrl>https://github.com/curiosity-ai/sentence-transformers-sharp</RepositoryUrl>
         <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
         <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-        <PackageId>MiniLM.Shared</PackageId>
-        <Description>The wrapper provides a simple and easy-to-use interface for loading the MiniLM embeddings model and generating embeddings for input text.</Description>
-        <PackageTags>English, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings, Data Science, Big Data, Artificial Intelligence, AI, NLP Library, Neural Networks, Deep Learning</PackageTags>
+        <PackageId>SentenceTransformers</PackageId>
+        <Description>The wrapper provides a simple and easy-to-use interface for computing embeddings from text.</Description>
+        <PackageTags>English, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings,Sentence Transformers, Data Science, Big Data, Artificial Intelligence, AI, NLP Library, Neural Networks, Deep Learning</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>

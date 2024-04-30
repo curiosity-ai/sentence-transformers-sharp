@@ -1,4 +1,4 @@
-﻿namespace MiniLM.Shared;
+﻿namespace SentenceTransformers;
 
 public record struct EncodedChunk(string       Text, float[] Vector);
 public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);

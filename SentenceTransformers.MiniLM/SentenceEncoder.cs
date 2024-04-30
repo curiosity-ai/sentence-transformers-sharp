@@ -1,10 +1,10 @@
 using BERTTokenizers.Base;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using static MiniLM.DenseTensorHelpers;
-using MiniLM.Shared;
+using static SentenceTransformers.MiniLM.DenseTensorHelpers;
+using SentenceTransformers;
 
-namespace MiniLM;
+namespace SentenceTransformers.MiniLM;
 
 public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
 {
