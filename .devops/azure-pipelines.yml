@@ -60,14 +60,16 @@ steps:
 
 
 - task: DotNetCoreCLI@2
+  displayName: 'build MiniLM project'
   inputs:
-    command: 'build MiniLM project'
+    command: 'build'
     projects: '$(projectMiniLM)'
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
 - task: DotNetCoreCLI@2
+  displayName: 'build ArticXs project'
   inputs:
-    command: 'build ArticXS project'
+    command: 'build'
     projects: '$(projectArticXs)'
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
