@@ -7,6 +7,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MiniLM.all-MiniLM-L6-v2", "
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MiniLM.Test", "MiniLM.Test\MiniLM.Test.csproj", "{4902461B-8ED8-4EE6-9FD3-2F3DF6E170D2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniLM.snowflake-arctic-embed-xs", "MiniLM.snowflake-arctic-embed-xs\MiniLM.snowflake-arctic-embed-xs.csproj", "{D7F8195C-70DD-4A5B-B650-85C9EB3B6C56}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniLM.Shared", "MiniLM.Shared\MiniLM.Shared.csproj", "{FD1F6D8B-7601-4D41-963C-E55DD74F26E0}"
 EndProject
 Global
@@ -23,6 +25,10 @@ Global
 		{4902461B-8ED8-4EE6-9FD3-2F3DF6E170D2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4902461B-8ED8-4EE6-9FD3-2F3DF6E170D2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4902461B-8ED8-4EE6-9FD3-2F3DF6E170D2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D7F8195C-70DD-4A5B-B650-85C9EB3B6C56}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D7F8195C-70DD-4A5B-B650-85C9EB3B6C56}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D7F8195C-70DD-4A5B-B650-85C9EB3B6C56}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D7F8195C-70DD-4A5B-B650-85C9EB3B6C56}.Release|Any CPU.Build.0 = Release|Any CPU
 		{FD1F6D8B-7601-4D41-963C-E55DD74F26E0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{FD1F6D8B-7601-4D41-963C-E55DD74F26E0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FD1F6D8B-7601-4D41-963C-E55DD74F26E0}.Release|Any CPU.ActiveCfg = Release|Any CPU
