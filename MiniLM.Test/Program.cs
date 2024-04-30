@@ -5,12 +5,51 @@ using System.Text;
 using MiniLM;
 using MiniLM.Shared;
 
-Main.Run(new MiniLMSnowflakeArcticEmbedXS::MiniLM.SentenceEncoder());
-Main.Run(new MiniLMallMiniLML6v2::MiniLM.SentenceEncoder());
-
+Main.RunSimple(new MiniLMSnowflakeArcticEmbedXS::MiniLM.SentenceEncoder());
+Main.RunSimple(new MiniLMallMiniLML6v2::MiniLM.SentenceEncoder());
 
 public static class Main
 {
+    public static void RunSimple(ISentenceEncoder sentenceEncoder)
+    {
+
+        var queries = new[]
+        {
+            "Represent this sentence for searching relevant passages: what is snowflake?",
+            "Represent this sentence for searching relevant passages: Where can I get the best tacos?",
+
+        };
+
+        var documents = new[]
+        {
+            "The Data Cloud!",
+            "Mexico City of Course!",
+        };
+
+        var encodedQueries   = sentenceEncoder.Encode(queries);
+        var encodedDocuments = sentenceEncoder.Encode(documents);
+
+
+        for (int i = 0; i < encodedQueries.Length; i++)
+        {
+            var results = new List<(float score, string sentence)>();
+
+            for (int j = 0; j < encodedDocuments.Length; j++)
+            {
+                var score = 1f - HNSW.Net.CosineDistance.NonOptimized(encodedQueries[i], encodedDocuments[j]);
+                results.Add((score, documents[j]));
+            }
+            Console.WriteLine($"Query: {queries[i]}");
+
+            foreach (var r in results.OrderBy(r => r.score).Reverse())
+            {
+                Console.WriteLine($"Doc ({r.score}): {r.sentence}");
+            }
+
+        }
+
+    }
+
     public static void Run(ISentenceEncoder sentenceEncoder)
     {
         var testSentences = new[]

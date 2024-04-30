@@ -6,7 +6,6 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Platforms>AnyCPU</Platforms>
         <LangVersion>latest</LangVersion>
-        <RootNamespace>MiniLM</RootNamespace>
     </PropertyGroup>
 
     <PropertyGroup>
@@ -23,8 +22,7 @@
     </PropertyGroup>
     
     <ItemGroup>
-        <None Remove="Resources\*.bin"/>
-        <EmbeddedResource Include="Resources\*.*"/>
+        <EmbeddedResource Include="Resources\*.*" Visible="true" CopyToOutputDirectory="Always"/>
     </ItemGroup>
 
     <ItemGroup>
