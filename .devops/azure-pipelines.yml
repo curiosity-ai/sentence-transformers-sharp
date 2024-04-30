@@ -2,6 +2,7 @@ variables:
   projectBase:     './SentenceTransformers/SentenceTransformers.csproj'
   projectMiniLM:   './SentenceTransformers.MiniLM/SentenceTransformers.MiniLM.csproj'
   projectArticXs:  './SentenceTransformers.ArticXs/SentenceTransformers.ArticXs.csproj'
+  solution:        './SentenceTransformers.sln'
   buildConfiguration: 'Release'
   targetVersion: yy.M.$(build.buildId)
   
@@ -39,7 +40,7 @@ steps:
   displayName: 'restore nuget'
   inputs:
     command: 'restore'
-    projects: '$(project)'
+    projects: '$(solution)'
 
 
 - task: DotNetCoreCLI@2
