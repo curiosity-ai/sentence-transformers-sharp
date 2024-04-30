@@ -15,8 +15,8 @@ namespace BERTTokenizers.Base
         protected override IEnumerable<string> TokenizeSentence(string text)
         {
             return text.Split(new string[] { " ", "   ", "\r\n" }, StringSplitOptions.None)
-                .SelectMany(o => o.SplitAndKeep(".,;:\\/?!#$%()=+-*\"'–_`<>&^@{}[]|~'".ToArray()))
-                .Select(o => o.ToLower());
+               .SelectMany(o => o.SplitAndKeep(".,;:\\/?!#$%()=+-*\"'–_`<>&^@{}[]|~'".ToArray()))
+               .Select(o => o.ToLower());
         }
     }
 }

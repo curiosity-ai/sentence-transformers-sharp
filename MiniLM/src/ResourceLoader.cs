@@ -11,8 +11,8 @@ public static class ResourceLoader
 
     public static byte[] GetResource(Assembly assembly, string resourceFile)
     {
-        var s = assembly.GetManifestResourceStream(assembly.GetName().Name + ".Resources." + resourceFile);
-        var b = new byte[s.Length];
+        var s  = assembly.GetManifestResourceStream(assembly.GetName().Name + ".Resources." + resourceFile);
+        var b  = new byte[s.Length];
         var ms = new MemoryStream(b);
         s.CopyTo(ms);
         return b;

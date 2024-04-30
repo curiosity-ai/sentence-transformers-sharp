@@ -4,7 +4,7 @@ using MiniLM;
 
 var sentenceEncoder = new SentenceEncoder();
 
-var testSentences = new[] 
+var testSentences = new[]
 {
     "El Patrón Repositorio y sus falacias",
     "The cat sat on the mat.",
@@ -19,10 +19,10 @@ var encodedTestSentences = sentenceEncoder.Encode(testSentences);
 
 var crossSimilarity = new float[testSentences.Length][];
 
-for(int i = 0; i < testSentences.Length; i++)
+for (int i = 0; i < testSentences.Length; i++)
 {
     crossSimilarity[i] = new float[testSentences.Length];
-    
+
     for (int j = 0; j < testSentences.Length; j++)
     {
         crossSimilarity[i][j] = 1f - HNSW.Net.CosineDistance.NonOptimized(encodedTestSentences[i], encodedTestSentences[j]);
@@ -30,8 +30,9 @@ for(int i = 0; i < testSentences.Length; i++)
 }
 
 //Test that the encoder doesn't throw on large inputs
-var testEncodingAVeryLargeString = sentenceEncoder.Encode(new[] {
-@"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
+var testEncodingAVeryLargeString = sentenceEncoder.Encode(new[]
+{
+    @"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
 The city is famous for its exquisite architecture, charming cafes, and art museums.
 The Eiffel Tower, Notre-Dame Cathedral, and the Louvre Museum are just some of the iconic landmarks that draw millions of visitors to Paris each year.
 In addition to its rich culture and history, Paris is also renowned for its delicious cuisine and world-class shopping.
@@ -140,20 +141,21 @@ With thousands of flights departing from airports around the world each day, air
 
 var answerTest = sentenceEncoder.ChunkAndEncode(longSentence);
 
-var questions = new[] {
-                        "What are some of the best places to experience french culture and cuisine?",
-                        "What are some of the most interesting neighborhoods to explore in NY?",
-                        "How has the technology behind trains evolved over the years, and what impact has it had on transportation?",
-                        "What are some of the latest innovations in flying technology?",
-                       };
+var questions = new[]
+{
+    "What are some of the best places to experience french culture and cuisine?",
+    "What are some of the most interesting neighborhoods to explore in NY?",
+    "How has the technology behind trains evolved over the years, and what impact has it had on transportation?",
+    "What are some of the latest innovations in flying technology?",
+};
 
 var questionEmbeddings = sentenceEncoder.Encode(questions);
 
-foreach(var (question, questionVector) in questions.Zip(questionEmbeddings))
+foreach (var (question, questionVector) in questions.Zip(questionEmbeddings))
 {
     var bestAnswer = answerTest.Select(c => (chunk: c, score: 1f - HNSW.Net.CosineDistance.NonOptimized(c.Vector, questionVector)))
-        .OrderByDescending(d => d.score)
-        .First();
+       .OrderByDescending(d => d.score)
+       .First();
 
     Console.WriteLine($"Question: {question}\nAnswer: [{bestAnswer.score}:n2] {bestAnswer.chunk.Text}\n\n------------------------\n");
 }
@@ -173,7 +175,6 @@ Console.ReadLine();
 //    var(mean, std) = Profile(1, () => sentenceEncoder.ChunkAndEncode(repeatedSentences));
 //    Console.WriteLine($"Sentence length: {sb.Length:n0} Mean {mean:F0}ms Std {std:F0}ms");
 //}
-
 
 
 var sentences = new[]
@@ -197,7 +198,7 @@ var results = new List<double[]>();
 for (int i = 0; i < 50; i++)
 {
     var count = i == 0 ? 1 : i * 10;
-    var s = sentencesHundred.Take(count).ToArray();
+    var s     = sentencesHundred.Take(count).ToArray();
     count = s.Length;
 
     var (mean, std) = Profile(5, () =>
@@ -218,7 +219,7 @@ static (double mean, double avg) Profile(int iterations, Action func)
 {
     //Run at highest priority to minimize fluctuations caused by other processes/threads
     Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
-    Thread.CurrentThread.Priority = ThreadPriority.Highest;
+    Thread.CurrentThread.Priority             = ThreadPriority.Highest;
 
     // warm up 
     func();

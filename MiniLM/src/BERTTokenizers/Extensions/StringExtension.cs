@@ -9,7 +9,8 @@ namespace BERTTokenizers.Extensions
     static class StringExtension
     {
         public static IEnumerable<string> SplitAndKeep(
-                                this string inputString, params char[] delimiters)
+            this   string inputString,
+            params char[] delimiters)
         {
             int start = 0, index;
 
