@@ -42,40 +42,4 @@ public static class DenseTensorHelpers
 
         return outputFlatten;
     }
-
-
-    public static DenseTensor<float> MeanPooling(DenseTensor<float> token_embeddings_dense, List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> encodedSentences, float eps = 1e-9f)
-    {
-        var sentencesCount = token_embeddings_dense.Dimensions[0];
-        var sentenceLength = token_embeddings_dense.Dimensions[1];
-        var hiddenStates   = token_embeddings_dense.Dimensions[2];
-
-        var result = new DenseTensor<float>(new[] { sentencesCount, hiddenStates });
-
-        for (int s = 0; s < sentencesCount; s++)
-        {
-            var maskSum = 0f;
-
-            var attentionMask = encodedSentences[s].AttentionMask;
-
-            for (int t = 0; t < sentenceLength; t++)
-            {
-                maskSum += attentionMask[t];
-
-                for (int i = 0; i < hiddenStates; i++)
-                {
-                    result[s, i] += token_embeddings_dense[s, t, i] * attentionMask[t];
-                }
-            }
-
-            var invSum = 1f / MathF.Max(maskSum, eps);
-
-            for (int i = 0; i < hiddenStates; i++)
-            {
-                result[s, i] *= invSum;
-            }
-        }
-
-        return result;
-    }
 }

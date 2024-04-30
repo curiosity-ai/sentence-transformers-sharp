@@ -6,7 +6,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Platforms>AnyCPU</Platforms>
         <LangVersion>latest</LangVersion>
-        <RootNamespace>MiniLM.snowflake-arctic-embed-xs</RootNamespace>
+        <RootNamespace>MiniLM</RootNamespace>
     </PropertyGroup>
 
     <PropertyGroup>

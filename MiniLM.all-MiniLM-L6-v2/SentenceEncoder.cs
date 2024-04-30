@@ -6,7 +6,7 @@ using MiniLM.Shared;
 
 namespace MiniLM;
 
-public sealed class SentenceEncoder : IDisposable
+public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
 {
     private readonly SessionOptions   _sessionOptions;
     private readonly InferenceSession _session;
@@ -21,20 +21,11 @@ public sealed class SentenceEncoder : IDisposable
         _outputNames    = _session.OutputMetadata.Keys.ToArray();
     }
 
-    public new void Dispose()
+    public void Dispose()
     {
         _sessionOptions.Dispose();
         _session.Dispose();
     }
-
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
-        => SentenceEncoderBase.ChunkAndEncode(Encode, text, chunkLength, chunkOverlap, sequentially, maxChunks, cancellationToken);
-
-    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
-        => SentenceEncoderBase.ChunkAndEncodeTagged(Encode, text, stripTags, chunkLength, chunkOverlap, sequentially, maxChunks, cancellationToken);
-
-    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
-        => SentenceEncoderBase.ChunkText(text, separator, chunkLength, chunkOverlap, maxChunks);
 
     public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default)
     {

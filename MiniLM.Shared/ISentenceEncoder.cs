@@ -3,11 +3,11 @@
 public record struct EncodedChunk(string       Text, float[] Vector);
 public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);
 public record struct TaggedChunk(string        Text, string  Tag);
-public static class SentenceEncoderBase
+public interface ISentenceEncoder
 {
-    public delegate float[][] EncodeFun(string[] sentences, CancellationToken cancellationToken = default);
+    public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default);
 
-    public static EncodedChunk[] ChunkAndEncode(EncodeFun encodeFun, string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
     {
         var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
 
@@ -21,13 +21,13 @@ public static class SentenceEncoderBase
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 oneChunk[0] = chunks[i];
-                var oneVector = encodeFun(oneChunk, cancellationToken: cancellationToken);
+                var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                 encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
             }
         }
         else
         {
-            var vectors = encodeFun(chunks.ToArray(), cancellationToken: cancellationToken);
+            var vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
 
             for (int i = 0; i < encodedChunks.Length; i++)
             {
@@ -38,9 +38,9 @@ public static class SentenceEncoderBase
         return encodedChunks;
     }
 
-    public static TaggedEncodedChunk[] ChunkAndEncodeTagged(EncodeFun encodeFun, string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
+    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
     {
-        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
+        var chunks = ISentenceEncoder.ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
            .Select(chunk => stripTags(chunk))
            .ToArray();
 
@@ -54,13 +54,13 @@ public static class SentenceEncoderBase
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 oneChunk[0] = chunks[i].Text;
-                var oneVector = encodeFun(oneChunk, cancellationToken: cancellationToken);
+                var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                 encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector[0], chunks[i].Tag);
             }
         }
         else
         {
-            var vectors = encodeFun(chunks.Select(c => c.Text).ToArray(), cancellationToken: cancellationToken);
+            var vectors = Encode(chunks.Select(c => c.Text).ToArray(), cancellationToken: cancellationToken);
 
             for (int i = 0; i < encodedChunks.Length; i++)
             {
@@ -120,5 +120,4 @@ public static class SentenceEncoderBase
 
         return docs;
     }
-
 }

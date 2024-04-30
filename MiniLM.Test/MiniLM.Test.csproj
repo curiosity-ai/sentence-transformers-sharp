@@ -23,7 +23,9 @@
     <ProjectReference Include="..\MiniLM.Shared\MiniLM.Shared.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\MiniLM.all-MiniLM-L6-v2\MiniLM.all-MiniLM-L6-v2.csproj" />
+    <ProjectReference Include="..\MiniLM.all-MiniLM-L6-v2\MiniLM.all-MiniLM-L6-v2.csproj" Aliases="MiniLMallMiniLML6v2" />
   </ItemGroup>
-
+  <ItemGroup>
+    <ProjectReference Include="..\MiniLM.snowflake-arctic-embed-xs\MiniLM.snowflake-arctic-embed-xs.csproj" Aliases="MiniLMSnowflakeArcticEmbedXS" />
+  </ItemGroup>
 </Project>
