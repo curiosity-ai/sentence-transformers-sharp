@@ -1,5 +1,5 @@
 variables:
-  project:  './MiniLM/MiniLM.csproj'
+  project:  './MiniLM/MiniLM.all-MiniLM-L6-v2.csproj'
   buildConfiguration: 'Release'
   targetVersion: yy.M.$(build.buildId)
   
