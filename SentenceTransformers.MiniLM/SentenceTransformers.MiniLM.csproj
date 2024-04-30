@@ -1,5 +1,4 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -19,9 +18,9 @@
     <Description>The wrapper provides a simple and easy-to-use interface for loading the MiniLM embeddings model and generating embeddings for input text.</Description>
     <PackageTags>English, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings,Sentence Transformers, Data Science, Big Data, Artificial Intelligence, AI, NLP Library, Neural Networks, Deep Learning</PackageTags>
   </PropertyGroup>
-  
+
   <ItemGroup>
-    <EmbeddedResource Include="Resources\*.*" Visible="true"/>
+    <EmbeddedResource Include="Resources\*.*" Visible="true" />
   </ItemGroup>
 
   <ItemGroup>
@@ -30,9 +29,7 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.16.3" />
   </ItemGroup>
 
-
   <ItemGroup>
     <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
   </ItemGroup>
-  
 </Project>
