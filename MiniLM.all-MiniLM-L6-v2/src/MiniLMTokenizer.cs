@@ -1,4 +1,5 @@
 using BERTTokenizers.Base;
+using MiniLM.Shared;
 
 namespace MiniLM;
 

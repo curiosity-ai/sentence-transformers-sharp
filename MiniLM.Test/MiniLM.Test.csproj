@@ -18,8 +18,12 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.16.3" />
   </ItemGroup>
 
+
   <ItemGroup>
-    <ProjectReference Include="..\MiniLM\MiniLM.csproj" />
+    <ProjectReference Include="..\MiniLM.Shared\MiniLM.Shared.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\MiniLM.all-MiniLM-L6-v2\MiniLM.all-MiniLM-L6-v2.csproj" />
   </ItemGroup>
 
 </Project>

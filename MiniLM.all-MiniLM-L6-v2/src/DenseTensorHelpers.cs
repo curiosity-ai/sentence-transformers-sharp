@@ -4,7 +4,6 @@ namespace MiniLM;
 
 public static class DenseTensorHelpers
 {
-
     public static DenseTensor<float> Normalize(DenseTensor<float> input_dense, float eps = 1e-12f)
     {
         //Computes sum(abs(x)^2)^(1/2)
@@ -42,7 +41,7 @@ public static class DenseTensorHelpers
     {
         var sentencesCount = token_embeddings_dense.Dimensions[0];
         var sentenceLength = token_embeddings_dense.Dimensions[1];
-        var hiddenStates = token_embeddings_dense.Dimensions[2];
+        var hiddenStates   = token_embeddings_dense.Dimensions[2];
 
         var result = new DenseTensor<float>(new[] { sentencesCount, hiddenStates });
 
@@ -63,6 +62,7 @@ public static class DenseTensorHelpers
             }
 
             var invSum = 1f / MathF.Max(maskSum, eps);
+
             for (int i = 0; i < hiddenStates; i++)
             {
                 result[s, i] *= invSum;

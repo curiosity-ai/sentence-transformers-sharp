@@ -1,6 +1,6 @@
 ﻿using System.Reflection;
 
-namespace MiniLM;
+namespace MiniLM.Shared;
 
 public static class ResourceLoader
 {

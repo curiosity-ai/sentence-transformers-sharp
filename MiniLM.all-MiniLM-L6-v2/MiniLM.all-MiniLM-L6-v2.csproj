@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Platforms>AnyCPU</Platforms>
     <LangVersion>latest</LangVersion>
+    <RootNamespace>MiniLM</RootNamespace>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -15,7 +16,7 @@
     <RepositoryUrl>https://github.com/curiosity-ai/MiniLM</RepositoryUrl>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageId>MiniLM</PackageId>
+    <PackageId>MiniLM.all-MiniLM-L6-v2</PackageId>
     <Description>The wrapper provides a simple and easy-to-use interface for loading the MiniLM embeddings model and generating embeddings for input text.</Description>
     <PackageTags>English, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings, Data Science, Big Data, Artificial Intelligence, AI, NLP Library, Neural Networks, Deep Learning</PackageTags>
   </PropertyGroup>
@@ -30,4 +31,10 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.16.3" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.16.3" />
   </ItemGroup>
+
+
+  <ItemGroup>
+    <ProjectReference Include="..\MiniLM.Shared\MiniLM.Shared.csproj" />
+  </ItemGroup>
+  
 </Project>
