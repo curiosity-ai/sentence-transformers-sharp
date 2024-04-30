@@ -24,12 +24,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML" Version="3.0.1" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.16.3" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.16.3" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+    <PackageReference Include="SentenceTransformers" Version="24.4.48260" />
   </ItemGroup>
 </Project>
