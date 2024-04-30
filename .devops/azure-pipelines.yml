@@ -1,7 +1,7 @@
 variables:
   projectBase:     './SentenceTransformers/SentenceTransformers.csproj'
   projectMiniLM:   './SentenceTransformers.MiniLM/SentenceTransformers.MiniLM.csproj'
-  projectArticXs:  './SentenceTransformers.ArticXs/SentenceTransformers.ArticXs.csproj'
+  projectArticXs:  './SentenceTransformers.ArcticXs/SentenceTransformers.ArcticXs.csproj'
   solution:        './SentenceTransformers.sln'
   buildConfiguration: 'Release'
   targetVersion: yy.M.$(build.buildId)
@@ -50,15 +50,6 @@ steps:
     projects: '$(projectBase)'
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
-- task: NuGetCommand@2
-  displayName: 'push base package first'
-  inputs:
-    command: 'push'
-    packagesToPush: '**/*.nupkg'
-    nuGetFeedType: 'external'
-    publishFeedCredentials: 'nuget-curiosity-org'
-
-
 - task: DotNetCoreCLI@2
   displayName: 'build MiniLM project'
   inputs:
@@ -74,9 +65,9 @@ steps:
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
 - task: NuGetCommand@2
-  displayName: 'push nuget'
+  displayName: 'push all nuget packages'
   inputs:
     command: 'push'
-    packagesToPush: '**/SentenceTransformers.*.nupkg'
+    packagesToPush: '**/*.nupkg'
     nuGetFeedType: 'external'
     publishFeedCredentials: 'nuget-curiosity-org'
