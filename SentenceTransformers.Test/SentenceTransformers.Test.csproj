@@ -20,9 +20,6 @@
 
 
   <ItemGroup>
-    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj"/>
-  </ItemGroup>
-  <ItemGroup>
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
   </ItemGroup>
   <ItemGroup>
