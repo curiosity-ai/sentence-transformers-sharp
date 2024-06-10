@@ -1,4 +1,19 @@
-﻿using System.Diagnostics;
+﻿/*
+Contents:
+- RunSimple: Executes simple test cases for provided sentence encoders by encoding sample queries and documents and calculating similarity scores.
+- Run: Executes advanced test cases for provided sentence encoders, including QA testing and performance profiling.
+- Profile: Helper method for profiling the execution time of a function.
+
+    Usage:
+- Include this file in your project to utilize the testing and benchmarking functionalities for sentence encoders.
+- Call the appropriate methods in the Main class to run tests and benchmarking tasks for different sentence encoders.
+
+    Dependencies:
+- Requires SentenceTransformers namespace for accessing the ISentenceEncoder interface.
+- Requires HNSW.Net namespace for calculating cosine similarity scores.
+*/
+
+using System.Diagnostics;
 using System.Text;
 using SentenceTransformers;
 
