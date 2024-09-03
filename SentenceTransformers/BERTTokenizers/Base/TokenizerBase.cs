@@ -29,7 +29,7 @@ namespace BERTTokenizers.Base
         public List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> Encode(params string[] texts)
         {
             const int MaxTokens = 512; //Maximum token length supported by MiniLM model
-            var tokenized = Tokenize(texts);
+            var       tokenized = Tokenize(texts);
 
             if (tokenized.Count == 0)
             {
@@ -40,7 +40,7 @@ namespace BERTTokenizers.Base
 
             return tokenized.Select(tokens =>
             {
-                var padding = Enumerable.Repeat(0L, sequenceLength - Math.Min(MaxTokens,tokens.Length)).ToList();
+                var padding = Enumerable.Repeat(0L, sequenceLength - Math.Min(MaxTokens, tokens.Length)).ToList();
 
                 var tokenIndexes   = tokens.Take(MaxTokens).Select(token => (long)token.VocabularyIndex).Concat(padding).ToArray();
                 var segmentIndexes = tokens.Take(MaxTokens).Select(token => token.SegmentIndex).Concat(padding).ToArray();
@@ -57,7 +57,7 @@ namespace BERTTokenizers.Base
         public List<string> Untokenize(List<string> tokens)
         {
             var currentToken = string.Empty;
-            var untokens = new List<string>();
+            var untokens     = new List<string>();
             tokens.Reverse();
 
             tokens.ForEach(token =>
@@ -98,7 +98,7 @@ namespace BERTTokenizers.Base
 
         private IEnumerable<long> SegmentIndex(IEnumerable<(string token, int index)> tokens)
         {
-            var segmentIndex = 0;
+            var segmentIndex   = 0;
             var segmentIndexes = new List<long>();
 
             foreach (var (token, index) in tokens)
@@ -116,15 +116,15 @@ namespace BERTTokenizers.Base
 
         private IEnumerable<(string Token, int VocabularyIndex)> TokenizeSubwords(string word)
         {
-            if(word.Length > MAX_WORD_LENGTH) yield break; //Ignore words that are too long
-            
+            if (word.Length > MAX_WORD_LENGTH) yield break; //Ignore words that are too long
+
             if (_vocabularyDict.TryGetValue(word, out var wordIndex))
             {
                 yield return (word, wordIndex);
                 yield break;
             }
 
-            foreach(var inner in TokenizeSubwordsInner(word))
+            foreach (var inner in TokenizeSubwordsInner(word))
             {
                 yield return inner;
             }
@@ -132,13 +132,13 @@ namespace BERTTokenizers.Base
 
         private List<(string token, int index)> TokenizeSubwordsInner(string word)
         {
-            var tokens = new List<(string token, int index)>();
+            var tokens    = new List<(string token, int index)>();
             var remaining = word;
 
             while (!string.IsNullOrEmpty(remaining) && remaining.Length > 2)
             {
-                string prefix = null;
-                int subwordLength = remaining.Length;
+                string prefix        = null;
+                int    subwordLength = remaining.Length;
 
                 int stopLimit = remaining.StartsWith("##", StringComparison.Ordinal) ? 2 : 1;
 
@@ -166,10 +166,10 @@ namespace BERTTokenizers.Base
                 //var regex = new Regex(prefix);
                 //remaining = regex.Replace(remaining, "##", 1);
 
-                
+
                 var remainingAfter = ReplaceFirst(remaining, prefix, "##");
 
-                if(remaining == remainingAfter)
+                if (remaining == remainingAfter)
                 {
                     tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown]));
 
@@ -194,6 +194,7 @@ namespace BERTTokenizers.Base
         private static string ReplaceFirst(string text, string search, string replace)
         {
             int pos = text.IndexOf(search, StringComparison.Ordinal);
+
             if (pos < 0)
             {
                 return text;
