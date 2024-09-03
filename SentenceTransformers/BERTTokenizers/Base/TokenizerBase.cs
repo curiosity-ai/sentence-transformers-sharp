@@ -12,6 +12,8 @@ namespace BERTTokenizers.Base
         protected readonly List<string>            _vocabulary;
         protected readonly Dictionary<string, int> _vocabularyDict;
 
+        public const int MAX_WORD_LENGTH = 50;
+
         public TokenizerBase(Stream vocabularyFile)
         {
             _vocabulary = VocabularyReader.ReadFile(vocabularyFile);
@@ -114,6 +116,8 @@ namespace BERTTokenizers.Base
 
         private IEnumerable<(string Token, int VocabularyIndex)> TokenizeSubwords(string word)
         {
+            if(word.Length > MAX_WORD_LENGTH) yield break; //Ignore words that are too long
+            
             if (_vocabularyDict.TryGetValue(word, out var wordIndex))
             {
                 yield return (word, wordIndex);
