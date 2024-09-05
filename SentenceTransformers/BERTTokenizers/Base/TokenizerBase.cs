@@ -12,7 +12,7 @@ namespace BERTTokenizers.Base
         protected readonly List<string>            _vocabulary;
         protected readonly Dictionary<string, int> _vocabularyDict;
 
-        public static int MaxWordLength = 50;
+        public static int MaxWordLength {get; private set; } = 50;
 
         public static void SetMaxWordLength(int maxWordLength)
         {
