@@ -1,44 +1,62 @@
-﻿using Microsoft.ML.OnnxRuntime.Tensors;
+﻿/*
+ * This file defines the DenseTensorHelpers class, which provides helper methods for working with dense tensors.
+ * The class contains a static method Normalize, which normalizes the input dense tensor along a specified axis.
+ * The Normalize method computes the normalization denominators for each sentence and returns a jagged array of normalized vectors.
+ * These normalized vectors can be used for various natural language processing tasks, such as text encoding or similarity calculation.
+ */
 
-namespace SentenceTransformers.ArcticXs;
+using Microsoft.ML.OnnxRuntime.Tensors;
 
-public static class DenseTensorHelpers
+namespace SentenceTransformers.ArcticXs
 {
-    public static float[][] Normalize(DenseTensor<float> input_dense, float eps = 1e-12f)
+    // Provides helper methods for working with dense tensors.
+    public static class DenseTensorHelpers
     {
-        //Computes sum(abs(x)^2)^(1/2)
-
-        const int tokenIndexForEncoding = 0;
-
-        var sentencesCount = input_dense.Dimensions[0];
-        var hiddenStates   = input_dense.Dimensions[2];
-
-        var denom_dense = new float [sentencesCount];
-
-        for (int s = 0; s < sentencesCount; s++)
+        // Normalizes the input dense tensor along the specified axis.
+        // Returns a jagged array of normalized vectors.
+        public static float[][] Normalize(DenseTensor<float> inputTensor, float epsilon = 1e-12f)
         {
-            for (int i = 0; i < hiddenStates; i++)
+            // Computes the L2 norm of each vector in the dense tensor.
+
+            const int tokenIndex = 0; // Index for the token to be encoded
+
+            // Get the dimensions of the input dense tensor
+            var sentenceCount = inputTensor.Dimensions[0]; // Number of sentences
+            var hiddenStates = inputTensor.Dimensions[2]; // Number of hidden states
+
+            // Array to store the normalization denominators for each sentence
+            var norms = new float[sentenceCount];
+
+            // Compute the normalization denominators for each sentence
+            for (int s = 0; s < sentenceCount; s++)
             {
-                denom_dense[s] += input_dense[s, tokenIndexForEncoding, i] * input_dense[s, tokenIndexForEncoding, i];
+                for (int i = 0; i < hiddenStates; i++)
+                {
+                    norms[s] += inputTensor[s, tokenIndex, i] * inputTensor[s, tokenIndex, i];
+                }
+                norms[s] = MathF.Max(MathF.Sqrt(norms[s]), epsilon);
             }
-            denom_dense[s] = MathF.Max(MathF.Sqrt(denom_dense[s]), eps);
-        }
 
-        var outputFlatten = new float[sentencesCount][];
+            // Array to store the output normalized vectors
+            var normalizedVectors = new float[sentenceCount][];
 
-        for (int s = 0; s < sentencesCount; s++)
-        {
-            var invNorm = 1 / denom_dense[s];
-
-            var emb = new float[hiddenStates];
-            outputFlatten[s] = emb;
-
-            for (int i = 0; i < hiddenStates; i++)
+            // Normalize the input tensor and store the normalized vectors
+            for (int s = 0; s < sentenceCount; s++)
             {
-                emb[i] = input_dense[s, tokenIndexForEncoding, i] * invNorm;
-            }
-        }
+                var invNorm = 1 / norms[s]; // Compute the inverse normalization factor
 
-        return outputFlatten;
+                // Array to store the normalized vector for the current sentence
+                var normalizedVector = new float[hiddenStates];
+                normalizedVectors[s] = normalizedVector;
+
+                // Normalize each element of the input tensor for the current sentence
+                for (int i = 0; i < hiddenStates; i++)
+                {
+                    normalizedVector[i] = inputTensor[s, tokenIndex, i] * invNorm;
+                }
+            }
+
+            return normalizedVectors; // Return the normalized vectors
+        }
     }
 }

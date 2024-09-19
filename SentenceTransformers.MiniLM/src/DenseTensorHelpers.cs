@@ -1,74 +1,91 @@
-﻿using Microsoft.ML.OnnxRuntime.Tensors;
+﻿/*
+ * This file defines the DenseTensorHelpers class, which provides helper methods for working with dense tensors.
+ * It includes methods for normalizing dense tensors and performing mean pooling using attention masks.
+ */
 
-namespace SentenceTransformers.MiniLM;
+using Microsoft.ML.OnnxRuntime.Tensors; // Importing the required namespace
 
-public static class DenseTensorHelpers
+namespace SentenceTransformers.MiniLM
 {
-    public static DenseTensor<float> Normalize(DenseTensor<float> input_dense, float eps = 1e-12f)
+    // Provides helper methods for working with dense tensors.
+    public static class DenseTensorHelpers
     {
-        //Computes sum(abs(x)^2)^(1/2)
-
-        var sentencesCount = input_dense.Dimensions[0];
-        var hiddenStates   = input_dense.Dimensions[1];
-
-        var denom_dense = new float [sentencesCount];
-
-        for (int s = 0; s < sentencesCount; s++)
+        // Normalizes the input dense tensor along the specified axis.
+        // Returns the normalized dense tensor.
+        public static DenseTensor<float> Normalize(DenseTensor<float> inputTensor, float epsilon = 1e-12f)
         {
-            for (int i = 0; i < hiddenStates; i++)
+            // Computes sum(abs(x)^2)^(1/2)
+
+            var sentenceCount = inputTensor.Dimensions[0]; // Number of sentences
+            var hiddenStates = inputTensor.Dimensions[1]; // Number of hidden states
+
+            var denominators = new float[sentenceCount]; // Array to store normalization denominators
+
+            // Compute normalization denominators for each sentence
+            for (int sentenceIndex = 0; sentenceIndex < sentenceCount; sentenceIndex++)
             {
-                denom_dense[s] += input_dense[s, i] * input_dense[s, i];
-            }
-
-            denom_dense[s] = MathF.Max(MathF.Sqrt(denom_dense[s]), eps);
-        }
-
-        for (int s = 0; s < sentencesCount; s++)
-        {
-            var invNorm = 1 / denom_dense[s];
-
-            for (int i = 0; i < hiddenStates; i++)
-            {
-                input_dense[s, i] *= invNorm;
-            }
-        }
-
-        return input_dense;
-    }
-
-
-    public static DenseTensor<float> MeanPooling(DenseTensor<float> token_embeddings_dense, List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> encodedSentences, float eps = 1e-9f)
-    {
-        var sentencesCount = token_embeddings_dense.Dimensions[0];
-        var sentenceLength = token_embeddings_dense.Dimensions[1];
-        var hiddenStates   = token_embeddings_dense.Dimensions[2];
-
-        var result = new DenseTensor<float>(new[] { sentencesCount, hiddenStates });
-
-        for (int s = 0; s < sentencesCount; s++)
-        {
-            var maskSum = 0f;
-
-            var attentionMask = encodedSentences[s].AttentionMask;
-
-            for (int t = 0; t < sentenceLength; t++)
-            {
-                maskSum += attentionMask[t];
-
-                for (int i = 0; i < hiddenStates; i++)
+                for (int stateIndex = 0; stateIndex < hiddenStates; stateIndex++)
                 {
-                    result[s, i] += token_embeddings_dense[s, t, i] * attentionMask[t];
+                    denominators[sentenceIndex] += inputTensor[sentenceIndex, stateIndex] * inputTensor[sentenceIndex, stateIndex];
+                }
+
+                // Compute square root and apply epsilon
+                denominators[sentenceIndex] = MathF.Max(MathF.Sqrt(denominators[sentenceIndex]), epsilon);
+            }
+
+            // Normalize the input dense tensor
+            for (int sentenceIndex = 0; sentenceIndex < sentenceCount; sentenceIndex++)
+            {
+                var inverseNorm = 1 / denominators[sentenceIndex]; // Compute the inverse normalization factor
+
+                for (int stateIndex = 0; stateIndex < hiddenStates; stateIndex++)
+                {
+                    inputTensor[sentenceIndex, stateIndex] *= inverseNorm; // Normalize each element of the input tensor
                 }
             }
 
-            var invSum = 1f / MathF.Max(maskSum, eps);
-
-            for (int i = 0; i < hiddenStates; i++)
-            {
-                result[s, i] *= invSum;
-            }
+            return inputTensor; // Return the normalized dense tensor
         }
 
-        return result;
+        // Computes mean pooling over the input tensor using the attention masks.
+        // Returns the result tensor after mean pooling.
+        public static DenseTensor<float> MeanPooling(DenseTensor<float> tokenEmbeddingsTensor, List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> encodedSentences, float epsilon = 1e-9f)
+        {
+            var sentenceCount = tokenEmbeddingsTensor.Dimensions[0]; // Number of sentences
+            var sentenceLength = tokenEmbeddingsTensor.Dimensions[1]; // Length of each sentence
+            var hiddenStates = tokenEmbeddingsTensor.Dimensions[2]; // Number of hidden states
+
+            var resultTensor = new DenseTensor<float>(new[] { sentenceCount, hiddenStates }); // Result tensor
+
+            // Iterate through each sentence
+            for (int sentenceIndex = 0; sentenceIndex < sentenceCount; sentenceIndex++)
+            {
+                var maskSum = 0f; // Sum of attention mask values
+
+                var attentionMask = encodedSentences[sentenceIndex].AttentionMask; // Get attention mask for the current sentence
+
+                // Iterate through each token in the sentence
+                for (int tokenIndex = 0; tokenIndex < sentenceLength; tokenIndex++)
+                {
+                    maskSum += attentionMask[tokenIndex]; // Update mask sum
+
+                    // Apply attention mask to token embeddings
+                    for (int stateIndex = 0; stateIndex < hiddenStates; stateIndex++)
+                    {
+                        resultTensor[sentenceIndex, stateIndex] += tokenEmbeddingsTensor[sentenceIndex, tokenIndex, stateIndex] * attentionMask[tokenIndex];
+                    }
+                }
+
+                var inverseSum = 1f / MathF.Max(maskSum, epsilon); // Compute inverse sum
+
+                // Normalize the result by the sum of attention masks
+                for (int stateIndex = 0; stateIndex < hiddenStates; stateIndex++)
+                {
+                    resultTensor[sentenceIndex, stateIndex] *= inverseSum;
+                }
+            }
+
+            return resultTensor; // Return the result tensor after mean pooling
+        }
     }
 }

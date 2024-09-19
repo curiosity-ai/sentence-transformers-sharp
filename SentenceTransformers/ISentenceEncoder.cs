@@ -1,123 +1,93 @@
-﻿namespace SentenceTransformers;
-
-public record struct EncodedChunk(string       Text, float[] Vector);
-public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);
-public record struct TaggedChunk(string        Text, string  Tag);
-public interface ISentenceEncoder
+﻿// This file defines interfaces and data structures related to sentence encoding and chunking.
+// It contains the following components:
+// - EncodedChunk: Represents a chunk of text along with its corresponding vector representation.
+// - TaggedEncodedChunk: Represents a chunk of text along with its corresponding vector representation and a tag.
+// - TaggedChunk: Represents a chunk of text along with a tag.
+// - ISentenceEncoder: Interface for encoding sentences and chunks of text, providing methods for encoding, chunking, and encoding tagged chunks.
+// - TextChunker: Provides utility methods for chunking text.
+namespace SentenceTransformers
 {
-    public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default);
+    // Represents a chunk of text along with its corresponding vector representation.
+    public record struct EncodedChunk(string Text, float[] Vector);
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
+    // Represents a chunk of text along with its corresponding vector representation and a tag.
+    public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);
+
+    // Represents a chunk of text along with a tag.
+    public record struct TaggedChunk(string Text, string Tag);
+
+    // Interface for encoding sentences and chunks of text.
+    public interface ISentenceEncoder
     {
-        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
+        // Encodes an array of sentences into vectors.
+        public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default);
 
-        var encodedChunks = new EncodedChunk[chunks.Count];
+        // Chunks the input text, encodes each chunk, and returns an array of EncodedChunks.
+        public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default);
 
-        if (sequentially)
+        // Chunks the input text, strips tags, encodes each chunk, and returns an array of TaggedEncodedChunks.
+        public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default);
+
+        // Chunks the input text into segments of specified length and overlap.
+        public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
         {
-            var oneChunk = new string[1];
-
-            for (int i = 0; i < chunks.Count; i++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                oneChunk[0] = chunks[i];
-                var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
-                encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
-            }
+            throw new NotImplementedException();
         }
-        else
-        {
-            var vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
-
-            for (int i = 0; i < encodedChunks.Length; i++)
-            {
-                encodedChunks[i] = new EncodedChunk(chunks[i], vectors[i]);
-            }
-        }
-
-        return encodedChunks;
     }
 
-    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
+    // Provides utility methods for chunking text.
+    public static class TextChunker
     {
-        var chunks = ISentenceEncoder.ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
-           .Select(chunk => stripTags(chunk))
-           .ToArray();
-
-        var encodedChunks = new TaggedEncodedChunk[chunks.Length];
-
-        if (sequentially)
+        // Splits the input text into chunks of specified length and overlap.
+        private static List<string> SplitIntoChunks(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
         {
-            var oneChunk = new string[1];
+            const int separatorLength = 1;
+            var chunks = new List<string>(); // List to hold the resulting chunks of text.
+            var currentChunk = new List<string>(); // List to hold the current chunk being constructed.
+            int totalLength = 0; // Total length of the current chunk.
 
-            for (int i = 0; i < chunks.Length; i++)
+            // Iterate through each split of the input text.
+            foreach (string split in splits)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                oneChunk[0] = chunks[i].Text;
-                var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
-                encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector[0], chunks[i].Tag);
-            }
-        }
-        else
-        {
-            var vectors = Encode(chunks.Select(c => c.Text).ToArray(), cancellationToken: cancellationToken);
+                int splitLength = split.Length; // Length of the current split.
 
-            for (int i = 0; i < encodedChunks.Length; i++)
-            {
-                encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, vectors[i], chunks[i].Tag);
-            }
-        }
-
-        return encodedChunks;
-    }
-
-    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
-    {
-        return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap, maxChunks);
-    }
-
-    private static List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
-    {
-        const int separatorLength = 1;
-        var       docs            = new List<string>();
-        var       currentDoc      = new List<string>();
-        int       total           = 0;
-
-        foreach (string d in splits)
-        {
-            int len = d.Length;
-
-            if (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkLength)
-            {
-                if (currentDoc.Count > 0)
+                // Check if adding the current split would exceed the chunk length.
+                if (totalLength + splitLength + (currentChunk.Count > 0 ? separatorLength : 0) > chunkLength)
                 {
-                    string doc = string.Join(separator, currentDoc);
-
-                    if (!string.IsNullOrWhiteSpace(doc))
+                    if (currentChunk.Count > 0)
                     {
-                        docs.Add(doc);
-                    }
+                        string chunkText = string.Join(separator, currentChunk);
 
-                    while (total > chunkOverlap || (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkLength && total > 0))
-                    {
-                        total -= currentDoc[0].Length + (currentDoc.Count > 1 ? separatorLength : 0);
-                        currentDoc.RemoveAt(0);
+                        if (!string.IsNullOrWhiteSpace(chunkText))
+                        {
+                            chunks.Add(chunkText); // Add the completed chunk to the list.
+                        }
+
+                        // Remove preceding splits until the overlap condition is satisfied.
+                        while (totalLength > chunkOverlap || (totalLength + splitLength + (currentChunk.Count > 0 ? separatorLength : 0) > chunkLength && totalLength > 0))
+                        {
+                            totalLength -= currentChunk[0].Length + (currentChunk.Count > 1 ? separatorLength : 0);
+                            currentChunk.RemoveAt(0);
+                        }
                     }
                 }
+
+                // Add the current split to the current chunk.
+                currentChunk.Add(split);
+                totalLength += splitLength + (currentChunk.Count > 1 ? separatorLength : 0); // Update the total length of the chunk.
+
+                if (chunks.Count > maxChunks)
+                    return chunks; // Check if the maximum number of chunks is reached.
             }
-            currentDoc.Add(d);
-            total += len + (currentDoc.Count > 1 ? separatorLength : 0);
 
-            if (docs.Count > maxChunks) return docs;
+            // Add the final chunk to the list if it's not empty.
+            string finalChunkText = string.Join(separator, currentChunk);
+            if (!string.IsNullOrWhiteSpace(finalChunkText))
+            {
+                chunks.Add(finalChunkText);
+            }
+
+            return chunks; // Return the list of chunks.
         }
-
-        string final_doc = string.Join(separator, currentDoc);
-
-        if (!string.IsNullOrWhiteSpace(final_doc))
-        {
-            docs.Add(final_doc);
-        }
-
-        return docs;
     }
 }
