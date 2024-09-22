@@ -7,31 +7,45 @@ public interface ISentenceEncoder
 {
     public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default);
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, CancellationToken cancellationToken = default)
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
     {
         var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
 
         var encodedChunks = new EncodedChunk[chunks.Count];
 
-        if (sequentially)
+        try
         {
-            var oneChunk = new string[1];
-
-            for (int i = 0; i < chunks.Count; i++)
+            if (sequentially)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                oneChunk[0] = chunks[i];
-                var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
-                encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
+                var oneChunk = new string[1];
+
+                for (int i = 0; i < chunks.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    oneChunk[0] = chunks[i];
+                    var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
+                    encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
+                }
+            }
+            else
+            {
+                var vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
+
+                for (int i = 0; i < encodedChunks.Length; i++)
+                {
+                    encodedChunks[i] = new EncodedChunk(chunks[i], vectors[i]);
+                }
             }
         }
-        else
+        catch (Exception E)
         {
-            var vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
-
-            for (int i = 0; i < encodedChunks.Length; i++)
+            if ((E is OperationCanceledException || cancellationToken.IsCancellationRequested)  && keepResultsOnCancellation)
             {
-                encodedChunks[i] = new EncodedChunk(chunks[i], vectors[i]);
+                return encodedChunks.Where(c => c != null).ToArray();
+            }
+            else
+            {
+                throw;
             }
         }
 
@@ -72,9 +86,9 @@ public interface ISentenceEncoder
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (Exception E)
         {
-            if (keepResultsOnCancellation)
+            if ((E is OperationCanceledException || cancellationToken.IsCancellationRequested) && keepResultsOnCancellation)
             {
                 return encodedChunks.Where(c => c != null).ToArray();
             }
