@@ -12,7 +12,13 @@ namespace BERTTokenizers.Base
         protected readonly List<string>            _vocabulary;
         protected readonly Dictionary<string, int> _vocabularyDict;
 
-        public static int MaxWordLength {get; private set; } = 50;
+        public static int MaxWordLength { get; private set; } = 50;
+        public static int MaxTokens     { get; private set; } = 256;
+
+        public static void SetMaxTokens(int maxTokens)
+        {
+            MaxTokens = maxTokens;
+        }
 
         public static void SetMaxWordLength(int maxWordLength)
         {
@@ -33,8 +39,7 @@ namespace BERTTokenizers.Base
 
         public List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> Encode(params string[] texts)
         {
-            const int MaxTokens = 512; //Maximum token length supported by MiniLM model
-            var       tokenized = Tokenize(MaxTokens, texts);
+            var tokenized = Tokenize(MaxTokens, texts);
 
             if (tokenized.Count == 0)
             {
