@@ -12,15 +12,15 @@ namespace BERTTokenizers.Base
         protected readonly List<string>            _vocabulary;
         protected readonly Dictionary<string, int> _vocabularyDict;
 
-        public static int MaxWordLength { get; private set; } = 50;
-        public static int MaxTokens     { get; private set; } = 256;
+        public int MaxWordLength { get; private set; } = 50;
+        public int MaxTokens     { get; private set; } = 256;
 
-        public static void SetMaxTokens(int maxTokens)
+        public void SetMaxTokens(int maxTokens)
         {
             MaxTokens = maxTokens;
         }
 
-        public static void SetMaxWordLength(int maxWordLength)
+        public void SetMaxWordLength(int maxWordLength)
         {
             MaxWordLength = maxWordLength;
         }
