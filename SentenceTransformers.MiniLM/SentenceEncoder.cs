@@ -18,7 +18,7 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
         _sessionOptions = sessionOptions ?? new SessionOptions();
         _session        = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
         _tokenizer      = new MiniLMTokenizer();
-        _tokenizer.SetMaxTokens(256);
+        TokenizerBase.SetMaxTokens(512);
         _outputNames    = _session.OutputMetadata.Keys.ToArray();
     }
 
