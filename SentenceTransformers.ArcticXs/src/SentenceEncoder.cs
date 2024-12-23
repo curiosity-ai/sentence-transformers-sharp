@@ -16,13 +16,28 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     private readonly TokenizerBase    _tokenizer;
     private readonly string[]         _outputNames;
 
+    private const int MAX_TOKEN_LENGTH = 512;
+
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
         _session        = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
         _tokenizer      = new ArcticTokenizer();
-        _tokenizer.SetMaxTokens(512);
+        _tokenizer.SetMaxTokens(MAX_TOKEN_LENGTH);
         _outputNames = _session.OutputMetadata.Keys.ToArray();
+    }
+
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = MAX_TOKEN_LENGTH, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
+    {
+        if (chunkLength <= 0 || chunkLength > MAX_TOKEN_LENGTH) throw new ArgumentException("ArcticXs only supports a chunk length up to " + MAX_TOKEN_LENGTH);
+        return ((ISentenceEncoder)this).ChunkAndEncode(text, chunkLength: chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, cancellationToken);
+    }
+
+    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = MAX_TOKEN_LENGTH, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
+    {
+        if (chunkLength <= 0 || chunkLength > MAX_TOKEN_LENGTH) throw new ArgumentException("ArcticXs only supports a chunk length up to " + MAX_TOKEN_LENGTH);
+
+        return ((ISentenceEncoder)this).ChunkAndEncodeTagged(text, stripTags, chunkLength: chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, cancellationToken);
     }
 
     public void Dispose()
