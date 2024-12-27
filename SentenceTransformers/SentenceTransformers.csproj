@@ -28,9 +28,7 @@
     </ItemGroup>
 
     <ItemGroup>
-      <None Update="Resources\unidecoder-decodemap.txt">
-        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-      </None>
+        <EmbeddedResource Include="Resources\*.*" Visible="true" />
     </ItemGroup>
 
 </Project>
