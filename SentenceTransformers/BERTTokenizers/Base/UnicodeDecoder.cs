@@ -15,11 +15,7 @@ public static class Unidecoder
     static Unidecoder()
     {
         MaxDecodedCharLength = 0;
-#if DEBUG
-        var stream = File.OpenRead("Resources/unidecoder-decodemap.txt");
-#else
         var stream = typeof(Unidecoder).Assembly.GetManifestResourceStream(typeof(Unidecoder).Assembly.GetName().Name + ".Resources." + "unidecoder-decodemap.txt");
-#endif
 
 
         using var reader = new StreamReader(stream, Encoding.UTF8);
