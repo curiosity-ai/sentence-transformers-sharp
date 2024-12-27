@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>netstandard2.1</TargetFramework>
+        <TargetFramework>net7.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Platforms>AnyCPU</Platforms>
         <LangVersion>latest</LangVersion>
@@ -25,6 +25,12 @@
         <PackageReference Include="Microsoft.ML" Version="4.0.0" />
         <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
         <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.20.1" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Update="Resources\unidecoder-decodemap.txt">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
     </ItemGroup>
 
 </Project>

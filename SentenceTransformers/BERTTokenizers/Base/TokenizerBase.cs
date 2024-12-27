@@ -95,7 +95,7 @@ namespace BERTTokenizers.Base
                .Select(text =>
                 {
                     var tokenAndIndex = new[] { Tokens.Classification }
-                       .Concat(TokenizeSentence(text).Take(maxTokens))
+                       .Concat(TokenizeSentence(Unidecoder.FastUnidecode(text)).Take(maxTokens))
                        .Concat(new[] { Tokens.Separation })
                        .SelectMany(TokenizeSubwords).Take(maxTokens);
                     var segmentIndexes = SegmentIndex(tokenAndIndex);
