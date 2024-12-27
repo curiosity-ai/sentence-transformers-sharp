@@ -95,7 +95,7 @@ namespace BERTTokenizers.Base
                .Select(text =>
                 {
                     var tokenAndIndex = new[] { Tokens.Classification }
-                       .Concat(TokenizeSentence(Unidecoder.FastUnidecode(text)).Take(maxTokens))
+                       .Concat(RemoveRepeatedWords(TokenizeSentence(Unidecoder.FastUnidecode(text)).Take(maxTokens)))
                        .Concat(new[] { Tokens.Separation })
                        .SelectMany(TokenizeSubwords).Take(maxTokens);
                     var segmentIndexes = SegmentIndex(tokenAndIndex);
@@ -104,6 +104,24 @@ namespace BERTTokenizers.Base
                         => (tokenindex.Token, tokenindex.VocabularyIndex, segmentindex)).ToArray();
                 })
                .ToList();
+        }
+        private IEnumerable<string> RemoveRepeatedWords(IEnumerable<string> words)
+        {
+            string lastWord = null;
+
+            foreach (var word in words)
+            {
+                if (lastWord is not null && word == lastWord)
+                {
+                    continue;
+                }
+                else
+                {
+                    lastWord = word;
+                    yield return lastWord;
+                }
+
+            }
         }
 
         private IEnumerable<long> SegmentIndex(IEnumerable<(string token, int index)> tokens)
