@@ -5,10 +5,14 @@ public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag)
 public record struct TaggedChunk(string        Text, string  Tag);
 public interface ISentenceEncoder
 {
+    public int MaxChunkLength { get; }
+
     public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default);
 
     public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
     {
+        if (chunkLength <= 0 || chunkLength > MaxChunkLength) throw new ArgumentException("ArcticXs only supports a chunk length up to " + MaxChunkLength);
+
         var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
 
         var encodedChunks = new EncodedChunk[chunks.Count];
@@ -39,7 +43,7 @@ public interface ISentenceEncoder
         }
         catch (Exception E)
         {
-            if ((E is OperationCanceledException || cancellationToken.IsCancellationRequested)  && keepResultsOnCancellation)
+            if ((E is OperationCanceledException || cancellationToken.IsCancellationRequested) && keepResultsOnCancellation)
             {
                 return encodedChunks.Where(c => c != null).ToArray();
             }
@@ -54,6 +58,8 @@ public interface ISentenceEncoder
 
     public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
     {
+        if (chunkLength <= 0 || chunkLength > MaxChunkLength) throw new ArgumentException("ArcticXs only supports a chunk length up to " + MaxChunkLength);
+
         var chunks = ISentenceEncoder.ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
            .Select(chunk => stripTags(chunk))
            .ToArray();
