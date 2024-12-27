@@ -12,6 +12,7 @@ public static class Main
 
         var queries = new[]
         {
+            "El Patrón Repositorio y sus falacias",
             "What is a snowflake?",
             "Where can I get the best tacos?",
         };
@@ -20,6 +21,7 @@ public static class Main
         {
             "A snowflake is a flake of snow, especially a feathery ice crystal, typically displaying delicate sixfold symmetry.",
             "If you're looking for great food, try Mexico City!",
+            "The Repository Pattern and its fallacies"
         };
 
         var encodedQueries   = sentenceEncoder.Encode(queries);
