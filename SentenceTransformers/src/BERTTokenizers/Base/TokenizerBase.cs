@@ -71,7 +71,7 @@ namespace BERTTokenizers.Base
             var untokens     = new List<string>();
             tokens.Reverse();
 
-            tokens.ForEach(token =>
+            foreach(var token in tokens)
             {
                 if (token.StartsWith("##"))
                 {
@@ -83,7 +83,7 @@ namespace BERTTokenizers.Base
                     untokens.Add(currentToken);
                     currentToken = string.Empty;
                 }
-            });
+            };
 
             untokens.Reverse();
 
@@ -94,17 +94,25 @@ namespace BERTTokenizers.Base
         {
             return texts
                .Select(text =>
-                {
-                    var tokenAndIndex = new[] { Tokens.Classification }
-                       .Concat(TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))).Take(maxTokens))
-                       .Concat(new[] { Tokens.Separation })
-                       .SelectMany(TokenizeSubwords).Take(maxTokens);
-                    var segmentIndexes = SegmentIndex(tokenAndIndex);
+               {
+                   var tokenAndIndex = new[] { Tokens.Classification }
+                      .Concat(TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))).Take(maxTokens))
+                      .Concat(new[] { Tokens.Separation })
+                      .SelectMany(TokenizeSubwords).Take(maxTokens);
+                   var segmentIndexes = SegmentIndex(tokenAndIndex);
 
-                    return tokenAndIndex.Zip(segmentIndexes, (tokenindex, segmentindex)
-                        => (tokenindex.Token, tokenindex.VocabularyIndex, segmentindex)).ToArray();
-                })
+                   return tokenAndIndex.Zip(segmentIndexes, (tokenindex, segmentindex)
+                       => (tokenindex.Token, tokenindex.VocabularyIndex, segmentindex)).ToArray();
+               })
                .ToList();
+        }
+
+        public List<string> TokenizeSimple(string text)
+        {
+            return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
+                                    .SelectMany(TokenizeSubwords)
+                                    .Select(ti => ti.Token)
+                                    .ToList();
         }
 
         private string RemoveRepeatedSpecialChars(string text)

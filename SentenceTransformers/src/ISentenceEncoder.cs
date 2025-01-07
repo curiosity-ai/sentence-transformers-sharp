@@ -1,4 +1,6 @@
-﻿namespace SentenceTransformers;
+﻿using BERTTokenizers.Base;
+
+namespace SentenceTransformers;
 
 public record struct EncodedChunk(string       Text, float[] Vector);
 public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);
@@ -7,11 +9,21 @@ public interface ISentenceEncoder
 {
     public int MaxChunkLength { get; }
 
+    public TokenizerBase Tokenizer { get; }
+
     public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default);
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
     {
-        if (chunkLength <= 0 || chunkLength > MaxChunkLength) throw new ArgumentException("ArcticXs only supports a chunk length up to " + MaxChunkLength);
+        if (chunkLength <= 0 || chunkLength > MaxChunkLength)
+        {
+            chunkLength = MaxChunkLength;
+        }
+
+        if (chunkOverlap < 0 || chunkOverlap > chunkLength)
+        {
+            chunkOverlap = chunkLength / 5;
+        }
 
         var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
 
@@ -58,9 +70,18 @@ public interface ISentenceEncoder
 
     public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
     {
-        if (chunkLength <= 0 || chunkLength > MaxChunkLength) throw new ArgumentException("ArcticXs only supports a chunk length up to " + MaxChunkLength);
+        if (chunkLength <= 0 || chunkLength > MaxChunkLength)
+        {
+            chunkLength = MaxChunkLength;
+        }
 
-        var chunks = ISentenceEncoder.ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
+        if (chunkOverlap < 0 || chunkOverlap > chunkLength)
+        {
+            chunkOverlap = chunkLength / 5;
+        }
+
+
+        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
            .Select(chunk => stripTags(chunk))
            .ToArray();
 
@@ -68,8 +89,6 @@ public interface ISentenceEncoder
 
         try
         {
-
-
             if (sequentially)
             {
                 var oneChunk = new string[1];
@@ -107,12 +126,13 @@ public interface ISentenceEncoder
         return encodedChunks;
     }
 
-    public static List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
+    public List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
     {
-        return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap, maxChunks);
+        //return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap, maxChunks);
+        return MergeSplits(Tokenizer.TokenizeSimple(text), separator, chunkLength, chunkOverlap, maxChunks);
     }
 
-    private static List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
+    private List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
     {
         const int separatorLength = 1;
         var       docs            = new List<string>();
@@ -147,7 +167,7 @@ public interface ISentenceEncoder
             if (docs.Count > maxChunks) return docs;
         }
 
-        string final_doc = string.Join(separator, currentDoc);
+        string final_doc = string.Join(separator, Tokenizer.Untokenize(currentDoc));
 
         if (!string.IsNullOrWhiteSpace(final_doc))
         {
