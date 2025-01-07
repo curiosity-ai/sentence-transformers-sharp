@@ -10,7 +10,7 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
 {
     private readonly SessionOptions   _sessionOptions;
     private readonly InferenceSession _session;
-    private readonly TokenizerBase    _tokenizer;
+    public TokenizerBase Tokenizer { get; }
     private readonly string[]         _outputNames;
 
     public int MaxChunkLength => 512;
@@ -19,8 +19,8 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
         _session        = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
-        _tokenizer      = new MiniLMTokenizer();
-        _tokenizer.SetMaxTokens(MaxChunkLength);
+        Tokenizer      = new MiniLMTokenizer();
+        Tokenizer.SetMaxTokens(MaxChunkLength);
         _outputNames = _session.OutputMetadata.Keys.ToArray();
     }
 
@@ -34,7 +34,7 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     {
         var numSentences = sentences.Length;
 
-        var encoded    = _tokenizer.Encode(sentences);
+        var encoded    = Tokenizer.Encode(sentences);
         var tokenCount = encoded.First().InputIds.Length;
 
         long[] flattenIDs           = new long[encoded.Sum(s => s.InputIds.Length)];
