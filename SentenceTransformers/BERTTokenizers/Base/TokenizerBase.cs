@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace BERTTokenizers.Base
@@ -95,7 +96,7 @@ namespace BERTTokenizers.Base
                .Select(text =>
                 {
                     var tokenAndIndex = new[] { Tokens.Classification }
-                       .Concat(RemoveRepeatedWords(TokenizeSentence(Unidecoder.FastUnidecode(text)).Take(maxTokens)))
+                       .Concat(TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))).Take(maxTokens))
                        .Concat(new[] { Tokens.Separation })
                        .SelectMany(TokenizeSubwords).Take(maxTokens);
                     var segmentIndexes = SegmentIndex(tokenAndIndex);
@@ -105,23 +106,24 @@ namespace BERTTokenizers.Base
                 })
                .ToList();
         }
-        private IEnumerable<string> RemoveRepeatedWords(IEnumerable<string> words)
-        {
-            string lastWord = null;
 
-            foreach (var word in words)
+        private string RemoveRepeatedSpecialChars(string text)
+        {
+            char last = '\0';
+            var sb = new StringBuilder(text.Length);
+            foreach (var c in text)
             {
-                if (lastWord is not null && word == lastWord)
+                if (c == last && CharacterClasses.IsSpecialChar(c))
                 {
                     continue;
                 }
                 else
                 {
-                    lastWord = word;
-                    yield return lastWord;
+                    last = c;
+                    sb.Append(c);
                 }
-
             }
+            return sb.ToString();
         }
 
         private IEnumerable<long> SegmentIndex(IEnumerable<(string token, int index)> tokens)

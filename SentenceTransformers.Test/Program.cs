@@ -12,8 +12,8 @@ public static class Main
 
         var queries = new[]
         {
-            "El Patrón Repositorio y                             sus falacias falacias",
-            "What is a snowflake?",
+            "El Patrón Repositorio y                             sus falacias¡¡¡¡¡",
+            "What is a snowflake???????",
             "Where can I get the best tacos?",
         };
 
