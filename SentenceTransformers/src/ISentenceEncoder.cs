@@ -25,7 +25,7 @@ public interface ISentenceEncoder
             chunkOverlap = chunkLength / 5;
         }
 
-        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks);
+        var chunks = ChunkTokens(text, ' ', chunkLength, chunkOverlap, maxChunks);
 
         var encodedChunks = new EncodedChunk[chunks.Count];
 
@@ -81,7 +81,7 @@ public interface ISentenceEncoder
         }
 
 
-        var chunks = ChunkText(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
+        var chunks = ChunkTokens(text, ' ', chunkLength, chunkOverlap, maxChunks: maxChunks)
            .Select(chunk => stripTags(chunk))
            .ToArray();
 
@@ -126,13 +126,12 @@ public interface ISentenceEncoder
         return encodedChunks;
     }
 
-    public List<string> ChunkText(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
+    public List<string> ChunkTokens(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
     {
-        //return MergeSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap, maxChunks);
-        return MergeSplits(Tokenizer.TokenizeSimple(text), separator, chunkLength, chunkOverlap, maxChunks);
+        return MergeTokenSplits(Tokenizer.TokenizeSimple(text), separator, chunkLength, chunkOverlap, maxChunks);
     }
 
-    private List<string> MergeSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
+    private List<string> MergeTokenSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
     {
         const int separatorLength = 1;
         var       docs            = new List<string>();
@@ -176,4 +175,55 @@ public interface ISentenceEncoder
 
         return docs;
     }
+
+    public static List<string> ChunkString(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
+    {
+        return MergeStringSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap, maxChunks);
+    }
+
+    private static List<string> MergeStringSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
+    {
+        const int separatorLength = 1;
+        var docs = new List<string>();
+        var currentDoc = new List<string>();
+        int total = 0;
+
+        foreach (string d in splits)
+        {
+            int len = d.Length;
+
+            if (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkLength)
+            {
+                if (currentDoc.Count > 0)
+                {
+                    string doc = string.Join(separator, currentDoc);
+
+                    if (!string.IsNullOrWhiteSpace(doc))
+                    {
+                        docs.Add(doc);
+                    }
+
+                    while (total > chunkOverlap || (total + len + (currentDoc.Count > 0 ? separatorLength : 0) > chunkLength && total > 0))
+                    {
+                        total -= currentDoc[0].Length + (currentDoc.Count > 1 ? separatorLength : 0);
+                        currentDoc.RemoveAt(0);
+                    }
+                }
+            }
+            currentDoc.Add(d);
+            total += len + (currentDoc.Count > 1 ? separatorLength : 0);
+
+            if (docs.Count > maxChunks) return docs;
+        }
+
+        string final_doc = string.Join(separator, currentDoc);
+
+        if (!string.IsNullOrWhiteSpace(final_doc))
+        {
+            docs.Add(final_doc);
+        }
+
+        return docs;
+    }
+
 }
