@@ -7,7 +7,7 @@ public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag)
 public record struct TaggedChunk(string        Text, string  Tag);
 public interface ISentenceEncoder
 {
-    public static int MaxChunkLength { get; }
+    public int MaxChunkLength { get; }
 
     public TokenizerBase Tokenizer { get; }
 

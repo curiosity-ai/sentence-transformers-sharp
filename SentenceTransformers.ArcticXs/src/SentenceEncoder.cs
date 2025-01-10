@@ -16,8 +16,9 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     public TokenizerBase Tokenizer { get; }
     private readonly string[]         _outputNames;
 
-    public int MaxChunkLength => 512;
-    
+    public static int GetMaxChunkLength() => 512;
+    public int MaxChunkLength => GetMaxChunkLength();
+
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();

@@ -13,7 +13,8 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     public TokenizerBase Tokenizer { get; }
     private readonly string[]         _outputNames;
 
-    public int MaxChunkLength => 512;
+    public static int GetMaxChunkLength() => 256; //The documentation is incorrect for MiniLM - the context window size is 256 - see https://stackoverflow.com/questions/75901231/max-seq-length-for-transformer-sentence-bert
+    public int MaxChunkLength => GetMaxChunkLength();
 
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
