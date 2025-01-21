@@ -68,24 +68,63 @@ namespace BERTTokenizers.Base
         public List<string> Untokenize(List<string> tokens)
         {
             var currentToken = string.Empty;
-            var untokens     = new List<string>();
+            var untokens = new List<string>();
             tokens.Reverse();
-
-            foreach(var token in tokens)
+            try
             {
-                if (token.StartsWith("##"))
-                {
-                    currentToken = token.Replace("##", "") + currentToken;
-                }
-                else
-                {
-                    currentToken = token + currentToken;
-                    untokens.Add(currentToken);
-                    currentToken = string.Empty;
-                }
-            };
 
-            untokens.Reverse();
+                foreach (var token in tokens)
+                {
+                    if (token.StartsWith("##"))
+                    {
+                        currentToken = token.Replace("##", "") + currentToken;
+                    }
+                    else
+                    {
+                        currentToken = token + currentToken;
+                        untokens.Add(currentToken);
+                        currentToken = string.Empty;
+                    }
+                };
+
+                untokens.Reverse();
+            }
+            finally
+            {
+                tokens.Reverse(); //Need to reverse the list back as we use it later
+            }
+
+            return untokens;
+        }
+
+        public List<string> Untokenize(List<TokenizedToken> tokens)
+        {
+            var currentToken = string.Empty;
+            var untokens = new List<string>();
+            tokens.Reverse();
+            try
+            {
+
+                foreach (var token in tokens)
+                {
+                    if (token.Token.StartsWith("##"))
+                    {
+                        currentToken = token.Token.Replace("##", "") + currentToken;
+                    }
+                    else
+                    {
+                        currentToken = (token.Original ?? "") + currentToken;
+                        untokens.Add(currentToken);
+                        currentToken = string.Empty;
+                    }
+                };
+
+                untokens.Reverse();
+            }
+            finally
+            {
+                tokens.Reverse(); //Need to reverse the list back as we use it later
+            }
 
             return untokens;
         }
@@ -115,9 +154,9 @@ namespace BERTTokenizers.Base
                                     .ToList();
         }
 
-        public List<TokenizedToken> Tokenize(string text)
+        public List<TokenizedToken> TokenizeRaw(string text)
         {
-            return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
+            return TokenizeSentence(text/*Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))*/)
                                     .SelectMany(TokenizeSubwords)
                                     .Select(ti => new TokenizedToken(ti.Token, ti.Original))
                                     .ToList();
@@ -205,7 +244,7 @@ namespace BERTTokenizers.Base
 
                 if (string.IsNullOrEmpty(prefix))
                 {
-                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], prefix));
+                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], remaining));
 
                     return tokens;
                 }

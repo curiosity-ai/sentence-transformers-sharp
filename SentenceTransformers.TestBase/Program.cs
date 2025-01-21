@@ -1,17 +1,24 @@
 ﻿using System.Diagnostics;
 using System.Text;
 using SentenceTransformers;
-
+Console.OutputEncoding = Encoding.UTF8;
 Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
 
 public static class Main
 {
     public static void RunSimple(ISentenceEncoder sentenceEncoder)
     {
-        var textToChunk = "A snowflake is a flake of snow, especially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
-
-        var chunks = sentenceEncoder.ChunkTokens(textToChunk, 10, 3);
-        foreach(var c in chunks)
+        var textToChunk = "A snowflake is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, especially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
+        Console.WriteLine(textToChunk);
+        var tokens = sentenceEncoder.Tokenizer.TokenizeRaw(textToChunk);
+        Console.WriteLine("\nMapped Tokens: ");
+        Console.WriteLine(string.Join(" ", tokens.Select(v => v.Token ?? "")));
+        Console.WriteLine("\nOriginal Tokens: "); 
+        Console.WriteLine(string.Join(" ", tokens.Select(v => v.Original ?? "")));
+        
+        var chunks = sentenceEncoder.ChunkTokens(textToChunk, 20, 3);
+        Console.WriteLine("\n\nChunks: ");
+        foreach (var c in chunks)
         {
             Console.WriteLine(c);
         }
