@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Resources\*.bin" />
+    <EmbeddedResource Include="Resources\*.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="HNSW" Version="24.9.52330" />
+    <PackageReference Include="Microsoft.ML" Version="4.0.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.20.1" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <ProjectReference Include="..\SentenceTransformers.MiniLMForTest\SentenceTransformers.MiniLMForTest.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+  </ItemGroup>
+</Project>

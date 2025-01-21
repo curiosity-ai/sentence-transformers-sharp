@@ -115,6 +115,15 @@ namespace BERTTokenizers.Base
                                     .ToList();
         }
 
+        public List<TokenizedToken> Tokenize(string text)
+        {
+            return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
+                                    .SelectMany(TokenizeSubwords)
+                                    .Select(ti => new TokenizedToken(ti.Token, ti.Original))
+                                    .ToList();
+        }
+
+
         private string RemoveRepeatedSpecialChars(string text)
         {
             char last = '\0';
@@ -134,12 +143,12 @@ namespace BERTTokenizers.Base
             return sb.ToString();
         }
 
-        private IEnumerable<long> SegmentIndex(IEnumerable<(string token, int index)> tokens)
+        private IEnumerable<long> SegmentIndex(IEnumerable<(string token, int index, string original)> tokens)
         {
             var segmentIndex   = 0;
             var segmentIndexes = new List<long>();
 
-            foreach (var (token, index) in tokens)
+            foreach (var (token, index, _) in tokens)
             {
                 segmentIndexes.Add(segmentIndex);
 
@@ -152,13 +161,13 @@ namespace BERTTokenizers.Base
             return segmentIndexes;
         }
 
-        private IEnumerable<(string Token, int VocabularyIndex)> TokenizeSubwords(string word)
+        private IEnumerable<(string Token, int VocabularyIndex, string Original)> TokenizeSubwords(string word)
         {
             if (word.Length > MaxWordLength) yield break; //Ignore words that are too long
 
             if (_vocabularyDict.TryGetValue(word, out var wordIndex))
             {
-                yield return (word, wordIndex);
+                yield return (word, wordIndex, word);
                 yield break;
             }
 
@@ -168,9 +177,9 @@ namespace BERTTokenizers.Base
             }
         }
 
-        private List<(string token, int index)> TokenizeSubwordsInner(string word)
+        private List<(string token, int index, string Original)> TokenizeSubwordsInner(string word)
         {
-            var tokens    = new List<(string token, int index)>();
+            var tokens    = new List<(string token, int index, string original)>();
             var remaining = word;
 
             while (!string.IsNullOrEmpty(remaining) && remaining.Length > 2)
@@ -196,7 +205,7 @@ namespace BERTTokenizers.Base
 
                 if (string.IsNullOrEmpty(prefix))
                 {
-                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown]));
+                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], prefix));
 
                     return tokens;
                 }
@@ -209,7 +218,7 @@ namespace BERTTokenizers.Base
 
                 if (remaining == remainingAfter)
                 {
-                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown]));
+                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], prefix));
 
                     return tokens;
                 }
@@ -218,12 +227,12 @@ namespace BERTTokenizers.Base
                     remaining = remainingAfter;
                 }
 
-                tokens.Add((prefix, _vocabularyDict[prefix]));
+                tokens.Add((prefix, _vocabularyDict[prefix], prefix));
             }
 
             if (!string.IsNullOrWhiteSpace(word) && !tokens.Any())
             {
-                tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown]));
+                tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], word));
             }
 
             return tokens;
