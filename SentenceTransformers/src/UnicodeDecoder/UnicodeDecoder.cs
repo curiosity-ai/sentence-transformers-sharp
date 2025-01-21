@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -10,7 +11,9 @@ public static class Unidecoder
     private const           int        MAX_STACKALLOC_BUFFER_SIZE = 16384;
     private static readonly int        MaxDecodedCharLength;
     private static          string[][] characters;
+    private static ConcurrentDictionary<char, bool> _exceptions  = new();
 
+    public static void RegisterException(char c) => _exceptions[c] = true;
 
     static Unidecoder()
     {
@@ -80,7 +83,7 @@ public static class Unidecoder
 
         foreach (var c in input)
         {
-            if (c < 0x80)
+            if (c < 0x80 || _exceptions.ContainsKey(c))
             {
                 stackBuffer[buffIdx++] = c;
                 continue;
