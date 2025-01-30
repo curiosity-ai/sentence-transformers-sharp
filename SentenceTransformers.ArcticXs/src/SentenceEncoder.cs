@@ -73,12 +73,19 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
         using var runOptions   = new RunOptions();
         using var registration = cancellationToken.Register(() => runOptions.Terminate = true);
 
-        using var output = _session.Run(input, _outputNames, runOptions);
+        try
+        {
+            using var output      = _session.Run(input, _outputNames, runOptions);
+            var       outputValue = (DenseTensor<float>)output.First().Value;
 
-        var outputValue = (DenseTensor<float>)output.First().Value;
+            cancellationToken.ThrowIfCancellationRequested();
 
-        cancellationToken.ThrowIfCancellationRequested();
-
-        return Normalize(outputValue);
+            return Normalize(outputValue);
+        }
+        catch (Microsoft.ML.OnnxRuntime.OnnxRuntimeException e)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
     }
 }

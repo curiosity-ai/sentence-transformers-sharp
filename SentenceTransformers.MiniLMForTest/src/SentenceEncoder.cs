@@ -70,28 +70,36 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
         using var runOptions   = new RunOptions();
         using var registration = cancellationToken.Register(() => runOptions.Terminate = true);
 
-        using var output = _session.Run(input, _outputNames, runOptions);
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var output_pooled            = MeanPooling((DenseTensor<float>)output.First().Value, encoded);
-        var output_pooled_normalized = Normalize(output_pooled);
-
-        const int embDim = 384;
-
-        var outputFlatten = new float[sentences.Length][];
-
-        for (int s = 0; s < sentences.Length; s++)
+        try
         {
-            var emb = new float[embDim];
-            outputFlatten[s] = emb;
+            using var output = _session.Run(input, _outputNames, runOptions);
 
-            for (int i = 0; i < embDim; i++)
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var output_pooled            = MeanPooling((DenseTensor<float>)output.First().Value, encoded);
+            var output_pooled_normalized = Normalize(output_pooled);
+
+            const int embDim = 384;
+
+            var outputFlatten = new float[sentences.Length][];
+
+            for (int s = 0; s < sentences.Length; s++)
             {
-                emb[i] = output_pooled_normalized[s, i];
-            }
-        }
+                var emb = new float[embDim];
+                outputFlatten[s] = emb;
 
-        return outputFlatten;
+                for (int i = 0; i < embDim; i++)
+                {
+                    emb[i] = output_pooled_normalized[s, i];
+                }
+            }
+
+            return outputFlatten;
+        }
+        catch (Microsoft.ML.OnnxRuntime.OnnxRuntimeException e)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
     }
 }
