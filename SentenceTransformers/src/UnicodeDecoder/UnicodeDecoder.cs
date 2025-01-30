@@ -8,10 +8,10 @@ namespace BERTTokenizers.Base;
 
 public static class Unidecoder
 {
-    private const           int        MAX_STACKALLOC_BUFFER_SIZE = 16384;
-    private static readonly int        MaxDecodedCharLength;
-    private static          string[][] characters;
-    private static ConcurrentDictionary<char, bool> _exceptions  = new();
+    private const           int                              MAX_STACKALLOC_BUFFER_SIZE = 16384;
+    private static readonly int                              MaxDecodedCharLength;
+    private static          string[][]                       characters;
+    private static          ConcurrentDictionary<char, bool> _exceptions = new();
 
     public static void RegisterException(char c) => _exceptions[c] = true;
 

@@ -10,17 +10,17 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
 {
     private readonly SessionOptions   _sessionOptions;
     private readonly InferenceSession _session;
-    public TokenizerBase Tokenizer { get; }
+    public           TokenizerBase    Tokenizer { get; }
     private readonly string[]         _outputNames;
 
     public static int GetMaxChunkLength() => 256; //The documentation is incorrect for MiniLM - the context window size is 256 - see https://stackoverflow.com/questions/75901231/max-seq-length-for-transformer-sentence-bert
-    public int MaxChunkLength => GetMaxChunkLength();
+    public        int MaxChunkLength      => GetMaxChunkLength();
 
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
         _session        = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
-        Tokenizer      = new MiniLMTokenizer();
+        Tokenizer       = new MiniLMTokenizer();
         Tokenizer.SetMaxTokens(MaxChunkLength);
         _outputNames = _session.OutputMetadata.Keys.ToArray();
     }

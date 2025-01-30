@@ -13,17 +13,17 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
 {
     private readonly SessionOptions   _sessionOptions;
     private readonly InferenceSession _session;
-    public TokenizerBase Tokenizer { get; }
+    public           TokenizerBase    Tokenizer { get; }
     private readonly string[]         _outputNames;
 
     public static int GetMaxChunkLength() => 512;
-    public int MaxChunkLength => GetMaxChunkLength();
+    public        int MaxChunkLength      => GetMaxChunkLength();
 
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
         _session        = new InferenceSession(ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "model.onnx"), _sessionOptions);
-        Tokenizer      = new ArcticTokenizer();
+        Tokenizer       = new ArcticTokenizer();
         Tokenizer.SetMaxTokens(MaxChunkLength);
         _outputNames = _session.OutputMetadata.Keys.ToArray();
     }

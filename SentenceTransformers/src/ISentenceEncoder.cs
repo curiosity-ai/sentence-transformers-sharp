@@ -151,7 +151,7 @@ public interface ISentenceEncoder
                         docs.Add(untokenized);
                     }
 
-                    while (currentDoc.Count > chunkOverlap || (currentDoc.Count + 1  > chunkLength && currentDoc.Count > 0))
+                    while (currentDoc.Count > chunkOverlap || (currentDoc.Count + 1 > chunkLength && currentDoc.Count > 0))
                     {
                         currentDoc.RemoveAt(0);
                     }
@@ -183,9 +183,9 @@ public interface ISentenceEncoder
     private static List<string> MergeStringSplits(IEnumerable<string> splits, char separator, int chunkLength, int chunkOverlap, int maxChunks)
     {
         const int separatorLength = 1;
-        var docs = new List<string>();
-        var currentDoc = new List<string>();
-        int total = 0;
+        var       docs            = new List<string>();
+        var       currentDoc      = new List<string>();
+        int       total           = 0;
 
         foreach (string d in splits)
         {

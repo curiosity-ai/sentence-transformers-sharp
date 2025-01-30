@@ -68,8 +68,9 @@ namespace BERTTokenizers.Base
         public List<string> Untokenize(List<string> tokens)
         {
             var currentToken = string.Empty;
-            var untokens = new List<string>();
+            var untokens     = new List<string>();
             tokens.Reverse();
+
             try
             {
 
@@ -85,7 +86,8 @@ namespace BERTTokenizers.Base
                         untokens.Add(currentToken);
                         currentToken = string.Empty;
                     }
-                };
+                }
+                ;
 
                 untokens.Reverse();
             }
@@ -100,8 +102,9 @@ namespace BERTTokenizers.Base
         public List<string> Untokenize(List<TokenizedToken> tokens)
         {
             var currentToken = string.Empty;
-            var untokens = new List<string>();
+            var untokens     = new List<string>();
             tokens.Reverse();
+
             try
             {
 
@@ -117,7 +120,8 @@ namespace BERTTokenizers.Base
                         untokens.Add(currentToken);
                         currentToken = string.Empty;
                     }
-                };
+                }
+                ;
 
                 untokens.Reverse();
             }
@@ -133,40 +137,41 @@ namespace BERTTokenizers.Base
         {
             return texts
                .Select(text =>
-               {
-                   var tokenAndIndex = new[] { Tokens.Classification }
-                      .Concat(TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))).Take(maxTokens))
-                      .Concat(new[] { Tokens.Separation })
-                      .SelectMany(TokenizeSubwords).Take(maxTokens);
-                   var segmentIndexes = SegmentIndex(tokenAndIndex);
+                {
+                    var tokenAndIndex = new[] { Tokens.Classification }
+                       .Concat(TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))).Take(maxTokens))
+                       .Concat(new[] { Tokens.Separation })
+                       .SelectMany(TokenizeSubwords).Take(maxTokens);
+                    var segmentIndexes = SegmentIndex(tokenAndIndex);
 
-                   return tokenAndIndex.Zip(segmentIndexes, (tokenindex, segmentindex)
-                       => (tokenindex.Token, tokenindex.VocabularyIndex, segmentindex)).ToArray();
-               })
+                    return tokenAndIndex.Zip(segmentIndexes, (tokenindex, segmentindex)
+                        => (tokenindex.Token, tokenindex.VocabularyIndex, segmentindex)).ToArray();
+                })
                .ToList();
         }
 
         public List<string> TokenizeSimple(string text)
         {
             return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
-                                    .SelectMany(TokenizeSubwords)
-                                    .Select(ti => ti.Token)
-                                    .ToList();
+               .SelectMany(TokenizeSubwords)
+               .Select(ti => ti.Token)
+               .ToList();
         }
 
         public List<TokenizedToken> TokenizeRaw(string text)
         {
-            return TokenizeSentence(text/*Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))*/)
-                                    .SelectMany(TokenizeSubwords)
-                                    .Select(ti => new TokenizedToken(ti.Token, ti.Original))
-                                    .ToList();
+            return TokenizeSentence(text /*Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))*/)
+               .SelectMany(TokenizeSubwords)
+               .Select(ti => new TokenizedToken(ti.Token, ti.Original))
+               .ToList();
         }
 
 
         private string RemoveRepeatedSpecialChars(string text)
         {
             char last = '\0';
-            var sb = new StringBuilder(text.Length);
+            var  sb   = new StringBuilder(text.Length);
+
             foreach (var c in text)
             {
                 if (c == last && CharacterClasses.IsSpecialChar(c))

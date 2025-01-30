@@ -13,11 +13,12 @@ public static class Main
         var tokens = sentenceEncoder.Tokenizer.TokenizeRaw(textToChunk);
         Console.WriteLine("\nMapped Tokens: ");
         Console.WriteLine(string.Join(" ", tokens.Select(v => v.Token ?? "")));
-        Console.WriteLine("\nOriginal Tokens: "); 
+        Console.WriteLine("\nOriginal Tokens: ");
         Console.WriteLine(string.Join(" ", tokens.Select(v => v.Original ?? "")));
-        
+
         var chunks = sentenceEncoder.ChunkTokens(textToChunk, 20, 3);
         Console.WriteLine("\n\nChunks: ");
+
         foreach (var c in chunks)
         {
             Console.WriteLine(c);
@@ -26,8 +27,6 @@ public static class Main
         Console.ReadLine();
 
         Environment.Exit(0);
-
-
 
 
         var queries = new[]
