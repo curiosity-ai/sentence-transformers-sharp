@@ -143,9 +143,7 @@ public interface ISentenceEncoder
             {
                 if (currentDoc.Count > 0)
                 {
-                    string doc = string.Join(' ', currentDoc);
-
-                    if (!string.IsNullOrWhiteSpace(doc))
+                    if (currentDoc.Any(c => !string.IsNullOrWhiteSpace(c.Original)))
                     {
                         var untokenized = string.Join(' ', Tokenizer.Untokenize(currentDoc));
                         docs.Add(untokenized);
