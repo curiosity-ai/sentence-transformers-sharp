@@ -8,8 +8,11 @@ public static class Main
 {
     public static void RunSimple(ISentenceEncoder sentenceEncoder)
     {
-        var textToChunk = "A snowflake is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, especially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
+        var textToChunk = "A snowflake is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
+        //var textToChunk = "Activités ";
+
         Console.WriteLine(textToChunk);
+        Console.WriteLine($"Unidecoded: {BERTTokenizers.Base.Unidecoder.FastUnidecode(textToChunk)}");
         var tokens = sentenceEncoder.Tokenizer.TokenizeRaw(textToChunk);
         Console.WriteLine("\nMapped Tokens: ");
         Console.WriteLine(string.Join(" ", tokens.Select(v => v.Token ?? "")));
@@ -20,6 +23,14 @@ public static class Main
         Console.WriteLine("\n\nChunks: ");
 
         foreach (var c in chunks)
+        {
+            Console.WriteLine(c);
+        }
+
+        var correctedChunks = sentenceEncoder.SplitOriginalBasedOnChunks(textToChunk, chunks);
+        Console.WriteLine("\n\nCorrected Chunks: ");
+
+        foreach (var c in correctedChunks)
         {
             Console.WriteLine(c);
         }

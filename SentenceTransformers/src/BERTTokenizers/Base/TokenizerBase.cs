@@ -121,7 +121,6 @@ namespace BERTTokenizers.Base
                         currentToken = string.Empty;
                     }
                 }
-                ;
 
                 untokens.Reverse();
             }
@@ -160,14 +159,14 @@ namespace BERTTokenizers.Base
 
         public List<TokenizedToken> TokenizeRaw(string text)
         {
-            return TokenizeSentence(text /*Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))*/)
+            return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
                .SelectMany(TokenizeSubwords)
                .Select(ti => new TokenizedToken(ti.Token, ti.Original))
                .ToList();
         }
 
 
-        private string RemoveRepeatedSpecialChars(string text)
+        internal static string RemoveRepeatedSpecialChars(string text)
         {
             char last = '\0';
             var  sb   = new StringBuilder(text.Length);
@@ -228,8 +227,8 @@ namespace BERTTokenizers.Base
 
             while (!string.IsNullOrEmpty(remaining) && remaining.Length > 2)
             {
-                string prefix        = null;
-                int    subwordLength = remaining.Length;
+                string prefix = null;
+                int subwordLength = remaining.Length;
 
                 int stopLimit = remaining.StartsWith("##", StringComparison.Ordinal) ? 2 : 1;
 
@@ -249,7 +248,7 @@ namespace BERTTokenizers.Base
 
                 if (string.IsNullOrEmpty(prefix))
                 {
-                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], remaining));
+                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], TrimStartingHashes(remaining)));
 
                     return tokens;
                 }
@@ -262,7 +261,7 @@ namespace BERTTokenizers.Base
 
                 if (remaining == remainingAfter)
                 {
-                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], prefix));
+                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], TrimStartingHashes(prefix)));
 
                     return tokens;
                 }
@@ -271,7 +270,7 @@ namespace BERTTokenizers.Base
                     remaining = remainingAfter;
                 }
 
-                tokens.Add((prefix, _vocabularyDict[prefix], prefix));
+                tokens.Add((prefix, _vocabularyDict[prefix], TrimStartingHashes(prefix)));
             }
 
             if (!string.IsNullOrWhiteSpace(word) && !tokens.Any())
@@ -280,6 +279,11 @@ namespace BERTTokenizers.Base
             }
 
             return tokens;
+        }
+
+        private static string TrimStartingHashes(string prefix)
+        {
+            return prefix.StartsWith("##") ? prefix.Substring(2) : prefix;
         }
 
         private static string ReplaceFirst(string text, string search, string replace)

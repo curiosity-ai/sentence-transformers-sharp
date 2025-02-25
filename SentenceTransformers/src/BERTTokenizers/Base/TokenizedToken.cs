@@ -10,5 +10,10 @@
 
         public string Token    { get; set; }
         public string Original { get; set; }
+
+        public override string ToString()
+        {
+            return Token;
+        }
     }
 }
