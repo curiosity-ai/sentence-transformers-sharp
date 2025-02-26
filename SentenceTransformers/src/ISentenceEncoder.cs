@@ -257,7 +257,7 @@ public interface ISentenceEncoder
 
     private List<AlignedString> MergeTokenSplitsAligned(List<TokenizedTokenAligned> splits, int chunkLength, int chunkOverlap, int maxChunks)
     {
-        var docs = new List<AlignedString>();
+        var docs       = new List<AlignedString>();
         var currentDoc = new List<TokenizedTokenAligned>();
 
         foreach (var d in splits)

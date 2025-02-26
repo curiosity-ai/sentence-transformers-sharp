@@ -1,4 +1,5 @@
 ﻿using BERTTokenizers.Helpers;
+using Mosaik.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -10,6 +11,8 @@ namespace BERTTokenizers.Base
 {
     public abstract class TokenizerBase
     {
+        internal static readonly ObjectPool<List<int>> AlignmentListPool = new ObjectPool<List<int>>(() => new List<int>(), Environment.ProcessorCount, list => { list.Clear(); if (list.Capacity > 65_000) { list.Capacity = 1024; } });
+
         protected readonly List<string>            _vocabulary;
         protected readonly Dictionary<string, int> _vocabularyDict;
 
@@ -202,10 +205,16 @@ namespace BERTTokenizers.Base
         {
             var alignedRemoved = RemoveRepeatedSpecialCharsWithAlignment(text);
             var unidecoderRemoved = Unidecoder.FastUnidecodeWithAlignment(alignedRemoved.text, alignedRemoved.alignment);
-            return TokenizeSentenceAligned(unidecoderRemoved.text, unidecoderRemoved.alignment)
+            AlignmentListPool.Return(alignedRemoved.alignment);
+
+            var result = TokenizeSentenceAligned(unidecoderRemoved.text, unidecoderRemoved.alignment)
                .SelectMany(TokenizeSubwordsAligned)
                .Select(ti => new TokenizedTokenAligned(ti.Token.Value, ti.Original.Value, ti.Token.Start, ti.Token.ApproximateEnd))
                .ToList();
+            
+            AlignmentListPool.Return(unidecoderRemoved.alignment);
+
+            return result;
         }
 
 
@@ -233,7 +242,7 @@ namespace BERTTokenizers.Base
         {
             char last = '\0';
             var sb = new StringBuilder(text.Length);
-            var alignment = new List<int>(text.Length);
+            var alignment = AlignmentListPool.Rent();
 
             int p = 0;
             foreach (var c in text)

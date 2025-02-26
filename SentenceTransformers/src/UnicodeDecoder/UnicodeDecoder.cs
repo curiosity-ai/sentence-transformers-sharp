@@ -187,7 +187,7 @@ public static class Unidecoder
         bool noConversionNeeded = true;
         Span<char> stackBuffer = stackalloc char[neededBufferSize];
         
-        var newAlignment = new List<int>(neededBufferSize);
+        var newAlignment = TokenizerBase.AlignmentListPool.Rent();
 
         int buffIdx = 0;
 
@@ -246,7 +246,7 @@ public static class Unidecoder
 
         var sb = new StringBuilder(input.Length * 2);
 
-        var newAlignment = new List<int>(alignment.Count);
+        var newAlignment = TokenizerBase.AlignmentListPool.Rent();
 
         int buffIdx = 0;
 
