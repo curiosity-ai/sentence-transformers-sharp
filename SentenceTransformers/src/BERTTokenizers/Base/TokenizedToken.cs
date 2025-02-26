@@ -4,7 +4,7 @@
     {
         public TokenizedToken(string token, string original)
         {
-            Token    = token;
+            Token = token;
             Original = original;
         }
 

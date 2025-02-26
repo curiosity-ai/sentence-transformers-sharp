@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Text;
+using BERTTokenizers.Base;
 using SentenceTransformers;
 Console.OutputEncoding = Encoding.UTF8;
 Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
@@ -8,36 +9,60 @@ public static class Main
 {
     public static void RunSimple(ISentenceEncoder sentenceEncoder)
     {
-        var textToChunk = "A snowflake is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
-        //var textToChunk = "Activités ";
+        var textToChunk = "A snowflake ¿¿¿¿ is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
+        //var textToChunk = "test ¿¿¿¿ special ⁑⁑⁑ ⁑ ⁑ ⁑, ééé end";
+        ////var textToChunk = "Activités ";
+        //Console.WriteLine($"Original:      {textToChunk}");
+        //Console.Write("Start:         "); PrintAlignment(textToChunk, Enumerable.Range(0, textToChunk.Length).ToList());
+        //var data = TokenizerBase.RemoveRepeatedSpecialCharsWithAlignment(textToChunk);
+        //Console.Write("Special chars: ");  PrintAlignment(data.text, data.alignment);
+        //var data2 = BERTTokenizers.Base.Unidecoder.FastUnidecodeWithAlignment(data.text, data.alignment);
+        //Console.Write("Unidecoder:    "); PrintAlignment(data2.text, data2.alignment);
+        //var data3 = BERTTokenizers.Base.Unidecoder.CompleteUnidecodeWithAlignment(data.text, data.alignment);
+        //Console.Write("Unidecoder:    "); PrintAlignment(data3.text, data3.alignment);
 
-        Console.WriteLine(textToChunk);
-        Console.WriteLine($"Unidecoded: {BERTTokenizers.Base.Unidecoder.FastUnidecode(textToChunk)}");
-        var tokens = sentenceEncoder.Tokenizer.TokenizeRaw(textToChunk);
-        Console.WriteLine("\nMapped Tokens: ");
-        Console.WriteLine(string.Join(" ", tokens.Select(v => v.Token ?? "")));
-        Console.WriteLine("\nOriginal Tokens: ");
-        Console.WriteLine(string.Join(" ", tokens.Select(v => v.Original ?? "")));
+        //var data4 = TokenizerBase.SplitAligned(data3.text, new string[] { " ", "   ", "\r\n" }, data3.alignment);
+        //Console.Write("Tokenized:     "); Console.WriteLine(string.Join(" ", data4.Select(t => t.ToString())));
 
-        var chunks = sentenceEncoder.ChunkTokens(textToChunk, 20, 3);
-        Console.WriteLine("\n\nChunks: ");
+        //var data5 = sentenceEncoder.Tokenizer.TokenizeRawAligned(textToChunk);
+        //Console.WriteLine("\nMapped Tokens: ");
+        //Console.WriteLine(string.Join(" ", data5.Select(v => v.Token ?? "")));
+        //Console.WriteLine("\nOriginal Tokens: ");
+        //Console.WriteLine(string.Join(" ", data5.Select(v => v.Original ?? "")));
+        //return;
 
-        foreach (var c in chunks)
-        {
-            Console.WriteLine(c);
-        }
 
-        var correctedChunks = sentenceEncoder.SplitOriginalBasedOnChunks(textToChunk, chunks);
-        Console.WriteLine("\n\nCorrected Chunks: ");
+        //Console.WriteLine(textToChunk);
+        //Console.WriteLine($"Unidecoded: {BERTTokenizers.Base.Unidecoder.FastUnidecode(textToChunk)}");
+        //var tokens = sentenceEncoder.Tokenizer.TokenizeRaw(textToChunk);
+        //Console.WriteLine("\nMapped Tokens: ");
+        //Console.WriteLine(string.Join(" ", tokens.Select(v => v.Token ?? "")));
+        //Console.WriteLine("\nOriginal Tokens: ");
+        //Console.WriteLine(string.Join(" ", tokens.Select(v => v.Original ?? "")));
 
-        foreach (var c in correctedChunks)
-        {
-            Console.WriteLine(c);
-        }
+        //var chunks = sentenceEncoder.ChunkTokens(textToChunk, 20, 3);
+        //Console.WriteLine("\n\nChunks: ");
 
-        Console.ReadLine();
+        //var c = 0;
+        //foreach (var chunk in chunks)
+        //{
+        //    Console.WriteLine($"Chunk {c}: {chunk}");
+        //    c++;
+        //}
 
-        Environment.Exit(0);
+        //var correctedChunks = sentenceEncoder.SplitOriginalBasedOnChunks(textToChunk, chunks);
+        //Console.WriteLine("\n\nCorrected Chunks: ");
+
+        //c = 0;
+        //foreach (var chunk in correctedChunks)
+        //{
+        //    Console.WriteLine($"Chunk {c}: {chunk}");
+        //    c++;
+        //}
+
+        ////Console.ReadLine();
+
+        //Environment.Exit(0);
 
 
         var queries = new[]
@@ -79,6 +104,16 @@ public static class Main
 
         Console.WriteLine("\n\n\n");
 
+        Run(sentenceEncoder);
+    }
+
+    private static void PrintAlignment(string text, List<int> alignment)
+    {
+        for(int i = 0; i < text.Length; i++)
+        {
+            Console.Write($"{text[i]}[{alignment[i]}] ");
+        }
+        Console.WriteLine();
     }
 
     public static void Run(ISentenceEncoder sentenceEncoder)
@@ -218,7 +253,7 @@ Air travel is also safer than it has ever been, with modern aircraft equipped wi
 In addition, airlines offer a variety of classes and amenities, from economy class to first-class cabins, providing passengers with a comfortable and luxurious travel experience.
 With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life.";
 
-        var answerTest = sentenceEncoder.ChunkAndEncode(longSentence);
+        var answerTest = sentenceEncoder.ChunkAndEncodeAligned(longSentence);
 
         var questions = new[]
         {
