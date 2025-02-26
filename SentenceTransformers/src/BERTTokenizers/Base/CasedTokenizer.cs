@@ -8,12 +8,20 @@ namespace BERTTokenizers.Base
 {
     public abstract class CasedTokenizer : TokenizerBase
     {
-        protected CasedTokenizer(Stream vocabularyFile) : base(vocabularyFile) { }
+        private static readonly char[] delimiters = ".,;:\\/?!#$%()=+-*\"'–_`<>&^@{}[]|~'".ToArray();
+        private static readonly string[] space_delimiters = new string[] { " ", "   ", "\r\n" };
 
+        protected CasedTokenizer(Stream vocabularyFile) : base(vocabularyFile) { }
+        
+     
         protected override IEnumerable<string> TokenizeSentence(string text)
         {
-            return text.Split(new string[] { " ", "   ", "\r\n" }, StringSplitOptions.None)
-               .SelectMany(o => o.SplitAndKeep(".,;:\\/?!#$%()=+-*\"'–_`<>&^@{}[]|~'".ToArray()));
+            return text.Split(space_delimiters, StringSplitOptions.None).SelectMany(o => o.SplitAndKeep(delimiters));
+        }
+
+        protected override IEnumerable<AlignedString> TokenizeSentenceAligned(string text, List<int> alignment)
+        {
+            return SplitAligned(text, space_delimiters, alignment).SelectMany(o => StringExtension.SplitAndKeepRaw(o, delimiters));
         }
     }
 }

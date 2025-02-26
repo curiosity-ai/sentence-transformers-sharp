@@ -1,4 +1,5 @@
 ﻿using BERTTokenizers.Helpers;
+using Mosaik.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -10,6 +11,8 @@ namespace BERTTokenizers.Base
 {
     public abstract class TokenizerBase
     {
+        internal static readonly ObjectPool<List<int>> AlignmentListPool = new ObjectPool<List<int>>(() => new List<int>(), Environment.ProcessorCount, list => { list.Clear(); if (list.Capacity > 65_000) { list.Capacity = 1024; } });
+
         protected readonly List<string>            _vocabulary;
         protected readonly Dictionary<string, int> _vocabularyDict;
 
@@ -102,7 +105,7 @@ namespace BERTTokenizers.Base
         public List<string> Untokenize(List<TokenizedToken> tokens)
         {
             var currentToken = string.Empty;
-            var untokens     = new List<string>();
+            var untokens = new List<string>();
             tokens.Reverse();
 
             try
@@ -121,7 +124,39 @@ namespace BERTTokenizers.Base
                         currentToken = string.Empty;
                     }
                 }
-                ;
+
+                untokens.Reverse();
+            }
+            finally
+            {
+                tokens.Reverse(); //Need to reverse the list back as we use it later
+            }
+
+            return untokens;
+        }
+
+        public List<AlignedString> Untokenize(List<TokenizedTokenAligned> tokens)
+        {
+            var currentToken = string.Empty;
+            var untokens = new List<AlignedString>();
+            tokens.Reverse();
+
+            try
+            {
+
+                foreach (var token in tokens)
+                {
+                    if (token.Token.StartsWith("##"))
+                    {
+                        currentToken = token.Token.Replace("##", "") + currentToken;
+                    }
+                    else
+                    {
+                        currentToken = (token.Original ?? "") + currentToken;
+                        untokens.Add(new AlignedString(currentToken, token.Start, token.Start, token.Start + currentToken.Length));
+                        currentToken = string.Empty;
+                    }
+                }
 
                 untokens.Reverse();
             }
@@ -160,17 +195,33 @@ namespace BERTTokenizers.Base
 
         public List<TokenizedToken> TokenizeRaw(string text)
         {
-            return TokenizeSentence(text /*Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text))*/)
+            return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
                .SelectMany(TokenizeSubwords)
                .Select(ti => new TokenizedToken(ti.Token, ti.Original))
                .ToList();
         }
 
+        public List<TokenizedTokenAligned> TokenizeRawAligned(string text)
+        {
+            var alignedRemoved = RemoveRepeatedSpecialCharsWithAlignment(text);
+            var unidecoderRemoved = Unidecoder.FastUnidecodeWithAlignment(alignedRemoved.text, alignedRemoved.alignment);
+            AlignmentListPool.Return(alignedRemoved.alignment);
 
-        private string RemoveRepeatedSpecialChars(string text)
+            var result = TokenizeSentenceAligned(unidecoderRemoved.text, unidecoderRemoved.alignment)
+               .SelectMany(TokenizeSubwordsAligned)
+               .Select(ti => new TokenizedTokenAligned(ti.Token.Value, ti.Original.Value, ti.Token.Start, ti.Token.ApproximateEnd))
+               .ToList();
+            
+            AlignmentListPool.Return(unidecoderRemoved.alignment);
+
+            return result;
+        }
+
+
+        public static string RemoveRepeatedSpecialChars(string text)
         {
             char last = '\0';
-            var  sb   = new StringBuilder(text.Length);
+            var sb = new StringBuilder(text.Length);
 
             foreach (var c in text)
             {
@@ -185,6 +236,31 @@ namespace BERTTokenizers.Base
                 }
             }
             return sb.ToString();
+        }
+
+        public static (string text, List<int> alignment) RemoveRepeatedSpecialCharsWithAlignment(string text)
+        {
+            char last = '\0';
+            var sb = new StringBuilder(text.Length);
+            var alignment = AlignmentListPool.Rent();
+
+            int p = 0;
+            foreach (var c in text)
+            {
+                if (c == last && CharacterClasses.IsSpecialChar(c))
+                {
+                    p++;
+                    continue;
+                }
+                else
+                {
+                    last = c;
+                    sb.Append(c);
+                    alignment.Add(p);
+                    p++;
+                }
+            }
+            return (sb.ToString(), alignment);
         }
 
         private IEnumerable<long> SegmentIndex(IEnumerable<(string token, int index, string original)> tokens)
@@ -223,13 +299,13 @@ namespace BERTTokenizers.Base
 
         private List<(string token, int index, string Original)> TokenizeSubwordsInner(string word)
         {
-            var tokens    = new List<(string token, int index, string original)>();
+            var tokens = new List<(string token, int index, string original)>();
             var remaining = word;
 
             while (!string.IsNullOrEmpty(remaining) && remaining.Length > 2)
             {
-                string prefix        = null;
-                int    subwordLength = remaining.Length;
+                string prefix = null;
+                int subwordLength = remaining.Length;
 
                 int stopLimit = remaining.StartsWith("##", StringComparison.Ordinal) ? 2 : 1;
 
@@ -249,7 +325,7 @@ namespace BERTTokenizers.Base
 
                 if (string.IsNullOrEmpty(prefix))
                 {
-                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], remaining));
+                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], TrimStartingHashes(remaining)));
 
                     return tokens;
                 }
@@ -262,7 +338,7 @@ namespace BERTTokenizers.Base
 
                 if (remaining == remainingAfter)
                 {
-                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], prefix));
+                    tokens.Add((Tokens.Unknown, _vocabularyDict[Tokens.Unknown], TrimStartingHashes(prefix)));
 
                     return tokens;
                 }
@@ -271,7 +347,7 @@ namespace BERTTokenizers.Base
                     remaining = remainingAfter;
                 }
 
-                tokens.Add((prefix, _vocabularyDict[prefix], prefix));
+                tokens.Add((prefix, _vocabularyDict[prefix], TrimStartingHashes(prefix)));
             }
 
             if (!string.IsNullOrWhiteSpace(word) && !tokens.Any())
@@ -280,6 +356,89 @@ namespace BERTTokenizers.Base
             }
 
             return tokens;
+        }
+
+        private IEnumerable<(AlignedString Token, int VocabularyIndex, AlignedString Original)> TokenizeSubwordsAligned(AlignedString word)
+        {
+            if (word.Value.Length > MaxWordLength) yield break; //Ignore words that are too long
+
+            if (_vocabularyDict.TryGetValue(word.Value, out var wordIndex))
+            {
+                yield return (word, wordIndex, word);
+                yield break;
+            }
+
+            foreach (var inner in TokenizeSubwordsInnerAligned(word))
+            {
+                yield return inner;
+            }
+        }
+
+        private List<(AlignedString token, int index, AlignedString Original)> TokenizeSubwordsInnerAligned(AlignedString word)
+        {
+            var tokens = new List<(AlignedString token, int index, AlignedString original)>();
+            var remaining = word.Value;
+            var start = word.Start;
+
+            while (!string.IsNullOrEmpty(remaining) && remaining.Length > 2)
+            {
+                string prefix = null;
+                int subwordLength = remaining.Length;
+
+                int stopLimit = remaining.StartsWith("##", StringComparison.Ordinal) ? 2 : 1;
+
+                while (subwordLength >= stopLimit) // was initially 2, which prevents using "character encoding"
+                {
+                    string subword = remaining.Substring(0, subwordLength);
+
+                    if (!_vocabularyDict.ContainsKey(subword))
+                    {
+                        subwordLength--;
+                        continue;
+                    }
+
+                    prefix = subword;
+                    break;
+                }
+
+                if (string.IsNullOrEmpty(prefix))
+                {
+                    tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1), _vocabularyDict[Tokens.Unknown], new AlignedString(TrimStartingHashes(remaining), start, start, start + 1)));
+
+                    return tokens;
+                }
+
+                //var regex = new Regex(prefix);
+                //remaining = regex.Replace(remaining, "##", 1);
+
+
+                var remainingAfter = ReplaceFirst(remaining, prefix, "##");
+
+                if (remaining == remainingAfter)
+                {
+                    tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1), _vocabularyDict[Tokens.Unknown], new AlignedString(TrimStartingHashes(prefix), start, start, start + 1)));
+
+                    return tokens;
+                }
+                else
+                {
+                    remaining = remainingAfter;
+                }
+
+                tokens.Add((new AlignedString(prefix, start, start, start + prefix.Length), _vocabularyDict[prefix], new AlignedString(TrimStartingHashes(prefix), start, start, start + prefix.Length)));
+            }
+
+            if (!string.IsNullOrWhiteSpace(word.Value) && !tokens.Any())
+            {
+                tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1), _vocabularyDict[Tokens.Unknown], word));
+            }
+
+            return tokens;
+        }
+
+        private static string TrimStartingHashes(string prefix)
+        {
+            return prefix.StartsWith("##") ? prefix.Substring(2) : prefix;
         }
 
         private static string ReplaceFirst(string text, string search, string replace)
@@ -293,6 +452,49 @@ namespace BERTTokenizers.Base
             return text.Substring(0, pos) + replace + text.Substring(pos + search.Length);
         }
 
+        public static List<AlignedString> SplitAligned(ReadOnlySpan<char> text, string[] space_delimiters, List<int> alignment)
+        {
+            var tokens = new List<AlignedString>();
+            
+            if (text.Length == 0)
+            {
+                tokens.Add(new AlignedString("", 0, 0, 0));
+                return tokens;
+            }
+
+            var start = 0;
+            while(true)
+            {
+                var minNextSeparator = int.MaxValue;
+                var nextStart = 0;
+                foreach(var s in space_delimiters)
+                {
+                    var nextSeparator = text.Slice(start).IndexOf(s);
+                    if (nextSeparator < 0) continue;
+                    if (nextSeparator < minNextSeparator)
+                    {
+                        minNextSeparator = nextSeparator;
+                        nextStart = s.Length;
+                    }
+                }
+
+                if (minNextSeparator < int.MaxValue)
+                {
+                    tokens.Add(new AlignedString(text.Slice(start, minNextSeparator).ToString(), alignment[start], alignment[start], alignment[start] + minNextSeparator));
+                    start += minNextSeparator+nextStart;
+                    continue;
+                }
+                else
+                {
+                    tokens.Add(new AlignedString(text.Slice(start).ToString(), alignment[start], alignment[start], alignment[start] + (text.Length - start)));
+                    break;
+                }
+            }
+            return tokens;
+        }
+
+
         protected abstract IEnumerable<string> TokenizeSentence(string text);
+        protected abstract IEnumerable<AlignedString> TokenizeSentenceAligned(string text, List<int> alignment);
     }
 }

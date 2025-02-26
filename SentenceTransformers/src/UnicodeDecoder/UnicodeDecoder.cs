@@ -70,6 +70,12 @@ public static class Unidecoder
         {
             return "";
         }
+
+        if (input.All(static x => x < 0x80))
+        {
+            return input;
+        }
+
         var neededBufferSize = input.Length * MaxDecodedCharLength + 1;
 
         if (neededBufferSize >= MAX_STACKALLOC_BUFFER_SIZE)
@@ -123,7 +129,7 @@ public static class Unidecoder
             return "";
         }
 
-        if (input.All(x => x < 0x80))
+        if (input.All(static x => x < 0x80))
         {
             return input;
         }
@@ -157,5 +163,127 @@ public static class Unidecoder
         }
 
         return sb.ToString();
+    }
+
+    public static (string text, List<int> alignment) FastUnidecodeWithAlignment(string input, List<int> alignment)
+    {
+        if (string.IsNullOrEmpty(input))
+        {
+            return ("", alignment);
+        }
+
+        if (input.All(static x => x < 0x80))
+        {
+            return (input, alignment);
+        }
+
+        var neededBufferSize = input.Length * MaxDecodedCharLength + 1;
+
+        if (neededBufferSize >= MAX_STACKALLOC_BUFFER_SIZE)
+        {
+            return CompleteUnidecodeWithAlignment(input, alignment);
+        }
+
+        bool noConversionNeeded = true;
+        Span<char> stackBuffer = stackalloc char[neededBufferSize];
+        
+        var newAlignment = TokenizerBase.AlignmentListPool.Rent();
+
+        int buffIdx = 0;
+
+        for (int i = 0; i < input.Length; i++)
+        {
+            char c = input[i];
+            var p = alignment[i];
+
+            if (c < 0x80 || _exceptions.ContainsKey(c))
+            {
+                stackBuffer[buffIdx++] = c;
+                newAlignment.Add(p);
+                continue;
+            }
+            noConversionNeeded = false;
+            var high = c >> 8;
+
+            if (high >= characters.Length)
+            {
+                continue;
+            }
+            var bytes = characters[high];
+
+            if (bytes == null)
+            {
+                continue;
+            }
+            var str = bytes[c & 0xff];
+
+            foreach (char ch in str)
+            {
+                stackBuffer[buffIdx++] = ch;
+                newAlignment.Add(p);
+            }
+        }
+
+        if (noConversionNeeded)
+        {
+            return (input, alignment);
+        }
+
+        return (new string(stackBuffer[0..buffIdx]), newAlignment);
+    }
+
+    public static (string text, List<int> alignment) CompleteUnidecodeWithAlignment(string input, List<int> alignment)
+    {
+        if (string.IsNullOrEmpty(input))
+        {
+            return ("", alignment);
+        }
+
+        if (input.All(static x => x < 0x80))
+        {
+            return (input, alignment);
+        }
+
+        var sb = new StringBuilder(input.Length * 2);
+
+        var newAlignment = TokenizerBase.AlignmentListPool.Rent();
+
+        int buffIdx = 0;
+
+        for (int i = 0; i < input.Length; i++)
+        {
+            char c = input[i];
+            var p = alignment[i];
+
+            if (c < 0x80 || _exceptions.ContainsKey(c))
+            {
+                sb.Append(c);
+                newAlignment.Add(p);
+                continue;
+            }
+
+            var high = c >> 8;
+
+            if (high >= characters.Length)
+            {
+                continue;
+            }
+
+            var bytes = characters[high];
+
+            if (bytes == null)
+            {
+                continue;
+            }
+            var str = bytes[c & 0xff];
+
+            foreach (char ch in str)
+            {
+                sb.Append(ch);
+                newAlignment.Add(p);
+            }
+        }
+
+        return (sb.ToString(), newAlignment);
     }
 }

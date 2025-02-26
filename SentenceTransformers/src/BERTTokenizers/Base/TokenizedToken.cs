@@ -4,11 +4,16 @@
     {
         public TokenizedToken(string token, string original)
         {
-            Token    = token;
+            Token = token;
             Original = original;
         }
 
         public string Token    { get; set; }
         public string Original { get; set; }
+
+        public override string ToString()
+        {
+            return Token;
+        }
     }
 }
