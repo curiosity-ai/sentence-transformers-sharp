@@ -3,11 +3,11 @@
 namespace SentenceTransformers;
 
 public record struct EncodedChunk(string Text, float[] Vector);
-public record struct EncodedChunkAligned(string Text, float[] Vector, int Start, int LastStart, int ApproximateEnd);
+public record struct EncodedChunkAligned(string Text, float[] Vector, int Start, int LastStart, int ApproximateEnd, string OriginalText);
 public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);
-public record struct TaggedEncodedChunkAligned(string Text, float[] Vector, string Tag, int Start, int LastStart, int ApproximateEnd);
+public record struct TaggedEncodedChunkAligned(string Text, float[] Vector, string Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
 public record struct TaggedChunk(string Text, string Tag);
-public record struct TaggedChunkAligned(string Text, string Tag, int Start, int LastStart, int ApproximateEnd);
+public record struct TaggedChunkAligned(string Text, string Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
 
 public interface ISentenceEncoder
 {
@@ -99,7 +99,7 @@ public interface ISentenceEncoder
                     cancellationToken.ThrowIfCancellationRequested();
                     oneChunk[0] = chunks[i].Value;
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
-                    encodedChunks[i] = new EncodedChunkAligned(oneChunk[0], oneVector[0], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd);
+                    encodedChunks[i] = new EncodedChunkAligned(oneChunk[0], oneVector[0], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
                 }
             }
             else
@@ -108,7 +108,7 @@ public interface ISentenceEncoder
 
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
-                    encodedChunks[i] = new EncodedChunkAligned(chunks[i].Value, vectors[i], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd);
+                    encodedChunks[i] = new EncodedChunkAligned(chunks[i].Value, vectors[i], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
                 }
             }
         }
@@ -200,7 +200,7 @@ public interface ISentenceEncoder
                        .Select(chunk =>
                        {
                            var t = stripTags(chunk.Value);
-                           return new TaggedChunkAligned(t.Text, t.Tag, chunk.Start, chunk.LastStart, chunk.LastStart + chunk.Value.Length);
+                           return new TaggedChunkAligned(t.Text, t.Tag, chunk.Start, chunk.LastStart, chunk.LastStart + chunk.Value.Length, text);
                        })
                        .ToArray();
 
@@ -217,7 +217,7 @@ public interface ISentenceEncoder
                     cancellationToken.ThrowIfCancellationRequested();
                     oneChunk[0] = chunks[i].Text;
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
-                    encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, oneVector[0], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd);
+                    encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, oneVector[0], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
                 }
             }
             else
@@ -226,7 +226,7 @@ public interface ISentenceEncoder
 
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
-                    encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, vectors[i], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd);
+                    encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, vectors[i], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
                 }
             }
         }
@@ -252,10 +252,10 @@ public interface ISentenceEncoder
 
     public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
     {
-        return MergeTokenSplitsAligned(Tokenizer.TokenizeRawAligned(text), chunkLength, chunkOverlap, maxChunks);
+        return MergeTokenSplitsAligned(Tokenizer.TokenizeRawAligned(text), chunkLength, chunkOverlap, maxChunks, text);
     }
 
-    private List<AlignedString> MergeTokenSplitsAligned(List<TokenizedTokenAligned> splits, int chunkLength, int chunkOverlap, int maxChunks)
+    private List<AlignedString> MergeTokenSplitsAligned(List<TokenizedTokenAligned> splits, int chunkLength, int chunkOverlap, int maxChunks, string originalText)
     {
         var docs       = new List<AlignedString>();
         var currentDoc = new List<TokenizedTokenAligned>();
@@ -268,8 +268,8 @@ public interface ISentenceEncoder
                 {
                     if (currentDoc.Any(c => !string.IsNullOrWhiteSpace(c.Original)))
                     {
-                        var untokenized = string.Join(' ', Tokenizer.Untokenize(currentDoc).Select(v => v.Value));
-                        docs.Add(new AlignedString(untokenized, currentDoc[0].Start, currentDoc.Last().Start, currentDoc.Last().ApproximateEnd));
+                        var untokenized = string.Join(' ', Tokenizer.Untokenize(currentDoc, originalText).Select(v => v.Value));
+                        docs.Add(new AlignedString(untokenized, currentDoc[0].Start, currentDoc.Last().Start, currentDoc.Last().ApproximateEnd, originalText));
                     }
 
                     while (currentDoc.Count > chunkOverlap || (currentDoc.Count + 1 > chunkLength && currentDoc.Count > 0))
@@ -286,11 +286,11 @@ public interface ISentenceEncoder
             }
         }
 
-        string final_doc = string.Join(' ', Tokenizer.Untokenize(currentDoc).Select(v => v.Value));
+        string final_doc = string.Join(' ', Tokenizer.Untokenize(currentDoc, originalText).Select(v => v.Value));
 
         if (!string.IsNullOrWhiteSpace(final_doc))
         {
-            docs.Add(new AlignedString(final_doc, currentDoc[0].Start, currentDoc.Last().Start, currentDoc.Last().ApproximateEnd));
+            docs.Add(new AlignedString(final_doc, currentDoc[0].Start, currentDoc.Last().Start, currentDoc.Last().ApproximateEnd, originalText));
         }
 
         return docs;

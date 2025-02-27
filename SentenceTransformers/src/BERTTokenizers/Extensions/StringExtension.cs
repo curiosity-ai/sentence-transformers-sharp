@@ -37,16 +37,16 @@ namespace BERTTokenizers.Extensions
             while ((index = inputToken.Value.IndexOfAny(delimiters, start)) != -1)
             {
                 if (index - start > 0)
-                    yield return new AlignedString(inputToken.Value.Substring(start, index - start), start + inputToken.Start, start + inputToken.Start, start + inputToken.Start + (index - start));
+                    yield return new AlignedString(inputToken.Value.Substring(start, index - start), start + inputToken.Start, start + inputToken.Start, start + inputToken.Start + (index - start), inputToken.OriginalText);
 
-                yield return new AlignedString(inputToken.Value.Substring(index, 1), index + inputToken.Start, index + start + inputToken.Start, index + start + inputToken.Start + 1);
+                yield return new AlignedString(inputToken.Value.Substring(index, 1), index + inputToken.Start, index + start + inputToken.Start, index + start + inputToken.Start + 1, inputToken.OriginalText);
 
                 start = index + 1;
             }
 
             if (start < inputToken.Value.Length)
             {
-                yield return new AlignedString(inputToken.Value.Substring(start), start + inputToken.Start, start + inputToken.Start, start + inputToken.Start + (inputToken.Value.Length - start));
+                yield return new AlignedString(inputToken.Value.Substring(start), start + inputToken.Start, start + inputToken.Start, start + inputToken.Start + (inputToken.Value.Length - start), inputToken.OriginalText);
             }
         }
 

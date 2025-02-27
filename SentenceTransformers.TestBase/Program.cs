@@ -11,25 +11,45 @@ public static class Main
     {
         var textToChunk = "A snowflake ¿¿¿¿ is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
         //var textToChunk = "test ¿¿¿¿ special ⁑⁑⁑ ⁑ ⁑ ⁑, ééé end";
-        ////var textToChunk = "Activités ";
-        //Console.WriteLine($"Original:      {textToChunk}");
-        //Console.Write("Start:         "); PrintAlignment(textToChunk, Enumerable.Range(0, textToChunk.Length).ToList());
-        //var data = TokenizerBase.RemoveRepeatedSpecialCharsWithAlignment(textToChunk);
-        //Console.Write("Special chars: ");  PrintAlignment(data.text, data.alignment);
-        //var data2 = BERTTokenizers.Base.Unidecoder.FastUnidecodeWithAlignment(data.text, data.alignment);
-        //Console.Write("Unidecoder:    "); PrintAlignment(data2.text, data2.alignment);
-        //var data3 = BERTTokenizers.Base.Unidecoder.CompleteUnidecodeWithAlignment(data.text, data.alignment);
-        //Console.Write("Unidecoder:    "); PrintAlignment(data3.text, data3.alignment);
+        //var textToChunk = "Activités ";
+        Console.WriteLine($"Original:      {textToChunk}");
+        Console.Write("Start:         "); PrintAlignment(textToChunk, Enumerable.Range(0, textToChunk.Length).ToList());
+        var data = TokenizerBase.RemoveRepeatedSpecialCharsWithAlignment(textToChunk);
+        Console.Write("Special chars: "); PrintAlignment(data.text, data.alignment);
+        var data2 = BERTTokenizers.Base.Unidecoder.FastUnidecodeWithAlignment(data.text, data.alignment);
+        Console.Write("Unidecoder:    "); PrintAlignment(data2.text, data2.alignment);
+        var data3 = BERTTokenizers.Base.Unidecoder.CompleteUnidecodeWithAlignment(data.text, data.alignment);
+        Console.Write("Unidecoder:    "); PrintAlignment(data3.text, data3.alignment);
 
-        //var data4 = TokenizerBase.SplitAligned(data3.text, new string[] { " ", "   ", "\r\n" }, data3.alignment);
-        //Console.Write("Tokenized:     "); Console.WriteLine(string.Join(" ", data4.Select(t => t.ToString())));
+        var data4 = TokenizerBase.SplitAligned(data3.text, new string[] { " ", "   ", "\r\n" }, data3.alignment);
+        Console.Write("Tokenized:     "); Console.WriteLine(string.Join(" ", data4.Select(t => t.ToString())));
 
-        //var data5 = sentenceEncoder.Tokenizer.TokenizeRawAligned(textToChunk);
-        //Console.WriteLine("\nMapped Tokens: ");
-        //Console.WriteLine(string.Join(" ", data5.Select(v => v.Token ?? "")));
-        //Console.WriteLine("\nOriginal Tokens: ");
-        //Console.WriteLine(string.Join(" ", data5.Select(v => v.Original ?? "")));
-        //return;
+        var data5 = sentenceEncoder.Tokenizer.TokenizeRawAligned(textToChunk);
+        Console.WriteLine("\nMapped Tokens: ");
+        Console.WriteLine(string.Join(" ", data5.Select(v => v.Token ?? "")));
+        Console.WriteLine("\nOriginal Tokens: ");
+        Console.WriteLine(string.Join(" ", data5.Select(v => v.Original ?? "")));
+
+        var chunks = sentenceEncoder.ChunkTokensAligned(textToChunk, 20, 3);
+        Console.WriteLine("\n\nChunks: ");
+
+        var c = 0;
+        foreach (var chunk in chunks)
+        {
+            Console.WriteLine($"Chunk {c}: {chunk.Value}");
+            c++;
+        }
+
+        Console.WriteLine("\n\nAligned Chunks: ");
+
+        c = 0;
+        foreach (var chunk in chunks)
+        {
+            Console.WriteLine($"Chunk {c}: {chunk.FromOriginal()}");
+            c++;
+        }
+
+        return;
 
 
         //Console.WriteLine(textToChunk);

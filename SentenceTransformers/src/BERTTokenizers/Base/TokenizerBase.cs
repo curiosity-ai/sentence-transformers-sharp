@@ -135,7 +135,7 @@ namespace BERTTokenizers.Base
             return untokens;
         }
 
-        public List<AlignedString> Untokenize(List<TokenizedTokenAligned> tokens)
+        public List<AlignedString> Untokenize(List<TokenizedTokenAligned> tokens, string originalText)
         {
             var currentToken = string.Empty;
             var untokens = new List<AlignedString>();
@@ -153,7 +153,7 @@ namespace BERTTokenizers.Base
                     else
                     {
                         currentToken = (token.Original ?? "") + currentToken;
-                        untokens.Add(new AlignedString(currentToken, token.Start, token.Start, token.Start + currentToken.Length));
+                        untokens.Add(new AlignedString(currentToken, token.Start, token.Start, token.Start + currentToken.Length, originalText));
                         currentToken = string.Empty;
                     }
                 }
@@ -403,7 +403,7 @@ namespace BERTTokenizers.Base
 
                 if (string.IsNullOrEmpty(prefix))
                 {
-                    tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1), _vocabularyDict[Tokens.Unknown], new AlignedString(TrimStartingHashes(remaining), start, start, start + 1)));
+                    tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1, word.OriginalText), _vocabularyDict[Tokens.Unknown], new AlignedString(TrimStartingHashes(remaining), start, start, start + 1, word.OriginalText)));
 
                     return tokens;
                 }
@@ -416,7 +416,7 @@ namespace BERTTokenizers.Base
 
                 if (remaining == remainingAfter)
                 {
-                    tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1), _vocabularyDict[Tokens.Unknown], new AlignedString(TrimStartingHashes(prefix), start, start, start + 1)));
+                    tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1, word.OriginalText), _vocabularyDict[Tokens.Unknown], new AlignedString(TrimStartingHashes(prefix), start, start, start + 1, word.OriginalText)));
 
                     return tokens;
                 }
@@ -425,12 +425,12 @@ namespace BERTTokenizers.Base
                     remaining = remainingAfter;
                 }
 
-                tokens.Add((new AlignedString(prefix, start, start, start + prefix.Length), _vocabularyDict[prefix], new AlignedString(TrimStartingHashes(prefix), start, start, start + prefix.Length)));
+                tokens.Add((new AlignedString(prefix, start, start, start + prefix.Length, word.OriginalText), _vocabularyDict[prefix], new AlignedString(TrimStartingHashes(prefix), start, start, start + prefix.Length, word.OriginalText)));
             }
 
             if (!string.IsNullOrWhiteSpace(word.Value) && !tokens.Any())
             {
-                tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1), _vocabularyDict[Tokens.Unknown], word));
+                tokens.Add((new AlignedString(Tokens.Unknown, start, start, start + 1, word.OriginalText), _vocabularyDict[Tokens.Unknown], word));
             }
 
             return tokens;
@@ -452,13 +452,13 @@ namespace BERTTokenizers.Base
             return text.Substring(0, pos) + replace + text.Substring(pos + search.Length);
         }
 
-        public static List<AlignedString> SplitAligned(ReadOnlySpan<char> text, string[] space_delimiters, List<int> alignment)
+        public static List<AlignedString> SplitAligned(string text, string[] space_delimiters, List<int> alignment)
         {
             var tokens = new List<AlignedString>();
             
             if (text.Length == 0)
             {
-                tokens.Add(new AlignedString("", 0, 0, 0));
+                tokens.Add(new AlignedString("", 0, 0, 0, ""));
                 return tokens;
             }
 
@@ -469,7 +469,7 @@ namespace BERTTokenizers.Base
                 var nextStart = 0;
                 foreach(var s in space_delimiters)
                 {
-                    var nextSeparator = text.Slice(start).IndexOf(s);
+                    var nextSeparator = text.AsSpan(start).IndexOf(s);
                     if (nextSeparator < 0) continue;
                     if (nextSeparator < minNextSeparator)
                     {
@@ -480,13 +480,13 @@ namespace BERTTokenizers.Base
 
                 if (minNextSeparator < int.MaxValue)
                 {
-                    tokens.Add(new AlignedString(text.Slice(start, minNextSeparator).ToString(), alignment[start], alignment[start], alignment[start] + minNextSeparator));
+                    tokens.Add(new AlignedString(text.AsSpan(start, minNextSeparator).ToString(), alignment[start], alignment[start], alignment[start] + minNextSeparator, text));
                     start += minNextSeparator+nextStart;
                     continue;
                 }
                 else
                 {
-                    tokens.Add(new AlignedString(text.Slice(start).ToString(), alignment[start], alignment[start], alignment[start] + (text.Length - start)));
+                    tokens.Add(new AlignedString(text.AsSpan(start).ToString(), alignment[start], alignment[start], alignment[start] + (text.Length - start), text));
                     break;
                 }
             }
