@@ -11,7 +11,7 @@ public static class AlignedChunkHelpers
     public static string FromOriginal(this AlignedString source) => ExtractFromOriginal(source.OriginalText, source.Start, source.ApproximateEnd);
     private static string ExtractFromOriginal(string source, int start, int approximateEnd)
     {
-        if(approximateEnd == source.Length-1)
+        if(approximateEnd >= source.Length)
         {
             return source.Substring(start);
         }
