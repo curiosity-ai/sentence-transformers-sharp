@@ -486,7 +486,10 @@ namespace BERTTokenizers.Base
                 }
                 else
                 {
-                    tokens.Add(new AlignedString(text.AsSpan(start).ToString(), alignment[start], alignment[start], alignment[start] + (text.Length - start), text));
+                    if(start < text.Length)
+                    {
+                        tokens.Add(new AlignedString(text.AsSpan(start).ToString(), alignment[start], alignment[start], alignment[start] + (text.Length - start), text));
+                    }
                     break;
                 }
             }
