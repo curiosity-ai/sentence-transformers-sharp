@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using BERTTokenizers.Base;
 using SentenceTransformers;
 Console.OutputEncoding = Encoding.UTF8;
@@ -9,7 +10,7 @@ public static class Main
 {
     public static void RunSimple(ISentenceEncoder sentenceEncoder)
     {
-        var textToChunk = "A snowflake ¿¿¿¿ is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
+        var textToChunk = "⁎1⁑Add A snowflake ¿¿¿¿ is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry. A snowflake ¿¿¿¿ is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry. ⁎2⁑Add A snowflake ¿¿¿¿ is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry. A snowflake ¿¿¿¿ is a flake of snow ⁑⁑⁑ ⁑ ⁑ ⁑, espécially a feathery ice crystal, typically displaying delicate sixfold symmetry.";
         //var textToChunk = "test ¿¿¿¿ special ⁑⁑⁑ ⁑ ⁑ ⁑, ééé end";
         //var textToChunk = "Activités ";
         Console.WriteLine($"Original:      {textToChunk}");
@@ -46,6 +47,14 @@ public static class Main
         foreach (var chunk in chunks)
         {
             Console.WriteLine($"Chunk {c}: {chunk.FromOriginal()}");
+            c++;
+        }
+
+        c = 0;
+        var encodedChunks = sentenceEncoder.ChunkAndEncodeTaggedAligned(textToChunk, StripPageTags, 20, 3);
+        foreach(var ec in encodedChunks)
+        {
+            Console.WriteLine($"Encoded Chunk {c}: {ec.Text} \t[{string.Join(", ", ec.Vector.Take(4).Select(v => v.ToString("n2")))}]");
             c++;
         }
 
@@ -134,6 +143,46 @@ public static class Main
             Console.Write($"{text[i]}[{alignment[i]}] ");
         }
         Console.WriteLine();
+    }
+
+    private const char PAGE_TAG_START = '⁎';
+    private const char PAGE_TAG_END = '⁑';
+    public static readonly string PAGE_SPLIT_MARKER = "-";
+    private static Regex RE_REPLACE_PAGE_TAGS = new Regex($"{PAGE_TAG_START}\\d*{PAGE_TAG_END}", RegexOptions.Compiled);
+
+    public static TaggedChunk StripPageTags(string chunk)
+    {
+        var pages = new List<int>(1);
+
+        var cleanedText = RE_REPLACE_PAGE_TAGS.Replace(chunk, match =>
+        {
+            var page = match.ValueSpan.Slice(1, match.ValueSpan.Length - 2);
+
+            if (int.TryParse(page, out var p))
+            {
+                pages.Add(p);
+            }
+            return "";
+        });
+
+        if (pages.Count > 0)
+        {
+            var startPage = pages.Min();
+            var endPage = pages.Max();
+
+            if (startPage != endPage)
+            {
+                return new TaggedChunk(cleanedText, $"{startPage}{PAGE_SPLIT_MARKER}{endPage}");
+            }
+            else
+            {
+                return new TaggedChunk(cleanedText, startPage.ToString());
+            }
+        }
+        else
+        {
+            return new TaggedChunk(cleanedText, "");
+        }
     }
 
     public static void Run(ISentenceEncoder sentenceEncoder)

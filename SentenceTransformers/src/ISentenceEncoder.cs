@@ -199,7 +199,7 @@ public interface ISentenceEncoder
         var chunks = ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks: maxChunks)
                        .Select(chunk =>
                        {
-                           var t = stripTags(chunk.Value);
+                           var t = stripTags(chunk.FromOriginal());
                            return new TaggedChunkAligned(t.Text, t.Tag, chunk.Start, chunk.LastStart, chunk.LastStart + chunk.Value.Length, text);
                        })
                        .ToArray();
