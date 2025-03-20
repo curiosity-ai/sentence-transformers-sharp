@@ -8,9 +8,9 @@ namespace BERTTokenizers.Base
 {
     public abstract class UncasedTokenizer : TokenizerBase
     {
-        private static readonly char[] delimiters = ".,;:\\/?!#$%()=+-*\"'–_`<>&^@{}[]|~'".ToArray();
+        private static readonly char[]   delimiters       = ".,;:\\/?!#$%()=+-*\"'–_`<>&^@{}[]|~'".ToArray();
         private static readonly string[] space_delimiters = new string[] { " ", "   ", "\r\n" };
-        
+
         protected UncasedTokenizer(Stream vocabularyFile) : base(vocabularyFile) { }
 
         protected override IEnumerable<string> TokenizeSentence(string text)

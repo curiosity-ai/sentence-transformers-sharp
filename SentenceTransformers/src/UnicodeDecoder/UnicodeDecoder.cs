@@ -184,9 +184,9 @@ public static class Unidecoder
             return CompleteUnidecodeWithAlignment(input, alignment);
         }
 
-        bool noConversionNeeded = true;
-        Span<char> stackBuffer = stackalloc char[neededBufferSize];
-        
+        bool       noConversionNeeded = true;
+        Span<char> stackBuffer        = stackalloc char[neededBufferSize];
+
         var newAlignment = TokenizerBase.AlignmentListPool.Rent();
 
         int buffIdx = 0;
@@ -194,7 +194,7 @@ public static class Unidecoder
         for (int i = 0; i < input.Length; i++)
         {
             char c = input[i];
-            var p = alignment[i];
+            var  p = alignment[i];
 
             if (c < 0x80 || _exceptions.ContainsKey(c))
             {
@@ -253,7 +253,7 @@ public static class Unidecoder
         for (int i = 0; i < input.Length; i++)
         {
             char c = input[i];
-            var p = alignment[i];
+            var  p = alignment[i];
 
             if (c < 0x80 || _exceptions.ContainsKey(c))
             {

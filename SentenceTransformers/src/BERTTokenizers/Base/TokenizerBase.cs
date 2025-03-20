@@ -11,7 +11,12 @@ namespace BERTTokenizers.Base
 {
     public abstract class TokenizerBase
     {
-        internal static readonly ObjectPool<List<int>> AlignmentListPool = new ObjectPool<List<int>>(() => new List<int>(), Environment.ProcessorCount, list => { list.Clear(); if (list.Capacity > 65_000) { list.Capacity = 1024; } });
+        internal static readonly ObjectPool<List<int>> AlignmentListPool = new ObjectPool<List<int>>(() => new List<int>(), Environment.ProcessorCount, list =>
+        {
+            list.Clear();
+
+            if (list.Capacity > 65_000) { list.Capacity = 1024; }
+        });
 
         protected readonly List<string>            _vocabulary;
         protected readonly Dictionary<string, int> _vocabularyDict;
@@ -105,7 +110,7 @@ namespace BERTTokenizers.Base
         public List<string> Untokenize(List<TokenizedToken> tokens)
         {
             var currentToken = string.Empty;
-            var untokens = new List<string>();
+            var untokens     = new List<string>();
             tokens.Reverse();
 
             try
@@ -138,7 +143,7 @@ namespace BERTTokenizers.Base
         public List<AlignedString> Untokenize(List<TokenizedTokenAligned> tokens, string originalText)
         {
             var currentToken = string.Empty;
-            var untokens = new List<AlignedString>();
+            var untokens     = new List<AlignedString>();
             tokens.Reverse();
 
             try
@@ -203,7 +208,7 @@ namespace BERTTokenizers.Base
 
         public List<TokenizedTokenAligned> TokenizeRawAligned(string text)
         {
-            var alignedRemoved = RemoveRepeatedSpecialCharsWithAlignment(text);
+            var alignedRemoved    = RemoveRepeatedSpecialCharsWithAlignment(text);
             var unidecoderRemoved = Unidecoder.FastUnidecodeWithAlignment(alignedRemoved.text, alignedRemoved.alignment);
             AlignmentListPool.Return(alignedRemoved.alignment);
 
@@ -211,7 +216,7 @@ namespace BERTTokenizers.Base
                .SelectMany(TokenizeSubwordsAligned)
                .Select(ti => new TokenizedTokenAligned(ti.Token.Value, ti.Original.Value, ti.Token.Start, ti.Token.ApproximateEnd))
                .ToList();
-            
+
             AlignmentListPool.Return(unidecoderRemoved.alignment);
 
             return result;
@@ -221,7 +226,7 @@ namespace BERTTokenizers.Base
         public static string RemoveRepeatedSpecialChars(string text)
         {
             char last = '\0';
-            var sb = new StringBuilder(text.Length);
+            var  sb   = new StringBuilder(text.Length);
 
             foreach (var c in text)
             {
@@ -240,11 +245,12 @@ namespace BERTTokenizers.Base
 
         public static (string text, List<int> alignment) RemoveRepeatedSpecialCharsWithAlignment(string text)
         {
-            char last = '\0';
-            var sb = new StringBuilder(text.Length);
-            var alignment = AlignmentListPool.Rent();
+            char last      = '\0';
+            var  sb        = new StringBuilder(text.Length);
+            var  alignment = AlignmentListPool.Rent();
 
             int p = 0;
+
             foreach (var c in text)
             {
                 if (c == last && CharacterClasses.IsSpecialChar(c))
@@ -299,13 +305,13 @@ namespace BERTTokenizers.Base
 
         private List<(string token, int index, string Original)> TokenizeSubwordsInner(string word)
         {
-            var tokens = new List<(string token, int index, string original)>();
+            var tokens    = new List<(string token, int index, string original)>();
             var remaining = word;
 
             while (!string.IsNullOrEmpty(remaining) && remaining.Length > 2)
             {
-                string prefix = null;
-                int subwordLength = remaining.Length;
+                string prefix        = null;
+                int    subwordLength = remaining.Length;
 
                 int stopLimit = remaining.StartsWith("##", StringComparison.Ordinal) ? 2 : 1;
 
@@ -376,14 +382,14 @@ namespace BERTTokenizers.Base
 
         private List<(AlignedString token, int index, AlignedString Original)> TokenizeSubwordsInnerAligned(AlignedString word)
         {
-            var tokens = new List<(AlignedString token, int index, AlignedString original)>();
+            var tokens    = new List<(AlignedString token, int index, AlignedString original)>();
             var remaining = word.Value;
-            var start = word.Start;
+            var start     = word.Start;
 
             while (!string.IsNullOrEmpty(remaining) && remaining.Length > 2)
             {
-                string prefix = null;
-                int subwordLength = remaining.Length;
+                string prefix        = null;
+                int    subwordLength = remaining.Length;
 
                 int stopLimit = remaining.StartsWith("##", StringComparison.Ordinal) ? 2 : 1;
 
@@ -455,7 +461,7 @@ namespace BERTTokenizers.Base
         public static List<AlignedString> SplitAligned(string text, string[] space_delimiters, List<int> alignment)
         {
             var tokens = new List<AlignedString>();
-            
+
             if (text.Length == 0)
             {
                 tokens.Add(new AlignedString("", 0, 0, 0, ""));
@@ -463,30 +469,33 @@ namespace BERTTokenizers.Base
             }
 
             var start = 0;
-            while(true)
+
+            while (true)
             {
                 var minNextSeparator = int.MaxValue;
-                var nextStart = 0;
-                foreach(var s in space_delimiters)
+                var nextStart        = 0;
+
+                foreach (var s in space_delimiters)
                 {
                     var nextSeparator = text.AsSpan(start).IndexOf(s);
                     if (nextSeparator < 0) continue;
+
                     if (nextSeparator < minNextSeparator)
                     {
                         minNextSeparator = nextSeparator;
-                        nextStart = s.Length;
+                        nextStart        = s.Length;
                     }
                 }
 
                 if (minNextSeparator < int.MaxValue)
                 {
                     tokens.Add(new AlignedString(text.AsSpan(start, minNextSeparator).ToString(), alignment[start], alignment[start], alignment[start] + minNextSeparator, text));
-                    start += minNextSeparator+nextStart;
+                    start += minNextSeparator + nextStart;
                     continue;
                 }
                 else
                 {
-                    if(start < text.Length)
+                    if (start < text.Length)
                     {
                         tokens.Add(new AlignedString(text.AsSpan(start).ToString(), alignment[start], alignment[start], alignment[start] + (text.Length - start), text));
                     }
@@ -497,7 +506,7 @@ namespace BERTTokenizers.Base
         }
 
 
-        protected abstract IEnumerable<string> TokenizeSentence(string text);
+        protected abstract IEnumerable<string>        TokenizeSentence(string        text);
         protected abstract IEnumerable<AlignedString> TokenizeSentenceAligned(string text, List<int> alignment);
     }
 }
