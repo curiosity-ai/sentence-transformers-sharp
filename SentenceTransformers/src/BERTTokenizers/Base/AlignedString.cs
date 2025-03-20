@@ -4,22 +4,23 @@
     {
         public AlignedString(string value, int start, int lastStart, int approximateEnd, string originalText)
         {
-            Value = value;
-            Start = start;
-            LastStart = lastStart;
+            Value          = value;
+            Start          = start;
+            LastStart      = lastStart;
             ApproximateEnd = approximateEnd;
-            OriginalText = originalText;
+            OriginalText   = originalText;
+
             if (ApproximateEnd < start)
             {
                 throw new Exception();
             }
         }
 
-        public string Value { get; }
-        public int Start { get; }
-        public int LastStart { get; }
-        public int ApproximateEnd { get; }
-        public string OriginalText { get; set; }
+        public string Value          { get; }
+        public int    Start          { get; }
+        public int    LastStart      { get; }
+        public int    ApproximateEnd { get; }
+        public string OriginalText   { get; set; }
 
         public override string ToString()
         {
@@ -32,4 +33,3 @@
         }
     }
 }
-

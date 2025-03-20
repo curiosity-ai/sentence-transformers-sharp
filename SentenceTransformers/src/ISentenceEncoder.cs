@@ -2,13 +2,12 @@
 
 namespace SentenceTransformers;
 
-public record struct EncodedChunk(string Text, float[] Vector);
-public record struct EncodedChunkAligned(string Text, float[] Vector, int Start, int LastStart, int ApproximateEnd, string OriginalText);
-public record struct TaggedEncodedChunk(string Text, float[] Vector, string Tag);
+public record struct EncodedChunk(string              Text, float[] Vector);
+public record struct EncodedChunkAligned(string       Text, float[] Vector, int    Start, int LastStart, int ApproximateEnd, string OriginalText);
+public record struct TaggedEncodedChunk(string        Text, float[] Vector, string Tag);
 public record struct TaggedEncodedChunkAligned(string Text, float[] Vector, string Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
-public record struct TaggedChunk(string Text, string Tag);
-public record struct TaggedChunkAligned(string Text, string Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
-
+public record struct TaggedChunk(string               Text, string  Tag);
+public record struct TaggedChunkAligned(string        Text, string  Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
 public interface ISentenceEncoder
 {
     public int MaxChunkLength { get; }
@@ -140,8 +139,8 @@ public interface ISentenceEncoder
         }
 
         var chunks = ChunkTokens(text, chunkLength, chunkOverlap, maxChunks: maxChunks)
-                       .Select(chunk => stripTags(chunk))
-                       .ToArray();
+           .Select(chunk => stripTags(chunk))
+           .ToArray();
 
         var encodedChunks = new TaggedEncodedChunk[chunks.Length];
 
@@ -298,8 +297,8 @@ public interface ISentenceEncoder
 
     private List<string> MergeTokenSplits(IEnumerable<TokenizedToken> splits, int chunkLength, int chunkOverlap, int maxChunks)
     {
-        var       docs            = new List<string>();
-        var       currentDoc      = new List<TokenizedToken>();
+        var docs       = new List<string>();
+        var currentDoc = new List<TokenizedToken>();
 
         foreach (var d in splits)
         {

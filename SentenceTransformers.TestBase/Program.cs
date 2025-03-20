@@ -14,16 +14,21 @@ public static class Main
         //var textToChunk = "test ¿¿¿¿ special ⁑⁑⁑ ⁑ ⁑ ⁑, ééé end";
         //var textToChunk = "Activités ";
         Console.WriteLine($"Original:      {textToChunk}");
-        Console.Write("Start:         "); PrintAlignment(textToChunk, Enumerable.Range(0, textToChunk.Length).ToList());
+        Console.Write("Start:         ");
+        PrintAlignment(textToChunk, Enumerable.Range(0, textToChunk.Length).ToList());
         var data = TokenizerBase.RemoveRepeatedSpecialCharsWithAlignment(textToChunk);
-        Console.Write("Special chars: "); PrintAlignment(data.text, data.alignment);
+        Console.Write("Special chars: ");
+        PrintAlignment(data.text, data.alignment);
         var data2 = BERTTokenizers.Base.Unidecoder.FastUnidecodeWithAlignment(data.text, data.alignment);
-        Console.Write("Unidecoder:    "); PrintAlignment(data2.text, data2.alignment);
+        Console.Write("Unidecoder:    ");
+        PrintAlignment(data2.text, data2.alignment);
         var data3 = BERTTokenizers.Base.Unidecoder.CompleteUnidecodeWithAlignment(data.text, data.alignment);
-        Console.Write("Unidecoder:    "); PrintAlignment(data3.text, data3.alignment);
+        Console.Write("Unidecoder:    ");
+        PrintAlignment(data3.text, data3.alignment);
 
         var data4 = TokenizerBase.SplitAligned(data3.text, new string[] { " ", "   ", "\r\n" }, data3.alignment);
-        Console.Write("Tokenized:     "); Console.WriteLine(string.Join(" ", data4.Select(t => t.ToString())));
+        Console.Write("Tokenized:     ");
+        Console.WriteLine(string.Join(" ", data4.Select(t => t.ToString())));
 
         var data5 = sentenceEncoder.Tokenizer.TokenizeRawAligned(textToChunk);
         Console.WriteLine("\nMapped Tokens: ");
@@ -35,6 +40,7 @@ public static class Main
         Console.WriteLine("\n\nChunks: ");
 
         var c = 0;
+
         foreach (var chunk in chunks)
         {
             Console.WriteLine($"Chunk {c}: {chunk.Value}");
@@ -44,6 +50,7 @@ public static class Main
         Console.WriteLine("\n\nAligned Chunks: ");
 
         c = 0;
+
         foreach (var chunk in chunks)
         {
             Console.WriteLine($"Chunk {c}: {chunk.FromOriginal()}");
@@ -52,7 +59,8 @@ public static class Main
 
         c = 0;
         var encodedChunks = sentenceEncoder.ChunkAndEncodeTaggedAligned(textToChunk, StripPageTags, 20, 3);
-        foreach(var ec in encodedChunks)
+
+        foreach (var ec in encodedChunks)
         {
             Console.WriteLine($"Encoded Chunk {c}: {ec.Text} \t[{string.Join(", ", ec.Vector.Take(4).Select(v => v.ToString("n2")))}]");
             c++;
@@ -138,17 +146,17 @@ public static class Main
 
     private static void PrintAlignment(string text, List<int> alignment)
     {
-        for(int i = 0; i < text.Length; i++)
+        for (int i = 0; i < text.Length; i++)
         {
             Console.Write($"{text[i]}[{alignment[i]}] ");
         }
         Console.WriteLine();
     }
 
-    private const char PAGE_TAG_START = '⁎';
-    private const char PAGE_TAG_END = '⁑';
-    public static readonly string PAGE_SPLIT_MARKER = "-";
-    private static Regex RE_REPLACE_PAGE_TAGS = new Regex($"{PAGE_TAG_START}\\d*{PAGE_TAG_END}", RegexOptions.Compiled);
+    private const          char   PAGE_TAG_START       = '⁎';
+    private const          char   PAGE_TAG_END         = '⁑';
+    public static readonly string PAGE_SPLIT_MARKER    = "-";
+    private static         Regex  RE_REPLACE_PAGE_TAGS = new Regex($"{PAGE_TAG_START}\\d*{PAGE_TAG_END}", RegexOptions.Compiled);
 
     public static TaggedChunk StripPageTags(string chunk)
     {
@@ -168,7 +176,7 @@ public static class Main
         if (pages.Count > 0)
         {
             var startPage = pages.Min();
-            var endPage = pages.Max();
+            var endPage   = pages.Max();
 
             if (startPage != endPage)
             {
