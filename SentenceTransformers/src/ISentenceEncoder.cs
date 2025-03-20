@@ -200,7 +200,7 @@ public interface ISentenceEncoder
                        .Select(chunk =>
                        {
                            var t = stripTags(chunk.FromOriginal());
-                           return new TaggedChunkAligned(t.Text, t.Tag, chunk.Start, chunk.LastStart, chunk.LastStart + chunk.Value.Length, text);
+                           return new TaggedChunkAligned(t.Text, t.Tag, chunk.Start, chunk.LastStart, chunk.ApproximateEnd, text);
                        })
                        .ToArray();
 
