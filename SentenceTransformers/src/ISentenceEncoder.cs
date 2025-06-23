@@ -16,7 +16,7 @@ public interface ISentenceEncoder
 
     public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default);
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
+    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -28,7 +28,7 @@ public interface ISentenceEncoder
             chunkOverlap = chunkLength / 5;
         }
 
-        var chunks = ChunkTokens(text, chunkLength, chunkOverlap, maxChunks);
+        var chunks = ChunkTokens(text, chunkLength, chunkOverlap, maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null);
 
         var encodedChunks = new EncodedChunk[chunks.Count];
 
@@ -44,6 +44,11 @@ public interface ISentenceEncoder
                     oneChunk[0] = chunks[i];
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
+
+                    if (reportProgress is object)
+                    {
+                        reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
+                    }
                 }
             }
             else
@@ -53,6 +58,11 @@ public interface ISentenceEncoder
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
                     encodedChunks[i] = new EncodedChunk(chunks[i], vectors[i]);
+
+                    if (reportProgress is object)
+                    {
+                        reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
+                    }
                 }
             }
         }
@@ -71,7 +81,7 @@ public interface ISentenceEncoder
         return encodedChunks;
     }
 
-    public EncodedChunkAligned[] ChunkAndEncodeAligned(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
+    public EncodedChunkAligned[] ChunkAndEncodeAligned(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -83,7 +93,7 @@ public interface ISentenceEncoder
             chunkOverlap = chunkLength / 5;
         }
 
-        var chunks = ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks);
+        var chunks = ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null);
 
         var encodedChunks = new EncodedChunkAligned[chunks.Count];
 
@@ -99,6 +109,11 @@ public interface ISentenceEncoder
                     oneChunk[0] = chunks[i].Value;
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunkAligned(oneChunk[0], oneVector[0], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
+
+                    if (reportProgress is object)
+                    {
+                        reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
+                    }
                 }
             }
             else
@@ -108,6 +123,11 @@ public interface ISentenceEncoder
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
                     encodedChunks[i] = new EncodedChunkAligned(chunks[i].Value, vectors[i], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
+
+                    if (reportProgress is object)
+                    {
+                        reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
+                    }
                 }
             }
         }
@@ -126,7 +146,7 @@ public interface ISentenceEncoder
         return encodedChunks;
     }
 
-    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
+    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -138,7 +158,7 @@ public interface ISentenceEncoder
             chunkOverlap = chunkLength / 5;
         }
 
-        var chunks = ChunkTokens(text, chunkLength, chunkOverlap, maxChunks: maxChunks)
+        var chunks = ChunkTokens(text, chunkLength, chunkOverlap, maxChunks: maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null)
            .Select(chunk => stripTags(chunk))
            .ToArray();
 
@@ -156,6 +176,11 @@ public interface ISentenceEncoder
                     oneChunk[0] = chunks[i].Text;
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector[0], chunks[i].Tag);
+
+                    if (reportProgress is object)
+                    {
+                        reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
+                    }
                 }
             }
             else
@@ -165,6 +190,11 @@ public interface ISentenceEncoder
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
                     encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, vectors[i], chunks[i].Tag);
+
+                    if (reportProgress is object)
+                    {
+                        reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
+                    }
                 }
             }
         }
@@ -183,7 +213,7 @@ public interface ISentenceEncoder
         return encodedChunks;
     }
 
-    public TaggedEncodedChunkAligned[] ChunkAndEncodeTaggedAligned(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, CancellationToken cancellationToken = default)
+    public TaggedEncodedChunkAligned[] ChunkAndEncodeTaggedAligned(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -195,13 +225,13 @@ public interface ISentenceEncoder
             chunkOverlap = chunkLength / 5;
         }
 
-        var chunks = ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks: maxChunks)
-                       .Select(chunk =>
-                       {
-                           var t = stripTags(chunk.FromOriginal());
-                           return new TaggedChunkAligned(t.Text, t.Tag, chunk.Start, chunk.LastStart, chunk.ApproximateEnd, text);
-                       })
-                       .ToArray();
+        var chunks = ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks: maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null)
+           .Select(chunk =>
+            {
+                var t = stripTags(chunk.FromOriginal());
+                return new TaggedChunkAligned(t.Text, t.Tag, chunk.Start, chunk.LastStart, chunk.ApproximateEnd, text);
+            })
+           .ToArray();
 
         var encodedChunks = new TaggedEncodedChunkAligned[chunks.Length];
 
@@ -217,6 +247,11 @@ public interface ISentenceEncoder
                     oneChunk[0] = chunks[i].Text;
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, oneVector[0], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
+
+                    if (reportProgress is object)
+                    {
+                        reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
+                    }
                 }
             }
             else
@@ -226,6 +261,11 @@ public interface ISentenceEncoder
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
                     encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, vectors[i], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
+
+                    if (reportProgress is object)
+                    {
+                        reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
+                    }
                 }
             }
         }
@@ -244,23 +284,25 @@ public interface ISentenceEncoder
         return encodedChunks;
     }
 
-    public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
+    public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
-        return MergeTokenSplits(Tokenizer.TokenizeRaw(text), chunkLength, chunkOverlap, maxChunks);
+        return MergeTokenSplits(Tokenizer.TokenizeRaw(text), chunkLength, chunkOverlap, maxChunks, reportProgress);
     }
 
-    public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
+    public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
-        return MergeTokenSplitsAligned(Tokenizer.TokenizeRawAligned(text), chunkLength, chunkOverlap, maxChunks, text);
+        return MergeTokenSplitsAligned(Tokenizer.TokenizeRawAligned(text), chunkLength, chunkOverlap, maxChunks, text, reportProgress);
     }
 
-    private List<AlignedString> MergeTokenSplitsAligned(List<TokenizedTokenAligned> splits, int chunkLength, int chunkOverlap, int maxChunks, string originalText)
+    private List<AlignedString> MergeTokenSplitsAligned(List<TokenizedTokenAligned> splits, int chunkLength, int chunkOverlap, int maxChunks, string originalText, Action<float> reportProgress)
     {
         var docs       = new List<AlignedString>();
         var currentDoc = new List<TokenizedTokenAligned>();
 
-        foreach (var d in splits)
+        for (var index = 0; index < splits.Count; index++)
         {
+            var d = splits[index];
+
             if (currentDoc.Count + 1 > chunkLength)
             {
                 if (currentDoc.Count > 0)
@@ -279,6 +321,11 @@ public interface ISentenceEncoder
             }
             currentDoc.Add(d);
 
+            if (reportProgress is object)
+            {
+                reportProgress((float)index / splits.Count);
+            }
+
             if (docs.Count > maxChunks)
             {
                 return docs;
@@ -295,13 +342,15 @@ public interface ISentenceEncoder
         return docs;
     }
 
-    private List<string> MergeTokenSplits(IEnumerable<TokenizedToken> splits, int chunkLength, int chunkOverlap, int maxChunks)
+    private List<string> MergeTokenSplits(List<TokenizedToken> splits, int chunkLength, int chunkOverlap, int maxChunks, Action<float> reportProgress)
     {
         var docs       = new List<string>();
         var currentDoc = new List<TokenizedToken>();
 
-        foreach (var d in splits)
+        for (var index = 0; index < splits.Count; index++)
         {
+            var d = splits[index];
+
             if (currentDoc.Count + 1 > chunkLength)
             {
                 if (currentDoc.Count > 0)
@@ -319,6 +368,11 @@ public interface ISentenceEncoder
                 }
             }
             currentDoc.Add(d);
+
+            if (reportProgress is object)
+            {
+                reportProgress((float)index / splits.Count);
+            }
 
             if (docs.Count > maxChunks)
             {
