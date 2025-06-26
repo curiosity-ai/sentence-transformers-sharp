@@ -286,12 +286,12 @@ public interface ISentenceEncoder
 
     public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
-        return MergeTokenSplits(Tokenizer.TokenizeRaw(text), chunkLength, chunkOverlap, maxChunks, reportProgress);
+        return MergeTokenSplits(Tokenizer.TokenizeRaw(text.AsSpan(0, chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio)), chunkLength, chunkOverlap, maxChunks, reportProgress);
     }
 
     public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
-        return MergeTokenSplitsAligned(Tokenizer.TokenizeRawAligned(text), chunkLength, chunkOverlap, maxChunks, text, reportProgress);
+        return MergeTokenSplitsAligned(Tokenizer.TokenizeRawAligned(text.AsSpan(0, chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio)), chunkLength, chunkOverlap, maxChunks, text, reportProgress);
     }
 
     private List<AlignedString> MergeTokenSplitsAligned(List<TokenizedTokenAligned> splits, int chunkLength, int chunkOverlap, int maxChunks, string originalText, Action<float> reportProgress)
@@ -311,6 +311,10 @@ public interface ISentenceEncoder
                     {
                         var untokenized = string.Join(' ', Tokenizer.Untokenize(currentDoc, originalText).Select(v => v.Value));
                         docs.Add(new AlignedString(untokenized, currentDoc[0].Start, currentDoc.Last().Start, currentDoc.Last().ApproximateEnd, originalText));
+                        if (reportProgress is object)
+                        {
+                            reportProgress((float)docs.Count / maxChunks);
+                        }
                     }
 
                     while (currentDoc.Count > chunkOverlap || (currentDoc.Count + 1 > chunkLength && currentDoc.Count > 0))
@@ -320,11 +324,6 @@ public interface ISentenceEncoder
                 }
             }
             currentDoc.Add(d);
-
-            if (reportProgress is object)
-            {
-                reportProgress((float)index / splits.Count);
-            }
 
             if (docs.Count > maxChunks)
             {

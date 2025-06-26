@@ -21,8 +21,9 @@ namespace BERTTokenizers.Base
         protected readonly List<string>            _vocabulary;
         protected readonly Dictionary<string, int> _vocabularyDict;
 
-        public int MaxWordLength { get; private set; } = 50;
-        public int MaxTokens     { get; private set; } = 256;
+        public int MaxWordLength          { get; private set; } = 50;
+        public int MaxTokens              { get; private set; } = 256;
+        public int ApproxCharToTokenRatio { get; set; }         = 6; // according to openai 1 token ~ 4 chars + some buffer
 
         public void SetMaxTokens(int maxTokens)
         {
@@ -198,7 +199,7 @@ namespace BERTTokenizers.Base
                .ToList();
         }
 
-        public List<TokenizedToken> TokenizeRaw(string text)
+        public List<TokenizedToken> TokenizeRaw(ReadOnlySpan<char> text)
         {
             return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
                .SelectMany(TokenizeSubwords)
@@ -206,7 +207,7 @@ namespace BERTTokenizers.Base
                .ToList();
         }
 
-        public List<TokenizedTokenAligned> TokenizeRawAligned(string text)
+        public List<TokenizedTokenAligned> TokenizeRawAligned(ReadOnlySpan<char> text)
         {
             var alignedRemoved    = RemoveRepeatedSpecialCharsWithAlignment(text);
             var unidecoderRemoved = Unidecoder.FastUnidecodeWithAlignment(alignedRemoved.text, alignedRemoved.alignment);
@@ -223,7 +224,7 @@ namespace BERTTokenizers.Base
         }
 
 
-        public static string RemoveRepeatedSpecialChars(string text)
+        public static string RemoveRepeatedSpecialChars(ReadOnlySpan<char> text)
         {
             char last = '\0';
             var  sb   = new StringBuilder(text.Length);
@@ -243,7 +244,7 @@ namespace BERTTokenizers.Base
             return sb.ToString();
         }
 
-        public static (string text, List<int> alignment) RemoveRepeatedSpecialCharsWithAlignment(string text)
+        public static (string text, List<int> alignment) RemoveRepeatedSpecialCharsWithAlignment(ReadOnlySpan<char> text)
         {
             char last      = '\0';
             var  sb        = new StringBuilder(text.Length);
