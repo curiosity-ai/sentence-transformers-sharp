@@ -286,12 +286,12 @@ public interface ISentenceEncoder
 
     public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
-        return MergeTokenSplits(Tokenizer.TokenizeRaw(text.AsSpan(0, chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio)), chunkLength, chunkOverlap, maxChunks, reportProgress);
+        return MergeTokenSplits(Tokenizer.TokenizeRaw(text.AsSpan(0, Math.Min(chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio, text.Length))), chunkLength, chunkOverlap, maxChunks, reportProgress);
     }
 
     public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
-        return MergeTokenSplitsAligned(Tokenizer.TokenizeRawAligned(text.AsSpan(0, chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio)), chunkLength, chunkOverlap, maxChunks, text, reportProgress);
+        return MergeTokenSplitsAligned(Tokenizer.TokenizeRawAligned(text.AsSpan(0, Math.Min(chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio, text.Length))), chunkLength, chunkOverlap, maxChunks, text, reportProgress);
     }
 
     private List<AlignedString> MergeTokenSplitsAligned(List<TokenizedTokenAligned> splits, int chunkLength, int chunkOverlap, int maxChunks, string originalText, Action<float> reportProgress)
