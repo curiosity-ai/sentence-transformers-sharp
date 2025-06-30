@@ -45,7 +45,7 @@ public interface ISentenceEncoder
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
 
-                    if (reportProgress is object)
+                    if (reportProgress is object && (i % 128 == 0))
                     {
                         reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
                     }
@@ -59,7 +59,7 @@ public interface ISentenceEncoder
                 {
                     encodedChunks[i] = new EncodedChunk(chunks[i], vectors[i]);
 
-                    if (reportProgress is object)
+                    if (reportProgress is object && (i % 128 == 0))
                     {
                         reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
                     }
@@ -110,7 +110,7 @@ public interface ISentenceEncoder
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunkAligned(oneChunk[0], oneVector[0], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
-                    if (reportProgress is object)
+                    if (reportProgress is object && (i % 128 == 0))
                     {
                         reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
                     }
@@ -124,7 +124,7 @@ public interface ISentenceEncoder
                 {
                     encodedChunks[i] = new EncodedChunkAligned(chunks[i].Value, vectors[i], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
-                    if (reportProgress is object)
+                    if (reportProgress is object && (i % 128 == 0))
                     {
                         reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
                     }
@@ -177,7 +177,7 @@ public interface ISentenceEncoder
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector[0], chunks[i].Tag);
 
-                    if (reportProgress is object)
+                    if (reportProgress is object && (i % 128 == 0))
                     {
                         reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
                     }
@@ -191,7 +191,7 @@ public interface ISentenceEncoder
                 {
                     encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, vectors[i], chunks[i].Tag);
 
-                    if (reportProgress is object)
+                    if (reportProgress is object && (i % 128 == 0))
                     {
                         reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
                     }
@@ -248,7 +248,7 @@ public interface ISentenceEncoder
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, oneVector[0], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
-                    if (reportProgress is object)
+                    if (reportProgress is object && (i % 128 == 0))
                     {
                         reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
                     }
@@ -262,7 +262,7 @@ public interface ISentenceEncoder
                 {
                     encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, vectors[i], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
-                    if (reportProgress is object)
+                    if (reportProgress is object && (i % 128 == 0))
                     {
                         reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
                     }
@@ -287,17 +287,23 @@ public interface ISentenceEncoder
     public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
         reportProgress?.Invoke(0.001f);
-        var tokenized = Tokenizer.TokenizeRaw(text.AsSpan(0, Math.Min(chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio, text.Length)));
-        reportProgress?.Invoke(0.002f);
-        return MergeTokenSplits(tokenized, chunkLength, chunkOverlap, maxChunks, reportProgress);
+        checked //Ensure the max text substring length computed is not overflowing
+        {
+            var tokenized = Tokenizer.TokenizeRaw(maxChunks != int.MaxValue ? text.AsSpan(0, Math.Min(chunkLength* maxChunks *Tokenizer.ApproxCharToTokenRatio, text.Length)) : text);
+            reportProgress?.Invoke(0.002f);
+            return MergeTokenSplits(tokenized, chunkLength, chunkOverlap, maxChunks, reportProgress);
+        }
     }
 
     public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
-        reportProgress?.Invoke(0.001f);
-        var tokenized = Tokenizer.TokenizeRawAligned(text.AsSpan(0, Math.Min(chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio, text.Length)));
-        reportProgress?.Invoke(0.002f);
-        return MergeTokenSplitsAligned(tokenized, chunkLength, chunkOverlap, maxChunks, text, reportProgress);
+        checked //Ensure the max text substring length computed is not overflowing
+        {
+            reportProgress?.Invoke(0.001f);
+            var tokenized = Tokenizer.TokenizeRawAligned(maxChunks != int.MaxValue ? text.AsSpan(0, Math.Min(chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio, text.Length)) : text);
+            reportProgress?.Invoke(0.002f);
+            return MergeTokenSplitsAligned(tokenized, chunkLength, chunkOverlap, maxChunks, text, reportProgress);
+        }
     }
 
     private List<AlignedString> MergeTokenSplitsAligned(List<TokenizedTokenAligned> splits, int chunkLength, int chunkOverlap, int maxChunks, string originalText, Action<float> reportProgress)
@@ -318,7 +324,7 @@ public interface ISentenceEncoder
                         var untokenized = string.Join(' ', Tokenizer.Untokenize(currentDoc, originalText).Select(v => v.Value));
                         docs.Add(new AlignedString(untokenized, currentDoc[0].Start, currentDoc.Last().Start, currentDoc.Last().ApproximateEnd, originalText));
 
-                        if (reportProgress is object)
+                        if (reportProgress is object && (index % 128 == 0))
                         {
                             reportProgress((float)docs.Count / maxChunks);
                         }
@@ -375,7 +381,7 @@ public interface ISentenceEncoder
             }
             currentDoc.Add(d);
 
-            if (reportProgress is object)
+            if (reportProgress is object && (index % 128 == 0))
             {
                 reportProgress((float)index / splits.Count);
             }
