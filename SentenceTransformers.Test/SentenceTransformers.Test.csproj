@@ -16,7 +16,7 @@
     <PackageReference Include="Microsoft.ML" Version="4.0.2" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.22.1" />
-    <PackageReference Include="SentenceTransformers" Version="25.7.59781" />
+    <PackageReference Include="SentenceTransformers" Version="25.8.60187" />
   </ItemGroup>
 
 
