@@ -24,6 +24,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="SentenceTransformers" Version="25.9.61000" />
+    <PackageReference Include="SentenceTransformers" Version="25.9.61007" />
   </ItemGroup>
 </Project>
