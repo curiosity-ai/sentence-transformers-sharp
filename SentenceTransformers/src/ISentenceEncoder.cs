@@ -1,4 +1,5 @@
 ﻿using BERTTokenizers.Base;
+using Mosaik.Core;
 
 namespace SentenceTransformers;
 
@@ -28,6 +29,8 @@ public interface ISentenceEncoder
             chunkOverlap = chunkLength / 5;
         }
 
+        var sw = ValueStopwatch.StartNew();
+
         var chunks = ChunkTokens(text, chunkLength, chunkOverlap, maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null);
 
         var encodedChunks = new EncodedChunk[chunks.Count];
@@ -45,9 +48,10 @@ public interface ISentenceEncoder
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
 
-                    if (reportProgress is object && (i % 128 == 0))
+                    if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
                         reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
+                        sw = ValueStopwatch.StartNew();
                     }
                 }
             }
@@ -59,9 +63,10 @@ public interface ISentenceEncoder
                 {
                     encodedChunks[i] = new EncodedChunk(chunks[i], vectors[i]);
 
-                    if (reportProgress is object && (i % 128 == 0))
+                    if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
                         reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
+                        sw = ValueStopwatch.StartNew();
                     }
                 }
             }
@@ -96,6 +101,7 @@ public interface ISentenceEncoder
         var chunks = ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null);
 
         var encodedChunks = new EncodedChunkAligned[chunks.Count];
+        var sw            = ValueStopwatch.StartNew();
 
         try
         {
@@ -110,9 +116,10 @@ public interface ISentenceEncoder
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunkAligned(oneChunk[0], oneVector[0], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
-                    if (reportProgress is object && (i % 128 == 0))
+                    if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
                         reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
+                        sw = ValueStopwatch.StartNew();
                     }
                 }
             }
@@ -124,9 +131,10 @@ public interface ISentenceEncoder
                 {
                     encodedChunks[i] = new EncodedChunkAligned(chunks[i].Value, vectors[i], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
-                    if (reportProgress is object && (i % 128 == 0))
+                    if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
                         reportProgress(((float)i / chunks.Count) * 0.5f + 0.5f);
+                        sw = ValueStopwatch.StartNew();
                     }
                 }
             }
@@ -163,6 +171,7 @@ public interface ISentenceEncoder
            .ToArray();
 
         var encodedChunks = new TaggedEncodedChunk[chunks.Length];
+        var sw            = ValueStopwatch.StartNew();
 
         try
         {
@@ -177,9 +186,10 @@ public interface ISentenceEncoder
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector[0], chunks[i].Tag);
 
-                    if (reportProgress is object && (i % 128 == 0))
+                    if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
                         reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
+                        sw = ValueStopwatch.StartNew();
                     }
                 }
             }
@@ -191,9 +201,10 @@ public interface ISentenceEncoder
                 {
                     encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, vectors[i], chunks[i].Tag);
 
-                    if (reportProgress is object && (i % 128 == 0))
+                    if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
                         reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
+                        sw = ValueStopwatch.StartNew();
                     }
                 }
             }
@@ -235,6 +246,8 @@ public interface ISentenceEncoder
 
         var encodedChunks = new TaggedEncodedChunkAligned[chunks.Length];
 
+        var sw = ValueStopwatch.StartNew();
+
         try
         {
             if (sequentially)
@@ -248,9 +261,10 @@ public interface ISentenceEncoder
                     var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, oneVector[0], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
-                    if (reportProgress is object && (i % 128 == 0))
+                    if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
                         reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
+                        sw = ValueStopwatch.StartNew();
                     }
                 }
             }
@@ -262,9 +276,10 @@ public interface ISentenceEncoder
                 {
                     encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, vectors[i], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
-                    if (reportProgress is object && (i % 128 == 0))
+                    if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
                         reportProgress(((float)i / chunks.Length) * 0.5f + 0.5f);
+                        sw = ValueStopwatch.StartNew();
                     }
                 }
             }
@@ -287,9 +302,10 @@ public interface ISentenceEncoder
     public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
         reportProgress?.Invoke(0.001f);
+
         checked //Ensure the max text substring length computed is not overflowing
         {
-            var tokenized = Tokenizer.TokenizeRaw(maxChunks != int.MaxValue ? text.AsSpan(0, Math.Min(chunkLength* maxChunks *Tokenizer.ApproxCharToTokenRatio, text.Length)) : text);
+            var tokenized = Tokenizer.TokenizeRaw(maxChunks != int.MaxValue ? text.AsSpan(0, Math.Min(chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio, text.Length)) : text);
             reportProgress?.Invoke(0.002f);
             return MergeTokenSplits(tokenized, chunkLength, chunkOverlap, maxChunks, reportProgress);
         }
@@ -310,6 +326,7 @@ public interface ISentenceEncoder
     {
         var docs       = new List<AlignedString>();
         var currentDoc = new List<TokenizedTokenAligned>();
+        var sw         = ValueStopwatch.StartNew();
 
         for (var index = 0; index < splits.Count; index++)
         {
@@ -324,9 +341,10 @@ public interface ISentenceEncoder
                         var untokenized = string.Join(' ', Tokenizer.Untokenize(currentDoc, originalText).Select(v => v.Value));
                         docs.Add(new AlignedString(untokenized, currentDoc[0].Start, currentDoc.Last().Start, currentDoc.Last().ApproximateEnd, originalText));
 
-                        if (reportProgress is object && (index % 128 == 0))
+                        if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                         {
                             reportProgress((float)docs.Count / maxChunks);
+                            sw = ValueStopwatch.StartNew();
                         }
                     }
 
@@ -358,6 +376,7 @@ public interface ISentenceEncoder
     {
         var docs       = new List<string>();
         var currentDoc = new List<TokenizedToken>();
+        var sw         = ValueStopwatch.StartNew();
 
         for (var index = 0; index < splits.Count; index++)
         {
@@ -381,9 +400,10 @@ public interface ISentenceEncoder
             }
             currentDoc.Add(d);
 
-            if (reportProgress is object && (index % 128 == 0))
+            if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
             {
                 reportProgress((float)index / splits.Count);
+                sw = ValueStopwatch.StartNew();
             }
 
             if (docs.Count > maxChunks)
