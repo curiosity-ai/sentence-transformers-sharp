@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Remove="Resources\*.bin" />
+        <EmbeddedResource Include="Resources\*.*" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="HNSW" Version="25.7.60036" />
+        <PackageReference Include="Microsoft.ML" Version="4.0.2" />
+        <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.1" />
+        <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.22.2" />
+    </ItemGroup>
+
+
+    <ItemGroup>
+        <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+        <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
+        <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
+        <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
+    </ItemGroup>
+
+
+    <ItemGroup>
+        <None Include="..\SentenceTransformers.Qwen3\Resources\tokenizer.json"
+              CopyToOutputDirectory="PreserveNewest"
+              CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+    <ItemGroup>
+      <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
+      <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
+    </ItemGroup>
+
+</Project>

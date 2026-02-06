@@ -35,6 +35,12 @@ namespace BERTTokenizers.Base
             MaxWordLength = maxWordLength;
         }
 
+        protected TokenizerBase()
+        {
+            _vocabulary     = new List<string>();
+            _vocabularyDict = new Dictionary<string, int>();
+        }
+
         public TokenizerBase(Stream vocabularyFile)
         {
             _vocabulary = VocabularyReader.ReadFile(vocabularyFile);
@@ -47,7 +53,7 @@ namespace BERTTokenizers.Base
             }
         }
 
-        public List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> Encode(params string[] texts)
+        public virtual List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> Encode(params string[] texts)
         {
             var tokenized = Tokenize(MaxTokens, texts);
 
@@ -69,12 +75,12 @@ namespace BERTTokenizers.Base
             }).ToList();
         }
 
-        public string IdToToken(int id)
+        public virtual string IdToToken(int id)
         {
             return _vocabulary[id];
         }
 
-        public List<string> Untokenize(List<string> tokens)
+        public virtual List<string> Untokenize(List<string> tokens)
         {
             var currentToken = string.Empty;
             var untokens     = new List<string>();
@@ -108,7 +114,7 @@ namespace BERTTokenizers.Base
             return untokens;
         }
 
-        public List<string> Untokenize(List<TokenizedToken> tokens)
+        public virtual List<string> Untokenize(List<TokenizedToken> tokens)
         {
             var currentToken = string.Empty;
             var untokens     = new List<string>();
@@ -141,7 +147,7 @@ namespace BERTTokenizers.Base
             return untokens;
         }
 
-        public List<AlignedString> Untokenize(List<TokenizedTokenAligned> tokens, string originalText)
+        public virtual List<AlignedString> Untokenize(List<TokenizedTokenAligned> tokens, string originalText)
         {
             var currentToken = string.Empty;
             var untokens     = new List<AlignedString>();
@@ -174,7 +180,7 @@ namespace BERTTokenizers.Base
             return untokens;
         }
 
-        public List<(string Token, int VocabularyIndex, long SegmentIndex)[]> Tokenize(int maxTokens, params string[] texts)
+        public virtual List<(string Token, int VocabularyIndex, long SegmentIndex)[]> Tokenize(int maxTokens, params string[] texts)
         {
             return texts
                .Select(text =>
@@ -191,7 +197,7 @@ namespace BERTTokenizers.Base
                .ToList();
         }
 
-        public List<string> TokenizeSimple(string text)
+        public virtual List<string> TokenizeSimple(string text)
         {
             return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
                .SelectMany(TokenizeSubwords)
@@ -199,7 +205,7 @@ namespace BERTTokenizers.Base
                .ToList();
         }
 
-        public List<TokenizedToken> TokenizeRaw(ReadOnlySpan<char> text)
+        public virtual List<TokenizedToken> TokenizeRaw(ReadOnlySpan<char> text)
         {
             return TokenizeSentence(Unidecoder.FastUnidecode(RemoveRepeatedSpecialChars(text)))
                .SelectMany(TokenizeSubwords)
@@ -207,7 +213,7 @@ namespace BERTTokenizers.Base
                .ToList();
         }
 
-        public List<TokenizedTokenAligned> TokenizeRawAligned(ReadOnlySpan<char> text)
+        public virtual List<TokenizedTokenAligned> TokenizeRawAligned(ReadOnlySpan<char> text)
         {
             var alignedRemoved    = RemoveRepeatedSpecialCharsWithAlignment(text);
             var unidecoderRemoved = Unidecoder.FastUnidecodeWithAlignment(alignedRemoved.text, alignedRemoved.alignment);

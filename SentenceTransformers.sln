@@ -20,6 +20,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.TestBa
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.MiniLMForTest", "SentenceTransformers.MiniLMForTest\SentenceTransformers.MiniLMForTest.csproj", "{E1EEBEE2-6FDD-4514-8189-4DE201DD1564}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Qwen3", "SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj", "{EAA14D5D-4ECC-4D01-B434-023433B7EFAB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Benchmark", "SentenceTransformers.Benchmark\SentenceTransformers.Benchmark.csproj", "{1FB2E5FE-11AF-46D1-B98D-E2A698547977}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -50,6 +54,14 @@ Global
 		{E1EEBEE2-6FDD-4514-8189-4DE201DD1564}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E1EEBEE2-6FDD-4514-8189-4DE201DD1564}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E1EEBEE2-6FDD-4514-8189-4DE201DD1564}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EAA14D5D-4ECC-4D01-B434-023433B7EFAB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EAA14D5D-4ECC-4D01-B434-023433B7EFAB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EAA14D5D-4ECC-4D01-B434-023433B7EFAB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EAA14D5D-4ECC-4D01-B434-023433B7EFAB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1FB2E5FE-11AF-46D1-B98D-E2A698547977}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1FB2E5FE-11AF-46D1-B98D-E2A698547977}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1FB2E5FE-11AF-46D1-B98D-E2A698547977}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1FB2E5FE-11AF-46D1-B98D-E2A698547977}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

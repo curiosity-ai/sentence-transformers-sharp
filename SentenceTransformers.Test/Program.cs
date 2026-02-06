@@ -1,9 +1,13 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text;
 using SentenceTransformers;
+using SentenceTransformers.Qwen3;
 
+var tokPath = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
+using var enc = new SentenceEncoder(tokenizerJsonPath: File.Exists(tokPath) ? tokPath : null);
 Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
 Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
+Main.RunSimple(enc);
 
 public static class Main
 {
