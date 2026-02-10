@@ -102,14 +102,23 @@ namespace SentenceTransformers.Qwen3
 
         public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default)
         {
-            if (sentences is null || sentences.Length == 0) return Array.Empty<float[]>();
+            if (sentences is null || sentences.Length == 0)
+            {
+                return Array.Empty<float[]>();
+            }
 
             var encoded = Tokenizer.Encode(sentences);
-            if (encoded.Count == 0) return Array.Empty<float[]>();
+            if (encoded.Count == 0)
+            {
+                return Array.Empty<float[]>();
+            }
 
             int batch = encoded.Count;
             int maxLen = encoded.Max(e => e.InputIds.Length);
-            if (maxLen <= 0) return Array.Empty<float[]>();
+            if (maxLen <= 0)
+            {
+                return Array.Empty<float[]>();
+            }
 
             var inputs = BuildModelInputs(encoded, batch, maxLen);
 
@@ -130,13 +139,18 @@ namespace SentenceTransformers.Qwen3
                         $"Unexpected ONNX output type: {raw?.GetType().FullName ?? "null"}")
                 };
 
-                if (Normalize) NormalizeRows(result);
+                if (Normalize)
+                {
+                    NormalizeRows(result);
+                }
                 return result;
             }
             catch (OnnxRuntimeException e)
             {
                 if (cancellationToken.IsCancellationRequested)
+                {
                     throw new OperationCanceledException("Encoding was cancelled", e, cancellationToken);
+                }
                 throw;
             }
         }
@@ -182,11 +196,17 @@ namespace SentenceTransformers.Qwen3
 
         private static string FindInputName(InferenceSession session, string preferred)
         {
-            if (session.InputMetadata.ContainsKey(preferred)) return preferred;
+            if (session.InputMetadata.ContainsKey(preferred))
+            {
+                return preferred;
+            }
 
             // Basic fallback heuristics
             var match = session.InputMetadata.Keys.FirstOrDefault(k => k.Contains(preferred, StringComparison.OrdinalIgnoreCase));
-            if (match is not null) return match;
+            if (match is not null)
+            {
+                return match;
+            }
 
             throw new InvalidOperationException(
                 $"Model input '{preferred}' not found. Available inputs: {string.Join(", ", session.InputMetadata.Keys)}");
@@ -265,7 +285,10 @@ namespace SentenceTransformers.Qwen3
             catch (Exception ex)
             {
                 File.Delete(localPath);
-                if (ex is OperationCanceledException) throw;
+                if (ex is OperationCanceledException)
+                {
+                    throw;
+                }
                 throw;
             }
             finally

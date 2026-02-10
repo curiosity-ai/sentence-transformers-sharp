@@ -21,10 +21,14 @@ namespace SentenceTransformers.Qwen3
         public QwenTokenizer(string tokenizerJsonPath, int maxTokens)
         {
             if (string.IsNullOrWhiteSpace(tokenizerJsonPath))
+            {
                 throw new ArgumentException("tokenizerJsonPath is null/empty", nameof(tokenizerJsonPath));
+            }
 
             if (!File.Exists(tokenizerJsonPath))
+            {
                 throw new FileNotFoundException("tokenizer.json not found", tokenizerJsonPath);
+            }
 
             _tokenizer = HFTokenizer.FromFile(tokenizerJsonPath);
             SetMaxTokens(maxTokens);
@@ -33,7 +37,10 @@ namespace SentenceTransformers.Qwen3
 
         public new void SetMaxTokens(int maxTokens)
         {
-            if (maxTokens <= 0) throw new ArgumentOutOfRangeException(nameof(maxTokens));
+            if (maxTokens <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxTokens));
+            }
             base.SetMaxTokens(maxTokens);
         }
 
@@ -43,7 +50,10 @@ namespace SentenceTransformers.Qwen3
         /// </summary>
         public List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> Encode(string[] sentences, bool addSpecialTokens = true)
         {
-            if (sentences is null) throw new ArgumentNullException(nameof(sentences));
+            if (sentences is null)
+            {
+                throw new ArgumentNullException(nameof(sentences));
+            }
 
             var result = new List<(long[], long[], long[])>(sentences.Length);
 
@@ -69,8 +79,14 @@ namespace SentenceTransformers.Qwen3
                 if (ids.Length > MaxTokens)
                 {
                     ids = ids[..MaxTokens];
-                    if (typeIds.Length > MaxTokens) typeIds = typeIds[..MaxTokens];
-                    if (attn.Length > MaxTokens) attn = attn[..MaxTokens];
+                    if (typeIds.Length > MaxTokens)
+                    {
+                        typeIds = typeIds[..MaxTokens];
+                    }
+                    if (attn.Length > MaxTokens)
+                    {
+                        attn = attn[..MaxTokens];
+                    }
                 }
 
                 result.Add((ids, typeIds, attn));
@@ -97,7 +113,10 @@ namespace SentenceTransformers.Qwen3
 
         public override List<(string Token, int VocabularyIndex, long SegmentIndex)[]> Tokenize(int maxTokens, params string[] texts)
         {
-            if (texts is null) throw new ArgumentNullException(nameof(texts));
+            if (texts is null)
+            {
+                throw new ArgumentNullException(nameof(texts));
+            }
 
             var result = new List<(string Token, int VocabularyIndex, long SegmentIndex)[]>(texts.Length);
 
@@ -122,7 +141,10 @@ namespace SentenceTransformers.Qwen3
         public override List<TokenizedToken> TokenizeRaw(ReadOnlySpan<char> text)
         {
             var textString = text.ToString();
-            if (textString.Length == 0) return new List<TokenizedToken>();
+            if (textString.Length == 0)
+            {
+                return new List<TokenizedToken>();
+            }
 
             var enc = EncodeOne(textString, addSpecialTokens: false, includeTypeIds: false, includeTokens: true, includeOffsets: true, includeAttentionMask: false);
 
@@ -138,7 +160,10 @@ namespace SentenceTransformers.Qwen3
                 int start = ClampOffset(Convert.ToInt64(offset.Start), len);
                 int end = ClampOffset(Convert.ToInt64(offset.End), len);
 
-                if (end <= start) continue; // skip special tokens / empty spans
+                if (end <= start)
+                {
+                    continue; // skip special tokens / empty spans
+                }
 
                 var original = textString.Substring(start, end - start);
                 result.Add(new TokenizedToken(tokens[i], original));
@@ -150,7 +175,10 @@ namespace SentenceTransformers.Qwen3
         public override List<TokenizedTokenAligned> TokenizeRawAligned(ReadOnlySpan<char> text)
         {
             var textString = text.ToString();
-            if (textString.Length == 0) return new List<TokenizedTokenAligned>();
+            if (textString.Length == 0)
+            {
+                return new List<TokenizedTokenAligned>();
+            }
 
             var enc = EncodeOne(textString, addSpecialTokens: false, includeTypeIds: false, includeTokens: true, includeOffsets: true, includeAttentionMask: false);
 
@@ -166,7 +194,10 @@ namespace SentenceTransformers.Qwen3
                 int start = ClampOffset(Convert.ToInt64(offset.Start), len);
                 int end = ClampOffset(Convert.ToInt64(offset.End), len);
 
-                if (end <= start) continue; // skip special tokens / empty spans
+                if (end <= start)
+                {
+                    continue; // skip special tokens / empty spans
+                }
 
                 var original = textString.Substring(start, end - start);
                 result.Add(new TokenizedTokenAligned(tokens[i], original, start, end));
@@ -177,17 +208,26 @@ namespace SentenceTransformers.Qwen3
 
         public override List<string> Untokenize(List<TokenizedToken> tokens)
         {
-            if (tokens is null || tokens.Count == 0) return new List<string>();
+            if (tokens is null || tokens.Count == 0)
+            {
+                return new List<string>();
+            }
             var text = string.Concat(tokens.Select(t => t.Original ?? string.Empty));
             return string.IsNullOrEmpty(text) ? new List<string>() : new List<string> { text };
         }
 
         public override List<AlignedString> Untokenize(List<TokenizedTokenAligned> tokens, string originalText)
         {
-            if (tokens is null || tokens.Count == 0) return new List<AlignedString>();
+            if (tokens is null || tokens.Count == 0)
+            {
+                return new List<AlignedString>();
+            }
 
             var text = string.Concat(tokens.Select(t => t.Original ?? string.Empty));
-            if (string.IsNullOrEmpty(text)) return new List<AlignedString>();
+            if (string.IsNullOrEmpty(text))
+            {
+                return new List<AlignedString>();
+            }
 
             var start = tokens[0].Start;
             var lastStart = tokens[^1].Start;
@@ -238,8 +278,14 @@ namespace SentenceTransformers.Qwen3
 
         private static int ClampOffset(long value, int length)
         {
-            if (value < 0) return 0;
-            if (value > length) return length;
+            if (value < 0)
+            {
+                return 0;
+            }
+            if (value > length)
+            {
+                return length;
+            }
             return (int)value;
         }
     }

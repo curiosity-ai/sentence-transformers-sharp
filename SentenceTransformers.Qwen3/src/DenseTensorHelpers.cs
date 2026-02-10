@@ -21,7 +21,9 @@ public static class DenseTensorHelpers
         {
             var row = new float[embDim];
             for (int j = 0; j < embDim; j++)
+            {
                 row[j] = tensor[i, j];
+            }
             result[i] = row;
         }
         return result;
@@ -41,7 +43,9 @@ public static class DenseTensorHelpers
         {
             var row = new float[embDim];
             for (int j = 0; j < embDim; j++)
+            {
                 row[j] = (tensor[i, j] - zeroPoint) * scale;
+            }
             result[i] = row;
         }
         return result;
@@ -61,7 +65,9 @@ public static class DenseTensorHelpers
         {
             var row = new float[embDim];
             for (int j = 0; j < embDim; j++)
+            {
                 row[j] = (unchecked((byte)tensor[i, j]) - zeroPoint) * scale;
+            }
             result[i] = row;
         }
         return result;
@@ -77,11 +83,15 @@ public static class DenseTensorHelpers
             var v = rows[r];
             float sumSq = 0f;
             for (int i = 0; i < v.Length; i++)
+            {
                 sumSq += v[i] * v[i];
+            }
             float norm = MathF.Max(MathF.Sqrt(sumSq), eps);
             float inv = 1f / norm;
             for (int i = 0; i < v.Length; i++)
+            {
                 v[i] *= inv;
+            }
         }
     }
 }

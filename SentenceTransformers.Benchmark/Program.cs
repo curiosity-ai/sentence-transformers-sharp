@@ -32,7 +32,9 @@ foreach (var (name, encoder) in syncEncoders)
 {
     using var _ = encoder as IDisposable;
     if (_ is null)
+    {
         throw new InvalidOperationException($"Encoder '{name}' does not implement IDisposable.");
+    }
     var run = EncoderBench.Run(name, encoder, texts, cfg);
     results.Add(run);
     Console.WriteLine();
@@ -67,7 +69,10 @@ static string MakeParagraph(int seed, int paragraphs, int sentencesPerParagraph)
         var sb = new StringBuilder();
         for (int i = 0; i < words; i++)
         {
-            if (i > 0) sb.Append(' ');
+            if (i > 0)
+            {
+                sb.Append(' ');
+            }
             sb.Append(vocab[rng.Next(vocab.Length)]);
         }
         sb.Append('.');
@@ -77,10 +82,16 @@ static string MakeParagraph(int seed, int paragraphs, int sentencesPerParagraph)
     var outSb = new StringBuilder();
     for (int p = 0; p < paragraphs; p++)
     {
-        if (p > 0) outSb.Append("\n\n");
+        if (p > 0)
+        {
+            outSb.Append("\n\n");
+        }
         for (int s = 0; s < sentencesPerParagraph; s++)
         {
-            if (s > 0) outSb.Append(' ');
+            if (s > 0)
+            {
+                outSb.Append(' ');
+            }
             outSb.Append(MakeSentence());
         }
     }
@@ -111,7 +122,9 @@ public static class EncoderBench
         // Build a batch by repeating corpus
         var batch = new string[cfg.BatchSize];
         for (int i = 0; i < batch.Length; i++)
+        {
             batch[i] = corpus[i % corpus.Length];
+        }
 
         // Measure load/steady memory deltas around encode loop (rough but useful)
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
@@ -124,7 +137,10 @@ public static class EncoderBench
         for (int i = 0; i < cfg.WarmupIters; i++)
         {
             var warm = encoder.Encode(batch);
-            if (warm.Length == 0) throw new Exception("Warmup produced no embeddings.");
+            if (warm.Length == 0)
+            {
+                throw new Exception("Warmup produced no embeddings.");
+            }
         }
 
         // Measure
@@ -132,13 +148,17 @@ public static class EncoderBench
         for (int i = 0; i < cfg.MeasureIters; i++)
         {
             foreach (var s in batch)
+            {
                 inputBytes += Encoding.UTF8.GetByteCount(s);
+            }
         }
 
         var sw = Stopwatch.StartNew();
         float[][] last = Array.Empty<float[]>();
         for (int i = 0; i < cfg.MeasureIters; i++)
+        {
             last = encoder.Encode(batch);
+        }
         sw.Stop();
 
         int dim = (last.Length > 0) ? last[0].Length : 0;
@@ -176,7 +196,10 @@ public static class EncoderBench
 
     public static void PrintTable(List<BenchResult> results)
     {
-        if (results.Count == 0) return;
+        if (results.Count == 0)
+        {
+            return;
+        }
 
         var headers = new[]
         {
@@ -209,7 +232,12 @@ public static class EncoderBench
         {
             widths[i] = headers[i].Length;
             foreach (var row in rows)
-                if (row[i].Length > widths[i]) widths[i] = row[i].Length;
+            {
+                if (row[i].Length > widths[i])
+                {
+                    widths[i] = row[i].Length;
+                }
+            }
         }
 
         string Pad(string s, int w) => s.PadRight(w);
