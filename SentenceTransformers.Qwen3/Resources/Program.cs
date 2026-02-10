@@ -4,11 +4,9 @@ using System.Text;
 
 class Program
 {
-    static void Main()
+    static async Task Main()
     {
-        // Model loaded from env QWEN3_MODEL_URL. Tokenizer from embedded resource if path not set.
-        var tokPath = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
-        using var enc = new SentenceEncoder(tokenizerJsonPath: File.Exists(tokPath) ? tokPath : null);
+        using var enc = await SentenceEncoder.CreateAsync();
         
         var sentences = new[]
         {

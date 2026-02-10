@@ -3,10 +3,11 @@ using System.Text;
 using SentenceTransformers;
 using SentenceTransformers.Qwen3;
 
-var tokPath = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
-using var enc = new SentenceEncoder(tokenizerJsonPath: File.Exists(tokPath) ? tokPath : null);
+var encTask = SentenceEncoder.CreateAsync();
 Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
 Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
+
+using var enc = await encTask;
 Main.RunSimple(enc);
 
 public static class Main

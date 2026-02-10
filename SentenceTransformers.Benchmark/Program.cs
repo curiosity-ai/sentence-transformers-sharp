@@ -1,13 +1,9 @@
 using System.Diagnostics;
 using System.Text;
 using SentenceTransformers;
-using SentenceTransformers.ArcticXs;
-using SentenceTransformers.MiniLM;
-using SentenceTransformers.Qwen3;
 
-var tokPath = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
-Console.WriteLine($"Qwen3 tokenizer (optional): {tokPath}");
-Console.WriteLine();
+
+var qwen3Task = SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync();
 
 // ---- Build a few-paragraph input dataset ----
 var texts = new[]
@@ -24,25 +20,27 @@ var cfg = new BenchConfig(
     MeasureIters: 50
 );
 
-// ---- Register encoders here ----
-var encoders = new List<(string Name, Func<ISentenceEncoder> Create)>
-{
-    ("MiniLM-L6-v2", () => new SentenceTransformers.MiniLM.SentenceEncoder()),
-    ("ArcticXs",     () => new SentenceTransformers.ArcticXs.SentenceEncoder()),
-    ("Qwen3-0.6B",   () => new SentenceTransformers.Qwen3.SentenceEncoder(tokenizerJsonPath: File.Exists(tokPath) ? tokPath : null)),
-};
-
 var results = new List<BenchResult>();
 
-foreach (var (name, create) in encoders)
+var syncEncoders = new (string Name, ISentenceEncoder Encoder)[]
 {
-    using var encoder = create() as IDisposable;
-    if (encoder is null)
-    {
-        throw new InvalidOperationException($"Encoder '{name}' does not implement IDisposable.");
-    }
+    ("MiniLM-L6-v2", new SentenceTransformers.MiniLM.SentenceEncoder()),
+    ("ArcticXs",     new SentenceTransformers.ArcticXs.SentenceEncoder()),
+};
 
-    var run = EncoderBench.Run(name, (ISentenceEncoder)encoder, texts, cfg);
+foreach (var (name, encoder) in syncEncoders)
+{
+    using var _ = encoder as IDisposable;
+    if (_ is null)
+        throw new InvalidOperationException($"Encoder '{name}' does not implement IDisposable.");
+    var run = EncoderBench.Run(name, encoder, texts, cfg);
+    results.Add(run);
+    Console.WriteLine();
+}
+
+using (var qwen3Encoder = await qwen3Task)
+{
+    var run = EncoderBench.Run("Qwen3-0.6B", qwen3Encoder, texts, cfg);
     results.Add(run);
     Console.WriteLine();
 }

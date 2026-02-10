@@ -25,11 +25,4 @@
     <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
     <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
   </ItemGroup>
-
-
-  <ItemGroup>
-    <None Include="..\SentenceTransformers.Qwen3\Resources\tokenizer.json"
-          CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" />
-  </ItemGroup>
 </Project>
