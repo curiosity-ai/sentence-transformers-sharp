@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
@@ -8,15 +8,15 @@
 
     <PropertyGroup>
         <Authors>Curiosity GmbH, Othneil Drew</Authors>
-        <Copyright>(c) Copyright 2024 Curiosity GmbH - all right reserved, Copyright (c) 2021 Othneil Drew (Bert Tokenizers)</Copyright>
+        <Copyright>(c) Copyright 2026 Curiosity GmbH - all right reserved, Copyright (c) 2021 Othneil Drew (Bert Tokenizers)</Copyright>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageProjectUrl>www.curiosity.ai</PackageProjectUrl>
         <RepositoryUrl>https://github.com/curiosity-ai/sentence-transformers-sharp</RepositoryUrl>
         <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
         <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
         <PackageId>SentenceTransformers.Qwen3</PackageId>
-        <Description>The wrapper provides a simple and easy-to-use interface for loading the MiniLM embeddings model and generating embeddings for input text.</Description>
-        <PackageTags>English, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings,Sentence Transformers, Data Science, Big Data, Artificial Intelligence, AI, NLP Library, Neural Networks, Deep Learning</PackageTags>
+        <Description>The wrapper provides a simple and easy-to-use interface for loading the Qwen3 embeddings model and generating embeddings for input text.</Description>
+        <PackageTags>Qwen3, English, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings,Sentence Transformers, Data Science, Big Data, Artificial Intelligence, AI, NLP Library, Neural Networks, Deep Learning</PackageTags>
     </PropertyGroup>
 
 
@@ -25,15 +25,13 @@
     </ItemGroup>
 
     <ItemGroup>
-      <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.1" />
-      <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.22.2" />
-      <PackageReference Include="System.Numerics.Tensors" Version="9.0.0" />
+      <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
+      <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.2" />
+      <PackageReference Include="System.Numerics.Tensors" Version="10.0.3" />
       <PackageReference Include="Tokenizers.HuggingFace" Version="2.21.4" />
     </ItemGroup>
 
     <ItemGroup>
-        <None Include="Resources\tokenizer.json"
-              CopyToOutputDirectory="PreserveNewest"
-              CopyToPublishDirectory="PreserveNewest" />
+        <None Include="Resources\tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
 </Project>

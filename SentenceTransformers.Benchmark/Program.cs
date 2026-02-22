@@ -3,8 +3,6 @@ using System.Text;
 using SentenceTransformers;
 
 
-var qwen3Task = SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync();
-
 // ---- Build a few-paragraph input dataset ----
 var texts = new[]
 {
@@ -16,8 +14,8 @@ var texts = new[]
 
 var cfg = new BenchConfig(
     BatchSize: 8,
-    WarmupIters: 10,
-    MeasureIters: 50
+    WarmupIters: 1,
+    Iterations: 5
 );
 
 var results = new List<BenchResult>();
@@ -30,17 +28,15 @@ var syncEncoders = new (string Name, ISentenceEncoder Encoder)[]
 
 foreach (var (name, encoder) in syncEncoders)
 {
-    using var _ = encoder as IDisposable;
-    if (_ is null)
+    using (encoder)
     {
-        throw new InvalidOperationException($"Encoder '{name}' does not implement IDisposable.");
+        var run = EncoderBench.Run(name, encoder, texts, cfg);
+        results.Add(run);
+        Console.WriteLine();
     }
-    var run = EncoderBench.Run(name, encoder, texts, cfg);
-    results.Add(run);
-    Console.WriteLine();
 }
 
-using (var qwen3Encoder = await qwen3Task)
+using (var qwen3Encoder = await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync())
 {
     var run = EncoderBench.Run("Qwen3-0.6B", qwen3Encoder, texts, cfg);
     results.Add(run);
@@ -98,21 +94,19 @@ static string MakeParagraph(int seed, int paragraphs, int sentencesPerParagraph)
     return outSb.ToString();
 }
 
-public sealed record BenchConfig(int BatchSize, int WarmupIters, int MeasureIters);
+public sealed record BenchConfig(int BatchSize, int WarmupIters, int Iterations);
 
 public sealed record BenchResult(
     string Name,
     int BatchSize,
-    int EmbeddingDim,
-    int MeasureIters,
-    double TotalMs,
-    long InputBytes,
-    long OutputBytes,
-    double InputBytesPerSec,
-    double OutputBytesPerSec,
-    double EmbeddingsPerSec,
-    long WorkingSetDeltaBytes,
-    long GcHeapDeltaBytes
+    int Dimensions,
+    int Iterations,
+    double TotalSeconds,
+    long InputKB,
+    long OutputKB,
+    double InputMBPerHour,
+    double OutputMBPerHour,
+    double EmbeddingsPerHour
 );
 
 public static class EncoderBench
@@ -126,13 +120,6 @@ public static class EncoderBench
             batch[i] = corpus[i % corpus.Length];
         }
 
-        // Measure load/steady memory deltas around encode loop (rough but useful)
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-        var proc = Process.GetCurrentProcess();
-        proc.Refresh();
-        long wsBefore = proc.WorkingSet64;
-        long heapBefore = GC.GetTotalMemory(forceFullCollection: true);
-
         // Warmup
         for (int i = 0; i < cfg.WarmupIters; i++)
         {
@@ -145,7 +132,7 @@ public static class EncoderBench
 
         // Measure
         long inputBytes = 0;
-        for (int i = 0; i < cfg.MeasureIters; i++)
+        for (int i = 0; i < cfg.Iterations; i++)
         {
             foreach (var s in batch)
             {
@@ -155,43 +142,30 @@ public static class EncoderBench
 
         var sw = Stopwatch.StartNew();
         float[][] last = Array.Empty<float[]>();
-        for (int i = 0; i < cfg.MeasureIters; i++)
+        for (int i = 0; i < cfg.Iterations; i++)
         {
             last = encoder.Encode(batch);
         }
         sw.Stop();
 
         int dim = (last.Length > 0) ? last[0].Length : 0;
-        long outputBytes = (long)cfg.MeasureIters * cfg.BatchSize * dim * sizeof(float);
-
-        proc.Refresh();
-        long wsAfter = proc.WorkingSet64;
-        long heapAfter = GC.GetTotalMemory(forceFullCollection: false);
+        long outputBytes = (long)cfg.Iterations * cfg.BatchSize * dim * sizeof(float);
 
         double seconds = sw.Elapsed.TotalSeconds;
-        double inBps = inputBytes / seconds;
-        double outBps = outputBytes / seconds;
-        double embPerSec = (cfg.MeasureIters * (double)cfg.BatchSize) / seconds;
+        double inputMBperHour  = 3600 * inputBytes / 1024.0/ 1024.0 / seconds;
+        double outputMBperHour = 3600 * outputBytes / 1024.0 / 1024.0 / seconds;
+        double embeddingsPerHour = 3600 * (cfg.Iterations * (double)cfg.BatchSize) / seconds;
 
         Console.WriteLine($"[{name}]");
-        Console.WriteLine($"  Batch: {cfg.BatchSize}");
-        Console.WriteLine($"  Dim:   {dim}");
-        Console.WriteLine($"  Time:  {sw.Elapsed.TotalMilliseconds:F1} ms for {cfg.MeasureIters} iterations");
-        Console.WriteLine($"  Avg:   {sw.Elapsed.TotalMilliseconds / cfg.MeasureIters:F2} ms/iter");
-        Console.WriteLine($"  Input throughput (UTF-8 bytes/s): {inBps:F0}");
-        Console.WriteLine($"  Output throughput (bytes/s):      {outBps:F0}");
-        Console.WriteLine($"  Embeddings/s:                      {embPerSec:F2}");
-        Console.WriteLine($"  WorkingSet Δ (bytes):             {wsAfter - wsBefore}");
-        Console.WriteLine($"  GC heap Δ (bytes):                {heapAfter - heapBefore}");
+        Console.WriteLine($"  Batch:             {cfg.BatchSize}");
+        Console.WriteLine($"  Dim:               {dim}");
+        Console.WriteLine($"  Time:              {sw.Elapsed.TotalSeconds:n1} s for {cfg.Iterations} iterations");
+        Console.WriteLine($"  Avg:               {sw.Elapsed.TotalSeconds / cfg.Iterations:n1} s per iteration");
+        Console.WriteLine($"  Input throughput:  {inputMBperHour:n1} UTF-8 MB per hour");
+        Console.WriteLine($"  Output throughput: {outputMBperHour:n1} MB per hour");
+        Console.WriteLine($"  Vector throughput: {embeddingsPerHour:n1} per hour");
 
-        return new BenchResult(
-            name, cfg.BatchSize, dim, cfg.MeasureIters,
-            sw.Elapsed.TotalMilliseconds,
-            inputBytes, outputBytes,
-            inBps, outBps, embPerSec,
-            wsAfter - wsBefore,
-            heapAfter - heapBefore
-        );
+        return new BenchResult(name, cfg.BatchSize, dim, cfg.Iterations, sw.Elapsed.TotalMilliseconds, inputBytes, outputBytes, inputMBperHour, outputMBperHour, embeddingsPerHour);
     }
 
     public static void PrintTable(List<BenchResult> results)
@@ -207,24 +181,20 @@ public static class EncoderBench
             "Dim",
             "Batch",
             "ms/iter",
-            "Emb/s",
-            "In B/s",
-            "Out B/s",
-            "WS Δ",
-            "GC Δ"
+            "Emb/hour",
+            "In MB/hour",
+            "Out MB/hour"
         };
 
         var rows = results.Select(r => new[]
         {
             r.Name,
-            r.EmbeddingDim.ToString(),
+            r.Dimensions.ToString(),
             r.BatchSize.ToString(),
-            (r.TotalMs / r.MeasureIters).ToString("F2"),
-            r.EmbeddingsPerSec.ToString("F2"),
-            r.InputBytesPerSec.ToString("F0"),
-            r.OutputBytesPerSec.ToString("F0"),
-            r.WorkingSetDeltaBytes.ToString(),
-            r.GcHeapDeltaBytes.ToString(),
+            (r.TotalSeconds / r.Iterations).ToString("n1"),
+            r.EmbeddingsPerHour.ToString("n1"),
+            r.InputMBPerHour.ToString("n1"),
+            r.OutputMBPerHour.ToString("n1")
         }).ToList();
 
         var widths = new int[headers.Length];

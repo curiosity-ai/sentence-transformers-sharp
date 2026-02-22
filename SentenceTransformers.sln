@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.6.33417.168
+# Visual Studio Version 18
+VisualStudioVersion = 18.3.11429.125 d18.3
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SentenceTransformers.MiniLM", "SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj", "{97C4A1E2-C923-4A45-B922-8EA265C70706}"
 EndProject
@@ -23,6 +23,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Qwen3", "SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj", "{EAA14D5D-4ECC-4D01-B434-023433B7EFAB}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Benchmark", "SentenceTransformers.Benchmark\SentenceTransformers.Benchmark.csproj", "{1FB2E5FE-11AF-46D1-B98D-E2A698547977}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Testing", "Testing", "{9ACE82CD-C6FE-43D9-8B0F-9941FF3DE333}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -65,6 +67,11 @@ Global
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{4902461B-8ED8-4EE6-9FD3-2F3DF6E170D2} = {9ACE82CD-C6FE-43D9-8B0F-9941FF3DE333}
+		{56756297-E029-4A8D-9BB9-CAD1BAEFB9F2} = {9ACE82CD-C6FE-43D9-8B0F-9941FF3DE333}
+		{1FB2E5FE-11AF-46D1-B98D-E2A698547977} = {9ACE82CD-C6FE-43D9-8B0F-9941FF3DE333}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {A274C4EB-E10E-4455-A5F5-F3C01A0929DC}

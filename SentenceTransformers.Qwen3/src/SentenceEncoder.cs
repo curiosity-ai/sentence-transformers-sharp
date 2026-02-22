@@ -28,7 +28,7 @@ namespace SentenceTransformers.Qwen3
         private readonly string[] _outputNames;
 
         public TokenizerBase Tokenizer { get; }
-        
+
         public static int GetMaxChunkLength() => 32768;
         public int MaxChunkLength => GetMaxChunkLength();
 
@@ -60,7 +60,7 @@ namespace SentenceTransformers.Qwen3
 
         // Toggle if you want to match “no normalization” behavior
         public bool Normalize { get; set; } = true;
-        
+
         /// <summary>Creates an encoder from an existing ONNX model file at <paramref name="modelOnnxPath"/>.</summary>
         /// <param name="modelOnnxPath">Path to the ONNX model file.</param>
         public SentenceEncoder(SessionOptions sessionOptions = null, string modelOnnxPath = null)
@@ -174,13 +174,13 @@ namespace SentenceTransformers.Qwen3
                 {
                     Array.Copy(tts, 0, typeIds, offset, Math.Min(tts.Length, maxLen));
                 }
-                
+
             }
 
             var shape = new[] { batch, maxLen };
             string inputIdsName = FindInputName(_session, "input_ids");
             string attMaskName = FindInputName(_session, "attention_mask");
-            string? typeIdsName = _session.InputMetadata.Keys.FirstOrDefault(k => k == "token_type_ids");
+            string typeIdsName = _session.InputMetadata.Keys.FirstOrDefault(k => k == "token_type_ids");
 
             var inputs = new List<NamedOnnxValue>(3)
             {
@@ -218,19 +218,24 @@ namespace SentenceTransformers.Qwen3
         /// </summary>
         public static async Task DownloadModelAsync(string modelUrl, string localPath, CancellationToken cancellationToken = default)
         {
+            if (File.Exists(localPath)) return;
+
             if (!Uri.TryCreate(modelUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http"))
             {
                 throw new InvalidOperationException($"Invalid model URL: '{modelUrl}'. Use a valid http(s) URL.");
-            }            
+            }
+
             if (string.IsNullOrWhiteSpace(localPath))
             {
                 throw new ArgumentException("Local path must be non-empty.", nameof(localPath));
             }
+
+
             await _oneDownloadAtATime.WaitAsync(cancellationToken);
             try
             {
                 var buffer = new byte[2 << 18]; // 512kb
-                HttpResponseMessage? response = await _downloadClient.GetAsync(modelUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                var response = await _downloadClient.GetAsync(modelUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 try
                 {
                     response.EnsureSuccessStatusCode();
@@ -265,7 +270,7 @@ namespace SentenceTransformers.Qwen3
                             if (supportsRange && totalBytesRead > 0)
                             {
                                 newRequest.Headers.Range = new RangeHeaderValue(totalBytesRead, null);
-                            }                          
+                            }
                             else
                             {
                                 totalBytesRead = 0;
@@ -285,10 +290,6 @@ namespace SentenceTransformers.Qwen3
             catch (Exception ex)
             {
                 File.Delete(localPath);
-                if (ex is OperationCanceledException)
-                {
-                    throw;
-                }
                 throw;
             }
             finally
