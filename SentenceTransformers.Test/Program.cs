@@ -1,9 +1,14 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text;
 using SentenceTransformers;
+using SentenceTransformers.Qwen3;
 
+var encTask = SentenceEncoder.CreateAsync();
 Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
 Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
+
+using var enc = await encTask;
+Main.RunSimple(enc);
 
 public static class Main
 {

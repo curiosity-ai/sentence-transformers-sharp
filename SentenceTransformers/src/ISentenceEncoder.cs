@@ -9,7 +9,7 @@ public record struct TaggedEncodedChunk(string        Text, float[] Vector, stri
 public record struct TaggedEncodedChunkAligned(string Text, float[] Vector, string Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
 public record struct TaggedChunk(string               Text, string  Tag);
 public record struct TaggedChunkAligned(string        Text, string  Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
-public interface ISentenceEncoder
+public interface ISentenceEncoder: IDisposable
 {
     public int MaxChunkLength { get; }
 
