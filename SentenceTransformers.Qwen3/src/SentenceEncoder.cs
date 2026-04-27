@@ -43,11 +43,12 @@ namespace SentenceTransformers.Qwen3
             SessionOptions sessionOptions = null,
             string modelUrl = null,
             string downloadToPath = null,
+            IProgress<float> progress = null,
             CancellationToken cancellationToken = default)
         {
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Qwen3", "qwen3-model.onnx");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await DownloadModelAsync(modelUrl ?? DefaultModelUrl, path, cancellationToken);
+            await DownloadModelAsync(modelUrl ?? DefaultModelUrl, path, progress, cancellationToken);
             return new SentenceEncoder(sessionOptions, path);
         }
 
@@ -216,7 +217,7 @@ namespace SentenceTransformers.Qwen3
         /// Downloads the ONNX model from <paramref name="modelUrl"/> to <paramref name="localPath"/>.
         /// Only one download runs at a time. On failure, any partial file at <paramref name="localPath"/> is deleted.
         /// </summary>
-        public static async Task DownloadModelAsync(string modelUrl, string localPath, CancellationToken cancellationToken = default)
+        public static async Task DownloadModelAsync(string modelUrl, string localPath, IProgress<float> progress = null, CancellationToken cancellationToken = default)
         {
             if (File.Exists(localPath)) return;
 
@@ -239,6 +240,7 @@ namespace SentenceTransformers.Qwen3
                 try
                 {
                     response.EnsureSuccessStatusCode();
+                    long? totalFileSize = response.Content.Headers.ContentLength;
                     var supportsRange = response.Headers.AcceptRanges.Contains("bytes");
 
                     await using var fileStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
@@ -255,6 +257,10 @@ namespace SentenceTransformers.Qwen3
                             {
                                 await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
                                 totalBytesRead += bytesRead;
+                                if (totalFileSize.HasValue && progress != null)
+                                {
+                                    progress.Report((float)totalBytesRead / totalFileSize.Value);
+                                }
                             }
                             finished = true;
                         }
@@ -279,6 +285,10 @@ namespace SentenceTransformers.Qwen3
                             response.Dispose();
                             response = await _downloadClient.SendAsync(newRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                             response.EnsureSuccessStatusCode();
+                            if (!supportsRange || totalBytesRead == 0)
+                            {
+                                totalFileSize = response.Content.Headers.ContentLength;
+                            }
                         }
                     }
                 }
