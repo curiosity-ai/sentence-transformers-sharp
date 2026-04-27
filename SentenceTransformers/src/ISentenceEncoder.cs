@@ -15,9 +15,9 @@ public interface ISentenceEncoder: IDisposable
 
     public TokenizerBase Tokenizer { get; }
 
-    public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default);
+    public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default);
 
-    public EncodedChunk[] ChunkAndEncode(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
+    public async Task<EncodedChunk[]> ChunkAndEncodeAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -45,7 +45,7 @@ public interface ISentenceEncoder: IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     oneChunk[0] = chunks[i];
-                    var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
+                    var oneVector = await EncodeAsync(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
@@ -57,7 +57,7 @@ public interface ISentenceEncoder: IDisposable
             }
             else
             {
-                var vectors = Encode(chunks.ToArray(), cancellationToken: cancellationToken);
+                var vectors = await EncodeAsync(chunks.ToArray(), cancellationToken: cancellationToken);
 
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
@@ -86,7 +86,7 @@ public interface ISentenceEncoder: IDisposable
         return encodedChunks;
     }
 
-    public EncodedChunkAligned[] ChunkAndEncodeAligned(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
+    public async Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -113,7 +113,7 @@ public interface ISentenceEncoder: IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     oneChunk[0] = chunks[i].Value;
-                    var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
+                    var oneVector = await EncodeAsync(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunkAligned(oneChunk[0], oneVector[0], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
@@ -125,7 +125,7 @@ public interface ISentenceEncoder: IDisposable
             }
             else
             {
-                var vectors = Encode(chunks.Select(v => v.Value).ToArray(), cancellationToken: cancellationToken);
+                var vectors = await EncodeAsync(chunks.Select(v => v.Value).ToArray(), cancellationToken: cancellationToken);
 
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
@@ -154,7 +154,7 @@ public interface ISentenceEncoder: IDisposable
         return encodedChunks;
     }
 
-    public TaggedEncodedChunk[] ChunkAndEncodeTagged(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
+    public async Task<TaggedEncodedChunk[]> ChunkAndEncodeTaggedAsync(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -183,7 +183,7 @@ public interface ISentenceEncoder: IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     oneChunk[0] = chunks[i].Text;
-                    var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
+                    var oneVector = await EncodeAsync(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector[0], chunks[i].Tag);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
@@ -195,7 +195,7 @@ public interface ISentenceEncoder: IDisposable
             }
             else
             {
-                var vectors = Encode(chunks.Select(c => c.Text).ToArray(), cancellationToken: cancellationToken);
+                var vectors = await EncodeAsync(chunks.Select(c => c.Text).ToArray(), cancellationToken: cancellationToken);
 
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
@@ -224,7 +224,7 @@ public interface ISentenceEncoder: IDisposable
         return encodedChunks;
     }
 
-    public TaggedEncodedChunkAligned[] ChunkAndEncodeTaggedAligned(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
+    public async Task<TaggedEncodedChunkAligned[]> ChunkAndEncodeTaggedAlignedAsync(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -258,7 +258,7 @@ public interface ISentenceEncoder: IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     oneChunk[0] = chunks[i].Text;
-                    var oneVector = Encode(oneChunk, cancellationToken: cancellationToken);
+                    var oneVector = await EncodeAsync(oneChunk, cancellationToken: cancellationToken);
                     encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, oneVector[0], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
@@ -270,7 +270,7 @@ public interface ISentenceEncoder: IDisposable
             }
             else
             {
-                var vectors = Encode(chunks.Select(c => c.Text).ToArray(), cancellationToken: cancellationToken);
+                var vectors = await EncodeAsync(chunks.Select(c => c.Text).ToArray(), cancellationToken: cancellationToken);
 
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {

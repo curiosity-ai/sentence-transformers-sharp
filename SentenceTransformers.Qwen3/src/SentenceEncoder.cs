@@ -100,7 +100,7 @@ namespace SentenceTransformers.Qwen3
             _sessionOptions?.Dispose();
         }
 
-        public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default)
+        public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
         {
             if (sentences is null || sentences.Length == 0)
             {

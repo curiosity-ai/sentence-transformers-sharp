@@ -31,7 +31,7 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
         _session.Dispose();
     }
 
-    public float[][] Encode(string[] sentences, CancellationToken cancellationToken = default)
+    public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
     {
         var numSentences = sentences.Length;
 

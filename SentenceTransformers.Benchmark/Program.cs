@@ -30,7 +30,7 @@ foreach (var (name, encoder) in syncEncoders)
 {
     using (encoder)
     {
-        var run = EncoderBench.Run(name, encoder, texts, cfg);
+        var run = await EncoderBench.RunAsync(name, encoder, texts, cfg);
         results.Add(run);
         Console.WriteLine();
     }
@@ -38,7 +38,7 @@ foreach (var (name, encoder) in syncEncoders)
 
 using (var qwen3Encoder = await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync())
 {
-    var run = EncoderBench.Run("Qwen3-0.6B", qwen3Encoder, texts, cfg);
+    var run = await EncoderBench.RunAsync("Qwen3-0.6B", qwen3Encoder, texts, cfg);
     results.Add(run);
     Console.WriteLine();
 }
@@ -111,7 +111,7 @@ public sealed record BenchResult(
 
 public static class EncoderBench
 {
-    public static BenchResult Run(string name, ISentenceEncoder encoder, string[] corpus, BenchConfig cfg)
+    public static async Task<BenchResult> RunAsync(string name, ISentenceEncoder encoder, string[] corpus, BenchConfig cfg)
     {
         // Build a batch by repeating corpus
         var batch = new string[cfg.BatchSize];
@@ -123,7 +123,7 @@ public static class EncoderBench
         // Warmup
         for (int i = 0; i < cfg.WarmupIters; i++)
         {
-            var warm = encoder.Encode(batch);
+            var warm = await encoder.EncodeAsync(batch);
             if (warm.Length == 0)
             {
                 throw new Exception("Warmup produced no embeddings.");
@@ -144,7 +144,7 @@ public static class EncoderBench
         float[][] last = Array.Empty<float[]>();
         for (int i = 0; i < cfg.Iterations; i++)
         {
-            last = encoder.Encode(batch);
+            last = await encoder.EncodeAsync(batch);
         }
         sw.Stop();
 

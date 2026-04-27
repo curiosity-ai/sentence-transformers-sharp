@@ -4,15 +4,15 @@ using SentenceTransformers;
 using SentenceTransformers.Qwen3;
 
 var encTask = SentenceEncoder.CreateAsync();
-Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
-Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
+await Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
+await Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
 
 using var enc = await encTask;
-Main.RunSimple(enc);
+await Main.RunSimple(enc);
 
 public static class Main
 {
-    public static void RunSimple(ISentenceEncoder sentenceEncoder)
+    public static async Task RunSimple(ISentenceEncoder sentenceEncoder)
     {
 
         var queries = new[]
@@ -29,8 +29,8 @@ public static class Main
             "The Repository Pattern and its fallacies"
         };
 
-        var encodedQueries   = sentenceEncoder.Encode(queries);
-        var encodedDocuments = sentenceEncoder.Encode(documents);
+        var encodedQueries   = await sentenceEncoder.EncodeAsync(queries);
+        var encodedDocuments = await sentenceEncoder.EncodeAsync(documents);
 
         Console.WriteLine($"Running model: {sentenceEncoder.GetType().FullName}");
 
@@ -56,7 +56,7 @@ public static class Main
 
     }
 
-    public static void Run(ISentenceEncoder sentenceEncoder)
+    public static async Task RunAsync(ISentenceEncoder sentenceEncoder)
     {
         var testSentences = new[]
         {
@@ -69,7 +69,7 @@ public static class Main
             "This project needs to be delivered soon.",
         };
 
-        var encodedTestSentences = sentenceEncoder.Encode(testSentences);
+        var encodedTestSentences = await sentenceEncoder.EncodeAsync(testSentences);
 
         var crossSimilarity = new float[testSentences.Length][];
 
@@ -84,7 +84,7 @@ public static class Main
         }
 
 //Test that the encoder doesn't throw on large inputs
-        var testEncodingAVeryLargeString = sentenceEncoder.Encode(new[]
+        var testEncodingAVeryLargeString = await sentenceEncoder.EncodeAsync(new[]
         {
             @"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
 The city is famous for its exquisite architecture, charming cafes, and art museums.
@@ -193,7 +193,7 @@ Air travel is also safer than it has ever been, with modern aircraft equipped wi
 In addition, airlines offer a variety of classes and amenities, from economy class to first-class cabins, providing passengers with a comfortable and luxurious travel experience.
 With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life.";
 
-        var answerTest = sentenceEncoder.ChunkAndEncode(longSentence);
+        var answerTest = await sentenceEncoder.ChunkAndEncodeAsync(longSentence);
 
         var questions = new[]
         {
@@ -203,7 +203,7 @@ With thousands of flights departing from airports around the world each day, air
             "What are some of the latest innovations in flying technology?",
         };
 
-        var questionEmbeddings = sentenceEncoder.Encode(questions);
+        var questionEmbeddings = await sentenceEncoder.EncodeAsync(questions);
 
         foreach (var (question, questionVector) in questions.Zip(questionEmbeddings))
         {
@@ -255,9 +255,9 @@ With thousands of flights departing from airports around the world each day, air
             var s     = sentencesHundred.Take(count).ToArray();
             count = s.Length;
 
-            var (mean, std) = Profile(5, () =>
+            var (mean, std) = await Profile(5, async () =>
             {
-                var output = sentenceEncoder.Encode(s);
+                var output = await sentenceEncoder.EncodeAsync(s);
             });
 
             Console.WriteLine($"Sentences Count: {count:n0} Mean {mean:F0}ms Std {std:F0}ms");
@@ -269,7 +269,7 @@ With thousands of flights departing from airports around the world each day, air
             Console.WriteLine($"{r[0]},{r[1]:F0},{r[2]:F0}");
         }
 
-        static (double mean, double avg) Profile(int iterations, Action func)
+        static async Task<(double mean, double avg)> Profile(int iterations, Func<Task> func)
         {
             //Run at highest priority to minimize fluctuations caused by other processes/threads
             Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
@@ -289,7 +289,7 @@ With thousands of flights departing from airports around the world each day, air
             {
                 var watch = new Stopwatch();
                 watch.Start();
-                func();
+                await func();
                 watch.Stop();
                 times[i] = watch.Elapsed.TotalMilliseconds;
 
