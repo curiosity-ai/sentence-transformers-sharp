@@ -1,14 +1,22 @@
 using System.Diagnostics;
 using System.Text;
 using SentenceTransformers;
-using SentenceTransformers.Qwen3;
 
-var encTask = SentenceEncoder.CreateAsync();
+var qwenEncTask = SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync();
+var harrierEncTask = SentenceTransformers.Harrier.SentenceEncoder.CreateAsync();
+
 await Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
 await Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
 
-using var enc = await encTask;
-await Main.RunSimple(enc);
+using (var qwenEnc = await qwenEncTask)
+{
+    await Main.RunSimple(qwenEnc);
+}
+
+using (var harrierEnc = await harrierEncTask)
+{
+    await Main.RunSimple(harrierEnc);
+}
 
 public static class Main
 {
