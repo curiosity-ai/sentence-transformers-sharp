@@ -24,5 +24,6 @@
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
     <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.Harrier\SentenceTransformers.Harrier.csproj" />
   </ItemGroup>
 </Project>
