@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.Harrier\SentenceTransformers.Harrier.csproj" />
+  </ItemGroup>
+
+  <!--
+    Qwen and Harrier both ship Resources\tokenizer.json. Referencing both projects copies them to
+    the same output path; we instead link the source tokenizer.json files under distinct filenames
+    so tests can load each by path.
+  -->
+  <ItemGroup>
+    <None Include="..\SentenceTransformers.Qwen3\Resources\tokenizer.json" Link="Resources\qwen-tokenizer.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\SentenceTransformers.Harrier\Resources\tokenizer.json" Link="Resources\harrier-tokenizer.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

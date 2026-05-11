@@ -217,7 +217,14 @@ namespace BERTTokenizers.Base
         {
             var alignedRemoved    = RemoveRepeatedSpecialCharsWithAlignment(text);
             var unidecoderRemoved = Unidecoder.FastUnidecodeWithAlignment(alignedRemoved.text, alignedRemoved.alignment);
-            AlignmentListPool.Return(alignedRemoved.alignment);
+
+            // For pure-ASCII input FastUnidecodeWithAlignment returns the same alignment list it
+            // was given; returning it to the pool here would clear it before TokenizeSentenceAligned
+            // reads it. Only release the original when Unidecode produced a fresh list.
+            if (!ReferenceEquals(alignedRemoved.alignment, unidecoderRemoved.alignment))
+            {
+                AlignmentListPool.Return(alignedRemoved.alignment);
+            }
 
             var result = TokenizeSentenceAligned(unidecoderRemoved.text, unidecoderRemoved.alignment)
                .SelectMany(TokenizeSubwordsAligned)
