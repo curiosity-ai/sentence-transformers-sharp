@@ -159,8 +159,10 @@ namespace SentenceTransformers.Qwen3
         /// <summary>
         /// Tokenizes <paramref name="text"/> and merges tokens into chunks of at most
         /// <paramref name="chunkLength"/> tokens with <paramref name="chunkOverlap"/> tokens of
-        /// overlap. Equivalent to the shared <see cref="ISentenceEncoder.ChunkTokens"/> helper,
-        /// surfaced as an instance method so callers do not need to cast to the interface.
+        /// overlap. Each chunk's text is reconstructed by slicing the source between the first and
+        /// last token's offsets returned by the Hugging Face tokenizer, which preserves the exact
+        /// original whitespace and any injected markers. This is the BPE-appropriate replacement
+        /// for the WordPiece-oriented <see cref="ISentenceEncoder.ChunkTokens"/> default.
         /// </summary>
         /// <param name="text">Source text to chunk.</param>
         /// <param name="chunkLength">Maximum tokens per chunk.</param>
@@ -168,19 +170,19 @@ namespace SentenceTransformers.Qwen3
         /// <param name="maxChunks">Hard cap on the number of chunks returned.</param>
         /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
         public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
-            => ((ISentenceEncoder)this).ChunkTokens(text, chunkLength, chunkOverlap, maxChunks, reportProgress);
+            => BPEChunkAndEncodeHelpers.ChunkTokens(Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress);
 
         /// <summary>
-        /// Aligned variant of <see cref="ChunkTokens"/>: each chunk carries offsets back into the
-        /// source text. Equivalent to <see cref="ISentenceEncoder.ChunkTokensAligned"/>.
+        /// Aligned variant of <see cref="ChunkTokens"/>: each chunk carries offsets back into
+        /// <paramref name="text"/>.
         /// </summary>
         /// <inheritdoc cref="ChunkTokens"/>
         public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
-            => ((ISentenceEncoder)this).ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks, reportProgress);
+            => BPEChunkAndEncodeHelpers.ChunkTokensAligned(Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress);
 
         /// <summary>
-        /// Splits <paramref name="text"/> into token-bounded chunks and encodes each chunk to an embedding.
-        /// Equivalent to <see cref="ISentenceEncoder.ChunkAndEncodeAsync"/>.
+        /// Splits <paramref name="text"/> into BPE-token-bounded chunks and encodes each chunk to
+        /// an embedding. Uses offset-based chunk reconstruction (see <see cref="ChunkTokens"/>).
         /// </summary>
         /// <param name="text">Source text. May be longer than <see cref="MaxChunkLength"/>.</param>
         /// <param name="chunkLength">Maximum tokens per chunk. Values <c>&lt;= 0</c> or above <see cref="MaxChunkLength"/> are clamped to <see cref="MaxChunkLength"/>.</param>
@@ -191,38 +193,36 @@ namespace SentenceTransformers.Qwen3
         /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         public Task<EncodedChunk[]> ChunkAndEncodeAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
-            => ((ISentenceEncoder)this).ChunkAndEncodeAsync(text, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
+            => BPEChunkAndEncodeHelpers.ChunkAndEncodeAsync(this, text, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
 
         /// <summary>
-        /// Aligned variant of <see cref="ChunkAndEncodeAsync"/>: results carry offsets back into
-        /// <paramref name="text"/>. Equivalent to <see cref="ISentenceEncoder.ChunkAndEncodeAlignedAsync"/>.
+        /// Aligned variant of <see cref="ChunkAndEncodeAsync"/>: each result also carries offsets
+        /// back into <paramref name="text"/>.
         /// </summary>
         /// <inheritdoc cref="ChunkAndEncodeAsync"/>
         public Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
-            => ((ISentenceEncoder)this).ChunkAndEncodeAlignedAsync(text, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
+            => BPEChunkAndEncodeHelpers.ChunkAndEncodeAlignedAsync(this, text, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
 
         /// <summary>
-        /// Chunks <paramref name="text"/> on token boundaries, then for each chunk invokes
-        /// <paramref name="stripTags"/> to remove injected markers and recover a tag (for example,
-        /// page numbers extracted from markers like <c>⁎12⁑</c>) before encoding the cleaned text.
-        /// Equivalent to <see cref="ISentenceEncoder.ChunkAndEncodeTaggedAsync"/>.
+        /// Chunks <paramref name="text"/> using BPE offsets, then for each chunk runs
+        /// <paramref name="stripTags"/> to remove injected markers and recover a tag before
+        /// encoding the cleaned text. The chunker treats markers as ordinary tokens.
         /// </summary>
         /// <param name="text">Source text with injected markers.</param>
         /// <param name="stripTags">Callback that strips markers and produces a <see cref="TaggedChunk"/> (cleaned text + tag).</param>
         /// <inheritdoc cref="ChunkAndEncodeAsync"/>
         public Task<TaggedEncodedChunk[]> ChunkAndEncodeTaggedAsync(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
-            => ((ISentenceEncoder)this).ChunkAndEncodeTaggedAsync(text, stripTags, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
+            => BPEChunkAndEncodeHelpers.ChunkAndEncodeTaggedAsync(this, text, stripTags, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
 
         /// <summary>
         /// Aligned variant of <see cref="ChunkAndEncodeTaggedAsync"/>: each result carries offsets
         /// into <paramref name="text"/> alongside the cleaned text, tag, and embedding.
-        /// Equivalent to <see cref="ISentenceEncoder.ChunkAndEncodeTaggedAlignedAsync"/>.
         /// </summary>
         /// <param name="text">Source text with injected markers.</param>
-        /// <param name="stripTags">Callback that strips markers and produces a <see cref="TaggedChunk"/>.</param>
+        /// <param name="stripTags">Callback that strips markers from the original chunk substring and produces a <see cref="TaggedChunk"/>.</param>
         /// <inheritdoc cref="ChunkAndEncodeAsync"/>
         public Task<TaggedEncodedChunkAligned[]> ChunkAndEncodeTaggedAlignedAsync(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
-            => ((ISentenceEncoder)this).ChunkAndEncodeTaggedAlignedAsync(text, stripTags, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
+            => BPEChunkAndEncodeHelpers.ChunkAndEncodeTaggedAlignedAsync(this, text, stripTags, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
 
         private List<NamedOnnxValue> BuildModelInputs(
             List<(long[] InputIds, long[] TokenTypeIds, long[] AttentionMask)> encoded,
