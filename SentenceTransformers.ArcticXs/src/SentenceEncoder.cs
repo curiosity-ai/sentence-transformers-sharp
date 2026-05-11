@@ -9,16 +9,31 @@ using SentenceTransformers;
 
 namespace SentenceTransformers.ArcticXs;
 
+/// <summary>
+/// Sentence encoder for the Snowflake arctic-embed-xs model. Loads the embedded ONNX model, tokenizes
+/// inputs through <see cref="ArcticTokenizer"/>, runs ONNX inference, and returns L2-normalized
+/// embeddings produced directly from the model's pooled output (no additional pooling is applied).
+/// Implements <see cref="ISentenceEncoder"/>, so the shared chunking helpers
+/// (<c>ChunkTokens</c>, <c>ChunkAndEncodeAsync</c>, <c>ChunkAndEncodeTaggedAsync</c>, and their aligned
+/// counterparts) are available on instances cast to that interface.
+/// </summary>
 public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
 {
     private readonly SessionOptions   _sessionOptions;
     private readonly InferenceSession _session;
+
+    /// <summary>WordPiece tokenizer used to convert raw text into model input ids/attention/token-type tensors.</summary>
     public           TokenizerBase    Tokenizer { get; }
     private readonly string[]         _outputNames;
 
+    /// <summary>Maximum number of tokens the model can process per call (512 for arctic-embed-xs).</summary>
     public static int GetMaxChunkLength() => 512;
+
+    /// <inheritdoc cref="GetMaxChunkLength"/>
     public        int MaxChunkLength      => GetMaxChunkLength();
 
+    /// <summary>Creates a new encoder, loading the embedded ONNX model and the arctic-embed vocabulary.</summary>
+    /// <param name="sessionOptions">Optional ONNX runtime session options. A new default instance is used when null.</param>
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
@@ -28,12 +43,21 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
         _outputNames = _session.OutputMetadata.Keys.ToArray();
     }
 
+    /// <summary>Disposes the ONNX session and its options.</summary>
     public void Dispose()
     {
         _sessionOptions.Dispose();
         _session.Dispose();
     }
 
+    /// <summary>
+    /// Encodes a batch of sentences. Each sentence is tokenized and padded to the longest sequence
+    /// in the batch (truncated at <see cref="MaxChunkLength"/>), the model is run, and its output
+    /// vectors are L2-normalized.
+    /// </summary>
+    /// <param name="sentences">Texts to embed. Each entry produces one vector in the result.</param>
+    /// <param name="cancellationToken">Token used to terminate the ONNX run early.</param>
+    /// <returns>Array of embedding vectors, one per input sentence in the same order.</returns>
     public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
     {
         var numSentences = sentences.Length;

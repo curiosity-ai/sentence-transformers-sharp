@@ -3,20 +3,82 @@ using Mosaik.Core;
 
 namespace SentenceTransformers;
 
+/// <summary>A chunk of text paired with its embedding vector.</summary>
+/// <param name="Text">The chunk text that was encoded.</param>
+/// <param name="Vector">Embedding vector produced for <paramref name="Text"/>.</param>
 public record struct EncodedChunk(string              Text, float[] Vector);
+
+/// <summary>A chunk of text paired with its embedding vector and offsets back into the original input.</summary>
+/// <param name="Text">The chunk text that was encoded (may have markers stripped).</param>
+/// <param name="Vector">Embedding vector produced for <paramref name="Text"/>.</param>
+/// <param name="Start">Character offset of the first token of the chunk in <paramref name="OriginalText"/>.</param>
+/// <param name="LastStart">Character offset of the last token of the chunk in <paramref name="OriginalText"/>.</param>
+/// <param name="ApproximateEnd">Approximate end-of-chunk character offset in <paramref name="OriginalText"/>.</param>
+/// <param name="OriginalText">The full source text the chunk was extracted from.</param>
 public record struct EncodedChunkAligned(string       Text, float[] Vector, int    Start, int LastStart, int ApproximateEnd, string OriginalText);
+
+/// <summary>
+/// A chunk + embedding + tag. The tag is the metadata produced by a <see cref="ISentenceEncoder"/>
+/// tagged-chunking call (for example, the page numbers extracted from injected page markers).
+/// </summary>
+/// <param name="Text">The chunk text that was encoded (markers removed).</param>
+/// <param name="Vector">Embedding vector produced for <paramref name="Text"/>.</param>
+/// <param name="Tag">Tag value derived from the markers found inside the chunk.</param>
 public record struct TaggedEncodedChunk(string        Text, float[] Vector, string Tag);
+
+/// <summary>Aligned tagged chunk: a <see cref="TaggedEncodedChunk"/> plus offsets into the original input.</summary>
 public record struct TaggedEncodedChunkAligned(string Text, float[] Vector, string Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
+
+/// <summary>
+/// Result of stripping injected markers out of a chunk: the cleaned text plus a tag derived from the
+/// markers. Returned by the <c>stripTags</c> callback passed to the tagged chunking helpers.
+/// </summary>
+/// <param name="Text">The chunk text with markers removed.</param>
+/// <param name="Tag">Tag derived from the markers (for example, a page range).</param>
 public record struct TaggedChunk(string               Text, string  Tag);
+
+/// <summary>Aligned variant of <see cref="TaggedChunk"/> carrying offsets into the original input.</summary>
 public record struct TaggedChunkAligned(string        Text, string  Tag, int Start, int LastStart, int ApproximateEnd, string OriginalText);
+
+/// <summary>
+/// Common contract for sentence encoders. Provides <see cref="EncodeAsync"/> for direct batch
+/// embedding plus a family of default-implementation helpers for tokenizer-aware text chunking,
+/// optionally combined with marker-injection / marker-stripping flows. The chunking helpers split
+/// long text on token boundaries (so chunks never exceed the model's context window) and can encode
+/// each chunk to a vector in a single call.
+/// </summary>
 public interface ISentenceEncoder: IDisposable
 {
+    /// <summary>
+    /// Maximum number of tokens (including special tokens) the underlying model accepts per call.
+    /// Chunking helpers clamp <c>chunkLength</c> to this value.
+    /// </summary>
     public int MaxChunkLength { get; }
 
+    /// <summary>The tokenizer used to split text into tokens for chunking and encoding.</summary>
     public TokenizerBase Tokenizer { get; }
 
+    /// <summary>
+    /// Encodes a batch of input strings into embedding vectors. Each input must fit in
+    /// <see cref="MaxChunkLength"/> tokens (use one of the <c>ChunkAndEncode*</c> helpers when it does not).
+    /// </summary>
+    /// <param name="sentences">Texts to embed.</param>
+    /// <param name="cancellationToken">Token used to terminate the inference run early.</param>
+    /// <returns>One embedding vector per input sentence, in the same order.</returns>
     public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Splits <paramref name="text"/> into token-bounded chunks and encodes each chunk to an embedding.
+    /// </summary>
+    /// <param name="text">Source text. May be longer than <see cref="MaxChunkLength"/>.</param>
+    /// <param name="chunkLength">Maximum tokens per chunk. Values <c>&lt;= 0</c> or above <see cref="MaxChunkLength"/> are clamped to <see cref="MaxChunkLength"/>.</param>
+    /// <param name="chunkOverlap">Number of tokens to overlap between consecutive chunks. Out-of-range values default to <c>chunkLength / 5</c>.</param>
+    /// <param name="sequentially">When true, encode chunks one-by-one (lower peak memory, supports incremental cancellation). When false, encode the whole batch in a single call.</param>
+    /// <param name="maxChunks">Hard cap on the number of chunks to produce.</param>
+    /// <param name="keepResultsOnCancellation">When true and the operation is cancelled, return the chunks that finished encoding instead of throwing.</param>
+    /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
+    /// <param name="cancellationToken">Cancellation token for the encoding loop.</param>
+    /// <returns>Array of <see cref="EncodedChunk"/>, one per produced chunk, in source order.</returns>
     public async Task<EncodedChunk[]> ChunkAndEncodeAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
@@ -86,6 +148,12 @@ public interface ISentenceEncoder: IDisposable
         return encodedChunks;
     }
 
+    /// <summary>
+    /// Same as <see cref="ChunkAndEncodeAsync"/> but each result also exposes character offsets back
+    /// into <paramref name="text"/>, allowing the original (un-normalized) substring to be recovered
+    /// via <see cref="AlignedChunkHelpers.FromOriginal(EncodedChunkAligned)"/>.
+    /// </summary>
+    /// <inheritdoc cref="ChunkAndEncodeAsync"/>
     public async Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
@@ -154,6 +222,21 @@ public interface ISentenceEncoder: IDisposable
         return encodedChunks;
     }
 
+    /// <summary>
+    /// Chunks <paramref name="text"/> on token boundaries, then for each chunk invokes
+    /// <paramref name="stripTags"/> to extract a tag and remove injected markers before encoding.
+    /// </summary>
+    /// <remarks>
+    /// This supports the "marker injection / marker removal" workflow: callers pre-process the
+    /// source text to embed lightweight markers (for example, page boundaries written as
+    /// <c>⁎12⁑</c>), pass the marked text in here, and <paramref name="stripTags"/> recovers the
+    /// page numbers as the <see cref="TaggedChunk.Tag"/> while returning the cleaned text that is
+    /// actually fed to the model. The chunker treats markers as ordinary tokens, so chunk boundaries
+    /// are independent of which page a chunk happens to cover.
+    /// </remarks>
+    /// <param name="text">Source text, optionally with injected markers.</param>
+    /// <param name="stripTags">Callback that removes injected markers from a chunk and returns the cleaned text plus a tag derived from those markers.</param>
+    /// <inheritdoc cref="ChunkAndEncodeAsync"/>
     public async Task<TaggedEncodedChunk[]> ChunkAndEncodeTaggedAsync(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
@@ -224,6 +307,15 @@ public interface ISentenceEncoder: IDisposable
         return encodedChunks;
     }
 
+    /// <summary>
+    /// Aligned variant of <see cref="ChunkAndEncodeTaggedAsync"/>: chunks the (marked) text on token
+    /// boundaries, then for each chunk extracts the original (unmarked) substring via the aligned
+    /// tokenizer, runs <paramref name="stripTags"/> on it, and encodes the cleaned text. Results
+    /// carry offsets back into <paramref name="text"/>.
+    /// </summary>
+    /// <param name="text">Source text, optionally with injected markers.</param>
+    /// <param name="stripTags">Callback that removes injected markers and produces a tag from the chunk.</param>
+    /// <inheritdoc cref="ChunkAndEncodeAsync"/>
     public async Task<TaggedEncodedChunkAligned[]> ChunkAndEncodeTaggedAlignedAsync(string text, Func<string, TaggedChunk> stripTags, int chunkLength = 500, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
@@ -299,6 +391,19 @@ public interface ISentenceEncoder: IDisposable
         return encodedChunks;
     }
 
+    /// <summary>
+    /// Tokenizes <paramref name="text"/> and merges tokens into chunks of at most
+    /// <paramref name="chunkLength"/> tokens with <paramref name="chunkOverlap"/> tokens of overlap
+    /// between consecutive chunks. The text is first truncated to roughly
+    /// <c>chunkLength * maxChunks * Tokenizer.ApproxCharToTokenRatio</c> characters when
+    /// <paramref name="maxChunks"/> is bounded, to avoid tokenizing material that would be dropped.
+    /// </summary>
+    /// <param name="text">Source text to chunk.</param>
+    /// <param name="chunkLength">Maximum tokens per chunk.</param>
+    /// <param name="chunkOverlap">Tokens of overlap kept between consecutive chunks.</param>
+    /// <param name="maxChunks">Hard cap on the number of chunks returned.</param>
+    /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
+    /// <returns>The chunks as untokenized strings, in source order.</returns>
     public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
         reportProgress?.Invoke(0.001f);
@@ -311,6 +416,12 @@ public interface ISentenceEncoder: IDisposable
         }
     }
 
+    /// <summary>
+    /// Aligned variant of <see cref="ChunkTokens"/>: each chunk carries character offsets back into
+    /// the (possibly truncated) source text, so callers can recover the exact original substring via
+    /// <see cref="AlignedChunkHelpers.FromOriginal(AlignedString)"/>.
+    /// </summary>
+    /// <inheritdoc cref="ChunkTokens"/>
     public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
     {
         checked //Ensure the max text substring length computed is not overflowing
@@ -422,6 +533,16 @@ public interface ISentenceEncoder: IDisposable
         return docs;
     }
 
+    /// <summary>
+    /// Character-based fallback chunker that does not require a tokenizer. Splits on whitespace and
+    /// rejoins runs of tokens into chunks of at most <paramref name="chunkLength"/> characters with
+    /// <paramref name="chunkOverlap"/> characters of overlap.
+    /// </summary>
+    /// <param name="text">Source text to chunk.</param>
+    /// <param name="separator">Separator used when re-joining whitespace-split tokens.</param>
+    /// <param name="chunkLength">Maximum characters per chunk.</param>
+    /// <param name="chunkOverlap">Characters of overlap between consecutive chunks.</param>
+    /// <param name="maxChunks">Hard cap on the number of chunks returned.</param>
     public static List<string> ChunkString(string text, char separator = ' ', int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue)
     {
         return MergeStringSplits(text.Split(new char[] { '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries), separator, chunkLength, chunkOverlap, maxChunks);

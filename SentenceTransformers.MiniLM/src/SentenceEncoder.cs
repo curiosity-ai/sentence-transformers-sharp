@@ -6,16 +6,35 @@ using SentenceTransformers;
 
 namespace SentenceTransformers.MiniLM;
 
+/// <summary>
+/// Sentence encoder for the all-MiniLM-L6-v2 model. Loads the embedded ONNX model, applies WordPiece
+/// tokenization through <see cref="MiniLMTokenizer"/>, runs the ONNX inference session, and returns
+/// 384-dimensional L2-normalized embeddings produced by mean-pooling the token outputs with the
+/// attention mask. Implements <see cref="ISentenceEncoder"/>, so the shared chunking helpers
+/// (<c>ChunkTokens</c>, <c>ChunkAndEncodeAsync</c>, <c>ChunkAndEncodeTaggedAsync</c>, and their aligned
+/// counterparts) are available on instances cast to that interface.
+/// </summary>
 public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
 {
     private readonly SessionOptions   _sessionOptions;
     private readonly InferenceSession _session;
+
+    /// <summary>WordPiece tokenizer used to convert raw text into model input ids/attention/token-type tensors.</summary>
     public           TokenizerBase    Tokenizer { get; }
     private readonly string[]         _outputNames;
 
-    public static int GetMaxChunkLength() => 256; //The documentation is incorrect for MiniLM - the context window size is 256 - see https://stackoverflow.com/questions/75901231/max-seq-length-for-transformer-sentence-bert
+    /// <summary>
+    /// Maximum number of tokens the model can process per call.
+    /// MiniLM-L6-v2 is trained with a 256-token context window despite the often-quoted 512;
+    /// see https://stackoverflow.com/questions/75901231/max-seq-length-for-transformer-sentence-bert.
+    /// </summary>
+    public static int GetMaxChunkLength() => 256;
+
+    /// <inheritdoc cref="GetMaxChunkLength"/>
     public        int MaxChunkLength      => GetMaxChunkLength();
 
+    /// <summary>Creates a new encoder, loading the embedded ONNX model and the MiniLM vocabulary.</summary>
+    /// <param name="sessionOptions">Optional ONNX runtime session options. A new default instance is used when null.</param>
     public SentenceEncoder(SessionOptions sessionOptions = null)
     {
         _sessionOptions = sessionOptions ?? new SessionOptions();
@@ -25,12 +44,21 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
         _outputNames = _session.OutputMetadata.Keys.ToArray();
     }
 
+    /// <summary>Disposes the ONNX session and its options.</summary>
     public void Dispose()
     {
         _sessionOptions.Dispose();
         _session.Dispose();
     }
 
+    /// <summary>
+    /// Encodes a batch of sentences to 384-dimensional embeddings. Each sentence is tokenized and
+    /// padded to the longest sequence in the batch (truncated at <see cref="MaxChunkLength"/>),
+    /// then mean-pooled with the attention mask and L2-normalized.
+    /// </summary>
+    /// <param name="sentences">Texts to embed. Each entry produces one vector in the result.</param>
+    /// <param name="cancellationToken">Token used to terminate the ONNX run early.</param>
+    /// <returns>Array of <c>float[384]</c> vectors, one per input sentence in the same order.</returns>
     public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
     {
         var numSentences = sentences.Length;
