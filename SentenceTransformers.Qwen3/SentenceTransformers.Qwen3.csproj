@@ -33,5 +33,7 @@
 
   <ItemGroup>
     <None Include="Resources\tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- Also embed the tokenizer so NuGet consumers work without copying Resources/tokenizer.json into their output. -->
+    <EmbeddedResource Include="Resources\tokenizer.json" />
   </ItemGroup>
 </Project>

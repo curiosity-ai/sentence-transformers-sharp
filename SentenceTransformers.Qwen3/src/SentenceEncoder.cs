@@ -83,7 +83,12 @@ namespace SentenceTransformers.Qwen3
             Tokenizer = new QwenTokenizer(tokPathToUse, MaxChunkLength);
         }
 
-        /// <summary>Resolves tokenizer path: Resources/tokenizer.json (under app base directory), or embedded resource written to temp if not found.</summary>
+        /// <summary>
+        /// Resolves the tokenizer.json path. Prefers <c>Resources/tokenizer.json</c> next to the application
+        /// (under the app base directory); when that is missing - e.g. when this library is consumed as a NuGet
+        /// package and the consumer did not copy the file to its output - it falls back to the copy embedded in
+        /// this assembly, extracting it once to a temp location.
+        /// </summary>
         private static string ResolveTokenizerPath(string modelOnnxPath)
         {
             var resourcesPath = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
@@ -92,7 +97,27 @@ namespace SentenceTransformers.Qwen3
                 return resourcesPath;
             }
 
-            throw new FileNotFoundException(resourcesPath);
+            return ExtractEmbeddedTokenizer();
+        }
+
+        /// <summary>Writes the embedded tokenizer.json to a stable temp path (once) and returns it.</summary>
+        private static string ExtractEmbeddedTokenizer()
+        {
+            var bytes = ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "tokenizer.json");
+            if (bytes is null)
+            {
+                throw new FileNotFoundException("tokenizer.json was not found on disk or embedded in the SentenceTransformers.Qwen3 assembly.");
+            }
+
+            var cachedPath = Path.Combine(Path.GetTempPath(), "SentenceTransformers.Qwen3", "tokenizer.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(cachedPath)!);
+
+            if (!File.Exists(cachedPath) || new FileInfo(cachedPath).Length != bytes.Length)
+            {
+                File.WriteAllBytes(cachedPath, bytes);
+            }
+
+            return cachedPath;
         }
 
         public void Dispose()
