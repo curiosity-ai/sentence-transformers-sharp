@@ -3,6 +3,7 @@ variables:
   projectMiniLM:   './SentenceTransformers.MiniLM/SentenceTransformers.MiniLM.csproj'
   projectArticXs:  './SentenceTransformers.ArcticXs/SentenceTransformers.ArcticXs.csproj'
   projectQwen3:    './SentenceTransformers.Qwen3/SentenceTransformers.Qwen3.csproj'
+  projectHarrier:  './SentenceTransformers.Harrier/SentenceTransformers.Harrier.csproj'
   solution:        './SentenceTransformers.sln'
   buildConfiguration: 'Release'
   targetVersion: yy.M.$(build.buildId)
@@ -71,6 +72,13 @@ steps:
   inputs:
     command: 'build'
     projects: '$(projectQwen3)'
+    arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
+
+- task: DotNetCoreCLI@2
+  displayName: 'build Harrier project'
+  inputs:
+    command: 'build'
+    projects: '$(projectHarrier)'
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
 - task: NuGetCommand@2
