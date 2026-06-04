@@ -23,7 +23,7 @@
     <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
-    <ProjectReference Include="..\SentenceTransformers.Harrier\SentenceTransformers.Harrier.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.Harrier.Medium\SentenceTransformers.Harrier.Medium.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small\SentenceTransformers.Harrier.Small.csproj" />
     <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
   </ItemGroup>

@@ -3,12 +3,12 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using BERTTokenizers.Base;
 using SentenceTransformers;
-using static SentenceTransformers.Harrier.DenseTensorHelpers;
+using static SentenceTransformers.Harrier.Medium.DenseTensorHelpers;
 
-namespace SentenceTransformers.Harrier
+namespace SentenceTransformers.Harrier.Medium
 {
     /// <summary>
-    /// Sentence encoder for harrier-oss-v1-0.6b ONNX (Microsoft's Harrier multilingual embedding model).
+    /// Sentence encoder for harrier-oss-v1-0.6b ONNX (Microsoft's Harrier Medium multilingual embedding model).
     /// Loads an ONNX model (with optional external data file) from a file path, runs it, and returns
     /// L2-normalized float embeddings (1024-dimensional). The model performs last-token pooling and
     /// L2 normalization internally and exposes a 'sentence_embedding' output.
@@ -100,7 +100,7 @@ namespace SentenceTransformers.Harrier
             string downloadToPath = null,
             CancellationToken cancellationToken = default)
         {
-            var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier", "harrier-model.onnx");
+            var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Medium", "harrier-medium-model.onnx");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
             var resolvedModelUrl = modelUrl ?? DefaultModelUrl;
@@ -142,7 +142,7 @@ namespace SentenceTransformers.Harrier
             _outputNames = ResolveOutputNames(_session);
 
             var tokPathToUse = ResolveTokenizerPath(modelOnnxPath);
-            Tokenizer = new HarrierTokenizer(tokPathToUse, MaxChunkLength);
+            Tokenizer = new HarrierMediumTokenizer(tokPathToUse, MaxChunkLength);
         }
 
         /// <summary>
@@ -185,10 +185,10 @@ namespace SentenceTransformers.Harrier
             var bytes = ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "tokenizer.json");
             if (bytes is null)
             {
-                throw new FileNotFoundException("tokenizer.json was not found on disk or embedded in the SentenceTransformers.Harrier assembly.");
+                throw new FileNotFoundException("tokenizer.json was not found on disk or embedded in the SentenceTransformers.Harrier.Medium assembly.");
             }
 
-            var cachedPath = Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier", "tokenizer.json");
+            var cachedPath = Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Medium", "tokenizer.json");
             Directory.CreateDirectory(Path.GetDirectoryName(cachedPath)!);
 
             if (!File.Exists(cachedPath) || new FileInfo(cachedPath).Length != bytes.Length)

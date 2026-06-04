@@ -4,7 +4,7 @@ using BERTTokenizers.Base;
 using HFTokenizer = Tokenizers.HuggingFace.Tokenizer.Tokenizer;
 using HFEncoding  = Tokenizers.HuggingFace.Tokenizer.Encoding;
 
-namespace SentenceTransformers.HarrierSmall
+namespace SentenceTransformers.Harrier.Small
 {
     /// <summary>
     /// Thin wrapper around Tokenizers.HuggingFace for tokenizer.json produced by Hugging Face,

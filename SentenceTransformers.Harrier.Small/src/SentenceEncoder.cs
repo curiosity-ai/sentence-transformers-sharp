@@ -3,9 +3,9 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using BERTTokenizers.Base;
 using SentenceTransformers;
-using static SentenceTransformers.HarrierSmall.DenseTensorHelpers;
+using static SentenceTransformers.Harrier.Small.DenseTensorHelpers;
 
-namespace SentenceTransformers.HarrierSmall
+namespace SentenceTransformers.Harrier.Small
 {
     /// <summary>
     /// Sentence encoder for harrier-oss-v1-270m ONNX (Microsoft's small Harrier multilingual embedding model).

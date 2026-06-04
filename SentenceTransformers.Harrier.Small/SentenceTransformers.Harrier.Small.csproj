@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Platforms>AnyCPU</Platforms>
     <LangVersion>latest</LangVersion>
-    <RootNamespace>SentenceTransformers.HarrierSmall</RootNamespace>
+    <RootNamespace>SentenceTransformers.Harrier.Small</RootNamespace>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -35,11 +35,6 @@
   <ItemGroup>
     <None Include="Resources\tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <!-- Also embed the tokenizer so NuGet consumers work without copying Resources/tokenizer.json into their output. -->
-    <!-- LogicalName is explicit because RootNamespace ("SentenceTransformers.HarrierSmall") differs
-         from the assembly name ("SentenceTransformers.Harrier.Small") and ResourceLoader looks the
-         resource up by assembly name. -->
-    <EmbeddedResource Include="Resources\tokenizer.json">
-      <LogicalName>SentenceTransformers.Harrier.Small.Resources.tokenizer.json</LogicalName>
-    </EmbeddedResource>
+    <EmbeddedResource Include="Resources\tokenizer.json" />
   </ItemGroup>
 </Project>

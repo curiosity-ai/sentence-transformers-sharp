@@ -20,12 +20,12 @@
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
     <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
-    <ProjectReference Include="..\SentenceTransformers.Harrier\SentenceTransformers.Harrier.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.Harrier.Medium\SentenceTransformers.Harrier.Medium.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small\SentenceTransformers.Harrier.Small.csproj" />
   </ItemGroup>
 
   <!--
-    Qwen, Harrier and Harrier.Small each ship Resources\tokenizer.json. Referencing all three
+    Qwen, Harrier.Medium and Harrier.Small each ship Resources\tokenizer.json. Referencing all three
     projects copies them to the same output path; we instead link the source tokenizer.json files
     under distinct filenames so tests can load each by path.
   -->
@@ -33,7 +33,7 @@
     <None Include="..\SentenceTransformers.Qwen3\Resources\tokenizer.json" Link="Resources\qwen-tokenizer.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="..\SentenceTransformers.Harrier\Resources\tokenizer.json" Link="Resources\harrier-tokenizer.json">
+    <None Include="..\SentenceTransformers.Harrier.Medium\Resources\tokenizer.json" Link="Resources\harrier-medium-tokenizer.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\harrier-small-tokenizer.json">

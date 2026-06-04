@@ -1,10 +1,11 @@
 variables:
-  projectBase:     './SentenceTransformers/SentenceTransformers.csproj'
-  projectMiniLM:   './SentenceTransformers.MiniLM/SentenceTransformers.MiniLM.csproj'
-  projectArticXs:  './SentenceTransformers.ArcticXs/SentenceTransformers.ArcticXs.csproj'
-  projectQwen3:    './SentenceTransformers.Qwen3/SentenceTransformers.Qwen3.csproj'
-  projectHarrier:  './SentenceTransformers.Harrier/SentenceTransformers.Harrier.csproj'
-  solution:        './SentenceTransformers.sln'
+  projectBase:           './SentenceTransformers/SentenceTransformers.csproj'
+  projectMiniLM:         './SentenceTransformers.MiniLM/SentenceTransformers.MiniLM.csproj'
+  projectArticXs:        './SentenceTransformers.ArcticXs/SentenceTransformers.ArcticXs.csproj'
+  projectQwen3:          './SentenceTransformers.Qwen3/SentenceTransformers.Qwen3.csproj'
+  projectHarrierMedium:  './SentenceTransformers.Harrier.Medium/SentenceTransformers.Harrier.Medium.csproj'
+  projectHarrierSmall:   './SentenceTransformers.Harrier.Small/SentenceTransformers.Harrier.Small.csproj'
+  solution:              './SentenceTransformers.sln'
   buildConfiguration: 'Release'
   targetVersion: yy.M.$(build.buildId)
   
@@ -75,10 +76,17 @@ steps:
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
 - task: DotNetCoreCLI@2
-  displayName: 'build Harrier project'
+  displayName: 'build Harrier.Medium project'
   inputs:
     command: 'build'
-    projects: '$(projectHarrier)'
+    projects: '$(projectHarrierMedium)'
+    arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
+
+- task: DotNetCoreCLI@2
+  displayName: 'build Harrier.Small project'
+  inputs:
+    command: 'build'
+    projects: '$(projectHarrierSmall)'
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
 - task: NuGetCommand@2

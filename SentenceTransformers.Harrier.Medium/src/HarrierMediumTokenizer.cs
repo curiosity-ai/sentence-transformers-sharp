@@ -4,21 +4,21 @@ using BERTTokenizers.Base;
 using HFTokenizer = Tokenizers.HuggingFace.Tokenizer.Tokenizer;
 using HFEncoding  = Tokenizers.HuggingFace.Tokenizer.Encoding;
 
-namespace SentenceTransformers.Harrier
+namespace SentenceTransformers.Harrier.Medium
 {
     /// <summary>
     /// Thin wrapper around Tokenizers.HuggingFace for tokenizer.json produced by Hugging Face.
     /// Important: includeTypeIds/includeAttentionMask must be true, otherwise Encoding.TypeIds /
     /// Encoding.AttentionMask will be empty.
     /// </summary>
-    public sealed class HarrierTokenizer : TokenizerBase, IDisposable
+    public sealed class HarrierMediumTokenizer : TokenizerBase, IDisposable
     {
         private readonly HFTokenizer _tokenizer;
 
         // Some tokenizers / FFI wrappers are not guaranteed thread-safe; lock to be safe.
         private readonly object _lock = new();
 
-        public HarrierTokenizer(string tokenizerJsonPath, int maxTokens)
+        public HarrierMediumTokenizer(string tokenizerJsonPath, int maxTokens)
         {
             if (string.IsNullOrWhiteSpace(tokenizerJsonPath))
             {
@@ -102,7 +102,7 @@ namespace SentenceTransformers.Harrier
 
         public override string IdToToken(int id)
         {
-            throw new NotSupportedException("HarrierTokenizer does not expose IdToToken. Use the HuggingFace tokenizer directly if needed.");
+            throw new NotSupportedException("HarrierMediumTokenizer does not expose IdToToken. Use the HuggingFace tokenizer directly if needed.");
         }
 
         public override List<string> TokenizeSimple(string text)
@@ -238,12 +238,12 @@ namespace SentenceTransformers.Harrier
 
         protected override IEnumerable<string> TokenizeSentence(string text)
         {
-            throw new NotSupportedException("HarrierTokenizer uses HuggingFace tokenizers. Use TokenizeRaw/Encode instead.");
+            throw new NotSupportedException("HarrierMediumTokenizer uses HuggingFace tokenizers. Use TokenizeRaw/Encode instead.");
         }
 
         protected override IEnumerable<AlignedString> TokenizeSentenceAligned(string text, List<int> alignment)
         {
-            throw new NotSupportedException("HarrierTokenizer uses HuggingFace tokenizers. Use TokenizeRawAligned/Encode instead.");
+            throw new NotSupportedException("HarrierMediumTokenizer uses HuggingFace tokenizers. Use TokenizeRawAligned/Encode instead.");
         }
 
         public void Dispose()

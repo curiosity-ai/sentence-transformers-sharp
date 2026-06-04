@@ -11,8 +11,8 @@ if (string.Equals(Environment.GetEnvironmentVariable("SENTENCE_TRANSFORMERS_TEST
 }
 
 var qwenEncTask = SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync();
-var harrierEncTask = SentenceTransformers.Harrier.SentenceEncoder.CreateAsync();
-var harrierSmallEncTask = SentenceTransformers.HarrierSmall.SentenceEncoder.CreateAsync();
+var harrierMediumEncTask = SentenceTransformers.Harrier.Medium.SentenceEncoder.CreateAsync();
+var harrierSmallEncTask = SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync();
 
 await Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
 await Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
@@ -22,9 +22,9 @@ using (var qwenEnc = await qwenEncTask)
     await Main.RunSimple(qwenEnc);
 }
 
-using (var harrierEnc = await harrierEncTask)
+using (var harrierMediumEnc = await harrierMediumEncTask)
 {
-    await Main.RunSimple(harrierEnc);
+    await Main.RunSimple(harrierMediumEnc);
 }
 
 using (var harrierSmallEnc = await harrierSmallEncTask)

@@ -4,6 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Platforms>AnyCPU</Platforms>
     <LangVersion>latest</LangVersion>
+    <RootNamespace>SentenceTransformers.Harrier.Medium</RootNamespace>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -14,8 +15,8 @@
     <RepositoryUrl>https://github.com/curiosity-ai/sentence-transformers-sharp</RepositoryUrl>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageId>SentenceTransformers.Harrier</PackageId>
-    <Description>The wrapper provides a simple and easy-to-use interface for loading the Harrier (harrier-oss-v1-0.6b) multilingual embeddings model and generating embeddings for input text.</Description>
+    <PackageId>SentenceTransformers.Harrier.Medium</PackageId>
+    <Description>The wrapper provides a simple and easy-to-use interface for loading the Harrier Medium (harrier-oss-v1-0.6b) multilingual embeddings model and generating embeddings for input text.</Description>
     <PackageTags>Harrier, Multilingual, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings,Sentence Transformers, Data Science, Big Data, Artificial Intelligence, AI, NLP Library, Neural Networks, Deep Learning</PackageTags>
   </PropertyGroup>
 

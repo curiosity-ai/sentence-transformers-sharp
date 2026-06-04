@@ -43,7 +43,7 @@ float[][] vectors = await encoder.EncodeAsync(new[]
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.MiniLM.svg?label=SentenceTransformers.MiniLM)](https://www.nuget.org/packages/SentenceTransformers.MiniLM/) | [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | 384 | 256 | English | Embedded |
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.ArcticXs.svg?label=SentenceTransformers.ArcticXs)](https://www.nuget.org/packages/SentenceTransformers.ArcticXs/) | [snowflake-arctic-embed-xs](https://huggingface.co/Snowflake/snowflake-arctic-embed-xs) | 384 | 512 | English | Embedded |
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Qwen3.svg?label=SentenceTransformers.Qwen3)](https://www.nuget.org/packages/SentenceTransformers.Qwen3/) | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | 1024 | 32768 | Multilingual | Downloaded on first use |
-| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.svg?label=SentenceTransformers.Harrier)](https://www.nuget.org/packages/SentenceTransformers.Harrier/) | [harrier-oss-v1-0.6b](https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX) | 1024 | 32768 | Multilingual | Downloaded on first use |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Medium.svg?label=SentenceTransformers.Harrier.Medium)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Medium/) | [harrier-oss-v1-0.6b](https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX) | 1024 | 32768 | Multilingual | Downloaded on first use |
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Small.svg?label=SentenceTransformers.Harrier.Small)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small/) | [harrier-oss-v1-270m](https://huggingface.co/onnx-community/harrier-oss-v1-270m-ONNX) | 640 | 32768 | Multilingual | Downloaded on first use |
 
 - **Embedded** models bundle the ONNX weights inside the NuGet package, so the encoder is ready
@@ -52,9 +52,9 @@ float[][] vectors = await encoder.EncodeAsync(new[]
   (under the system temp folder by default — see [Choosing where weights are stored](#choosing-where-weights-are-stored)).
 
 Pick **MiniLM** for the smallest/fastest footprint, **Arctic XS** for a strong English default,
-**Harrier Small** when you need multilingual coverage without paying for the larger Harrier 0.6b,
-and **Qwen3** or **Harrier** when you want the highest-quality embeddings (1024 dim) and the full
-32k-token context window.
+**Harrier Small** when you need multilingual coverage without paying for the larger 0.6b weights,
+and **Qwen3** or **Harrier Medium** when you want the highest-quality embeddings (1024 dim) and
+the full 32k-token context window.
 
 ## Installation
 
@@ -65,7 +65,7 @@ dependency):
 dotnet add package SentenceTransformers.MiniLM
 dotnet add package SentenceTransformers.ArcticXs
 dotnet add package SentenceTransformers.Qwen3
-dotnet add package SentenceTransformers.Harrier
+dotnet add package SentenceTransformers.Harrier.Medium
 dotnet add package SentenceTransformers.Harrier.Small
 ```
 
@@ -89,7 +89,7 @@ float[][] vectors = await encoder.EncodeAsync(new[]
 });
 ```
 
-### Downloaded models (Qwen3, Harrier, Harrier Small)
+### Downloaded models (Qwen3, Harrier Medium, Harrier Small)
 
 Larger models download their ONNX weights on first use. Create them with the async `CreateAsync`
 factory — the download is cached, so subsequent runs are instant:
@@ -104,10 +104,10 @@ float[][] vectors = await encoder.EncodeAsync(new[] { "Hello world" });
 // vectors[0] is a float[1024]
 ```
 
-Harrier is multilingual:
+Harrier Medium is multilingual:
 
 ```csharp
-using SentenceTransformers.Harrier;
+using SentenceTransformers.Harrier.Medium;
 
 using var encoder = await SentenceEncoder.CreateAsync();
 
@@ -123,7 +123,7 @@ Harrier Small is the same multilingual family at ~270M parameters (640-dim embed
 suitable when you want multilingual coverage without paying for the 0.6b weights:
 
 ```csharp
-using SentenceTransformers.HarrierSmall;
+using SentenceTransformers.Harrier.Small;
 
 using var encoder = await SentenceEncoder.CreateAsync();
 
@@ -196,7 +196,7 @@ using var encoder = await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync
     downloadToPath: "/var/models/qwen3.onnx");
 
 // Or point at your own mirror:
-using var harrier = await SentenceTransformers.Harrier.SentenceEncoder.CreateAsync(
+using var harrier = await SentenceTransformers.Harrier.Medium.SentenceEncoder.CreateAsync(
     modelUrl:     "https://my-mirror.example.com/harrier/model_quantized.onnx",
     modelDataUrl: "https://my-mirror.example.com/harrier/model_quantized.onnx_data");
 ```
@@ -206,26 +206,25 @@ to tune threading or enable hardware execution providers.
 
 ### Choosing a Harrier quantization
 
-The Hugging Face ONNX exports of both Harrier variants ship multiple quantization formats — pick
-the one that fits your CPU / GPU memory budget. URLs for every variant are exposed as constants on
-`SentenceEncoder.Quantizations`:
+Both Harrier packages ship multiple quantization formats — pick the one that fits your CPU / GPU
+memory budget. URLs for every variant are exposed as constants on `SentenceEncoder.Quantizations`:
 
-| Variant     | Constant                                | Harrier 0.6b weights | Harrier Small (270m) weights |
-| ---         | ---                                     | ---:                 | ---:                          |
-| Full (fp32) | `Quantizations.FullModelUrl`            | 2.09 GB (+306 MB)    | 1.11 GB                       |
-| FP16        | `Quantizations.Fp16ModelUrl`            | 1.20 GB              | 553 MB                        |
-| Q4          | `Quantizations.Q4ModelUrl`              | 399 MB               | 205 MB                        |
-| Q4 + FP16   | `Quantizations.Q4Fp16ModelUrl`          | 353 MB               | 172 MB                        |
-| Quantized   | `Quantizations.QuantizedModelUrl` *(default)* | 706 MB         | 344 MB                        |
+| Variant     | Constant                                | Harrier Medium (0.6b) weights | Harrier Small (270m) weights |
+| ---         | ---                                     | ---:                          | ---:                          |
+| Full (fp32) | `Quantizations.FullModelUrl`            | 2.09 GB (+306 MB)             | 1.11 GB                       |
+| FP16        | `Quantizations.Fp16ModelUrl`            | 1.20 GB                       | 553 MB                        |
+| Q4          | `Quantizations.Q4ModelUrl`              | 399 MB                        | 205 MB                        |
+| Q4 + FP16   | `Quantizations.Q4Fp16ModelUrl`          | 353 MB                        | 172 MB                        |
+| Quantized   | `Quantizations.QuantizedModelUrl` *(default)* | 706 MB                  | 344 MB                        |
 
 `Quantized` is the default — it produces float32 output and is the most broadly compatible across
 ONNX Runtime execution providers. `Q4` / `Q4F16` are the smallest on disk; `FP16` keeps the most
 precision per byte; `Full` is the unquantized reference. Each entry has a matching
-`…ModelDataUrl` constant for the external weights file (and the 0.6b `Full` variant additionally
-has `FullModelDataUrl2` because its fp32 weights are split into two files).
+`…ModelDataUrl` constant for the external weights file (and the Harrier Medium `Full` variant
+additionally has `FullModelDataUrl2` because its fp32 weights are split into two files).
 
 ```csharp
-using SentenceTransformers.HarrierSmall;
+using SentenceTransformers.Harrier.Small;
 
 // Use the smallest variant available (Q4F16, ~172 MB):
 using var encoder = await SentenceEncoder.CreateAsync(
@@ -238,7 +237,7 @@ using var encoder = await SentenceEncoder.CreateAsync(
 Each model package contains:
 
 - a tokenizer (WordPiece for the BERT-family embedded models, BPE via Hugging Face tokenizers for the
-  Qwen3 / Harrier models),
+  Qwen3 / Harrier Medium / Harrier Small models),
 - the ONNX graph (embedded, or downloaded on first use), and
 - a thin `SentenceEncoder` that tokenizes, runs ONNX Runtime inference, pools the token outputs and
   L2-normalizes the result.

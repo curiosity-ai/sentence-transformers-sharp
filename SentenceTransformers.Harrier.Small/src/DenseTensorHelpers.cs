@@ -1,7 +1,7 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
-namespace SentenceTransformers.HarrierSmall;
+namespace SentenceTransformers.Harrier.Small;
 
 /// <summary>
 /// Helpers for converting ONNX output tensors to float[][] and normalizing embeddings.

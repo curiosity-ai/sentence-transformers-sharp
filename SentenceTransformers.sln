@@ -26,7 +26,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Benchm
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Testing", "Testing", "{9ACE82CD-C6FE-43D9-8B0F-9941FF3DE333}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Harrier", "SentenceTransformers.Harrier\SentenceTransformers.Harrier.csproj", "{AD66CF6D-160C-4B5E-9BAF-D7A2CDB6FC49}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Harrier.Medium", "SentenceTransformers.Harrier.Medium\SentenceTransformers.Harrier.Medium.csproj", "{AD66CF6D-160C-4B5E-9BAF-D7A2CDB6FC49}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Tests", "SentenceTransformers.Tests\SentenceTransformers.Tests.csproj", "{11CAD661-6EE5-41FA-812E-AECBE3F813F1}"
 EndProject

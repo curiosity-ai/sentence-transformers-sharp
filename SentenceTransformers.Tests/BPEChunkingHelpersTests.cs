@@ -1,4 +1,4 @@
-using SentenceTransformers.Harrier;
+using SentenceTransformers.Harrier.Medium;
 using SentenceTransformers.Qwen3;
 using SentenceTransformers.Tests.Support;
 
@@ -6,15 +6,15 @@ namespace SentenceTransformers.Tests;
 
 /// <summary>
 /// Tests for <see cref="BPEChunkAndEncodeHelpers"/>: the offset-based chunker used by Qwen3 and
-/// Harrier. The chunk text must always equal the source substring between the first and last
-/// token's offsets — preserving whitespace, punctuation, and any injected markers verbatim.
+/// Harrier Medium. The chunk text must always equal the source substring between the first and
+/// last token's offsets — preserving whitespace, punctuation, and any injected markers verbatim.
 /// </summary>
 public class BPEChunkingHelpersTests
 {
     private const int MaxTokens = 1024;
 
     private static QwenTokenizer NewQwen() => new(TestPaths.QwenTokenizerJson, MaxTokens);
-    private static HarrierTokenizer NewHarrier() => new(TestPaths.HarrierTokenizerJson, MaxTokens);
+    private static HarrierMediumTokenizer NewHarrierMedium() => new(TestPaths.HarrierMediumTokenizerJson, MaxTokens);
 
     [Fact]
     public void ChunkTokens_EmptyText_ReturnsEmpty()
@@ -131,9 +131,9 @@ public class BPEChunkingHelpersTests
     }
 
     [Fact]
-    public void ChunkTokensAligned_Harrier_PreservesUnicodeContent()
+    public void ChunkTokensAligned_HarrierMedium_PreservesUnicodeContent()
     {
-        using var tok = NewHarrier();
+        using var tok = NewHarrierMedium();
         // Mix of scripts to exercise multi-byte handling.
         var text = "English text. Texte français. 中文文本。 العربية. русский.";
         var aligned = BPEChunkAndEncodeHelpers.ChunkTokensAligned(tok, text, chunkLength: 8, chunkOverlap: 2);

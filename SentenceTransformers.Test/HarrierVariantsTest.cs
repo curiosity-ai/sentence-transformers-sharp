@@ -1,9 +1,9 @@
 using SentenceTransformers;
-using HarrierBig = SentenceTransformers.Harrier;
-using HarrierSmall = SentenceTransformers.HarrierSmall;
+using HarrierMedium = SentenceTransformers.Harrier.Medium;
+using HarrierSmall = SentenceTransformers.Harrier.Small;
 
 /// <summary>
-/// Integration test: downloads every published quantization variant for both Harrier
+/// Integration test: downloads every published quantization variant for both Harrier Medium
 /// (0.6b) and Harrier Small (270m), loads each, encodes a small batch of multilingual
 /// sentences, and prints the resulting embedding dimensions and a few cosine
 /// similarities so the variants can be eyeballed against each other.
@@ -12,7 +12,7 @@ public static class HarrierVariantsTest
 {
     public static async Task RunAsync()
     {
-        // Both SentenceTransformers.Harrier and SentenceTransformers.Harrier.Small ship a
+        // Both SentenceTransformers.Harrier.Medium and SentenceTransformers.Harrier.Small ship a
         // Resources/tokenizer.json that copies to the same path in the consumer's output, and
         // they collide non-deterministically. Delete the colliding file so each encoder falls
         // back to its own embedded tokenizer (extracted under Path.GetTempPath() per package).
@@ -49,26 +49,26 @@ public static class HarrierVariantsTest
         }
 
         Console.WriteLine();
-        Console.WriteLine("=== Harrier (0.6b) variants ===");
-        foreach (var (label, modelUrl, dataUrls) in HarrierBigVariants())
+        Console.WriteLine("=== Harrier Medium (0.6b) variants ===");
+        foreach (var (label, modelUrl, dataUrls) in HarrierMediumVariants())
         {
             await RunVariantAsync(
                 label,
                 async () =>
                 {
-                    var dir = Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Variants", label);
+                    var dir = Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Medium.Variants", label);
                     Directory.CreateDirectory(dir);
                     var graphFile = Path.GetFileName(new Uri(modelUrl).LocalPath);
                     var path = Path.Combine(dir, graphFile);
                     // Manually pre-fetch every weight file under its upstream filename, since
                     // CreateAsync only fetches one companion file.
-                    await HarrierBig.SentenceEncoder.DownloadModelAsync(modelUrl, path);
+                    await HarrierMedium.SentenceEncoder.DownloadModelAsync(modelUrl, path);
                     foreach (var d in dataUrls)
                     {
                         var dataPath = Path.Combine(dir, Path.GetFileName(new Uri(d).LocalPath));
-                        await HarrierBig.SentenceEncoder.DownloadModelAsync(d, dataPath);
+                        await HarrierMedium.SentenceEncoder.DownloadModelAsync(d, dataPath);
                     }
-                    return new HarrierBig.SentenceEncoder(modelOnnxPath: path);
+                    return new HarrierMedium.SentenceEncoder(modelOnnxPath: path);
                 },
                 sentences);
         }
@@ -108,13 +108,13 @@ public static class HarrierVariantsTest
         ("quantized",     HarrierSmall.SentenceEncoder.Quantizations.QuantizedModelUrl, HarrierSmall.SentenceEncoder.Quantizations.QuantizedModelDataUrl),
     };
 
-    private static IEnumerable<(string Label, string ModelUrl, string[] DataUrls)> HarrierBigVariants() => new[]
+    private static IEnumerable<(string Label, string ModelUrl, string[] DataUrls)> HarrierMediumVariants() => new[]
     {
-        ("full",      HarrierBig.SentenceEncoder.Quantizations.FullModelUrl,      new[] { HarrierBig.SentenceEncoder.Quantizations.FullModelDataUrl, HarrierBig.SentenceEncoder.Quantizations.FullModelDataUrl2 }),
-        ("fp16",      HarrierBig.SentenceEncoder.Quantizations.Fp16ModelUrl,      new[] { HarrierBig.SentenceEncoder.Quantizations.Fp16ModelDataUrl }),
-        ("q4",        HarrierBig.SentenceEncoder.Quantizations.Q4ModelUrl,        new[] { HarrierBig.SentenceEncoder.Quantizations.Q4ModelDataUrl }),
-        ("q4f16",     HarrierBig.SentenceEncoder.Quantizations.Q4Fp16ModelUrl,    new[] { HarrierBig.SentenceEncoder.Quantizations.Q4Fp16ModelDataUrl }),
-        ("quantized", HarrierBig.SentenceEncoder.Quantizations.QuantizedModelUrl, new[] { HarrierBig.SentenceEncoder.Quantizations.QuantizedModelDataUrl }),
+        ("full",      HarrierMedium.SentenceEncoder.Quantizations.FullModelUrl,      new[] { HarrierMedium.SentenceEncoder.Quantizations.FullModelDataUrl, HarrierMedium.SentenceEncoder.Quantizations.FullModelDataUrl2 }),
+        ("fp16",      HarrierMedium.SentenceEncoder.Quantizations.Fp16ModelUrl,      new[] { HarrierMedium.SentenceEncoder.Quantizations.Fp16ModelDataUrl }),
+        ("q4",        HarrierMedium.SentenceEncoder.Quantizations.Q4ModelUrl,        new[] { HarrierMedium.SentenceEncoder.Quantizations.Q4ModelDataUrl }),
+        ("q4f16",     HarrierMedium.SentenceEncoder.Quantizations.Q4Fp16ModelUrl,    new[] { HarrierMedium.SentenceEncoder.Quantizations.Q4Fp16ModelDataUrl }),
+        ("quantized", HarrierMedium.SentenceEncoder.Quantizations.QuantizedModelUrl, new[] { HarrierMedium.SentenceEncoder.Quantizations.QuantizedModelDataUrl }),
     };
 
     private static float Dot(float[] a, float[] b)
