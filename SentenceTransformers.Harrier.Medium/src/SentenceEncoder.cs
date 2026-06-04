@@ -19,16 +19,17 @@ namespace SentenceTransformers.Harrier.Medium
     {
         /// <summary>
         /// Default URL used to download the ONNX model when no path is provided.
-        /// Points to the standard quantized variant (~706 MB external data) which produces
-        /// float32 output and is the most broadly compatible with onnxruntime CPU/GPU providers.
+        /// Points to the Q4F16 variant (~353 MB external data), the smallest variant by disk
+        /// size for Harrier Medium. Choose a different <see cref="Quantizations"/> entry when
+        /// you need higher precision or smaller graph latency.
         /// </summary>
-        public const string DefaultModelUrl = Quantizations.QuantizedModelUrl;
+        public const string DefaultModelUrl = Quantizations.Q4Fp16ModelUrl;
 
         /// <summary>
         /// Default URL for the external ONNX data file that accompanies <see cref="DefaultModelUrl"/>.
         /// Hugging Face splits Harrier ONNX models into a small graph file plus a separate weights file.
         /// </summary>
-        public const string DefaultModelDataUrl =  Quantizations.QuantizedModelDataUrl;
+        public const string DefaultModelDataUrl =  Quantizations.Q4Fp16ModelDataUrl;
 
         /// <summary>
         /// Download URLs for the Harrier 0.6b ONNX model variants published by
@@ -59,12 +60,12 @@ namespace SentenceTransformers.Harrier.Medium
             /// <summary>External weights for <see cref="Q4ModelUrl"/>.</summary>
             public const string Q4ModelDataUrl            = BaseUrl + "model_q4.onnx_data";
 
-            /// <summary>4-bit-with-FP16-residual graph (~353 MB external weights).</summary>
+            /// <summary>4-bit-with-FP16-residual graph (~353 MB external weights). The default variant - smallest on disk.</summary>
             public const string Q4Fp16ModelUrl            = BaseUrl + "model_q4f16.onnx";
             /// <summary>External weights for <see cref="Q4Fp16ModelUrl"/>.</summary>
             public const string Q4Fp16ModelDataUrl        = BaseUrl + "model_q4f16.onnx_data";
 
-            /// <summary>Standard quantized graph (~706 MB external weights, fp32 output). The default variant.</summary>
+            /// <summary>Standard quantized graph (~706 MB external weights, fp32 output).</summary>
             public const string QuantizedModelUrl         = BaseUrl + "model_quantized.onnx";
             /// <summary>External weights for <see cref="QuantizedModelUrl"/>.</summary>
             public const string QuantizedModelDataUrl     = BaseUrl + "model_quantized.onnx_data";

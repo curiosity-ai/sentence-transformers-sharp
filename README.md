@@ -39,12 +39,12 @@ float[][] vectors = await encoder.EncodeAsync(new[]
 
 | Package | Model | Dimensions | Max tokens | Languages | Weights |
 | --- | --- | --- | --- | --- | --- |
-| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.svg?label=SentenceTransformers)](https://www.nuget.org/packages/SentenceTransformers/) | Core interfaces & chunking helpers | — | — | — | — |
-| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.MiniLM.svg?label=SentenceTransformers.MiniLM)](https://www.nuget.org/packages/SentenceTransformers.MiniLM/) | [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | 384 | 256 | English | Embedded |
-| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.ArcticXs.svg?label=SentenceTransformers.ArcticXs)](https://www.nuget.org/packages/SentenceTransformers.ArcticXs/) | [snowflake-arctic-embed-xs](https://huggingface.co/Snowflake/snowflake-arctic-embed-xs) | 384 | 512 | English | Embedded |
-| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Qwen3.svg?label=SentenceTransformers.Qwen3)](https://www.nuget.org/packages/SentenceTransformers.Qwen3/) | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | 1024 | 32768 | Multilingual | Downloaded on first use |
-| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Medium.svg?label=SentenceTransformers.Harrier.Medium)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Medium/) | [harrier-oss-v1-0.6b](https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX) | 1024 | 32768 | Multilingual | Downloaded on first use |
-| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Small.svg?label=SentenceTransformers.Harrier.Small)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small/) | [harrier-oss-v1-270m](https://huggingface.co/onnx-community/harrier-oss-v1-270m-ONNX) | 640 | 32768 | Multilingual | Downloaded on first use |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.svg?label=SentenceTransformers)](https://www.nuget.org/packages/SentenceTransformers/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.svg?label=)](https://www.nuget.org/packages/SentenceTransformers/) | Core interfaces & chunking helpers | — | — | — | — |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.MiniLM.svg?label=SentenceTransformers.MiniLM)](https://www.nuget.org/packages/SentenceTransformers.MiniLM/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.MiniLM.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.MiniLM/) | [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | 384 | 256 | English | Embedded |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.ArcticXs.svg?label=SentenceTransformers.ArcticXs)](https://www.nuget.org/packages/SentenceTransformers.ArcticXs/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.ArcticXs.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.ArcticXs/) | [snowflake-arctic-embed-xs](https://huggingface.co/Snowflake/snowflake-arctic-embed-xs) | 384 | 512 | English | Embedded |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Qwen3.svg?label=SentenceTransformers.Qwen3)](https://www.nuget.org/packages/SentenceTransformers.Qwen3/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Qwen3.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Qwen3/) | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | 1024 | 32768 | Multilingual | Downloaded on first use |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Medium.svg?label=SentenceTransformers.Harrier.Medium)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Medium/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Harrier.Medium.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Medium/) | [harrier-oss-v1-0.6b](https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX) | 1024 | 32768 | Multilingual | Downloaded on first use |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Small.svg?label=SentenceTransformers.Harrier.Small)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Harrier.Small.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small/) | [harrier-oss-v1-270m](https://huggingface.co/onnx-community/harrier-oss-v1-270m-ONNX) | 640 | 32768 | Multilingual | Downloaded on first use |
 
 - **Embedded** models bundle the ONNX weights inside the NuGet package, so the encoder is ready
   immediately after construction.
@@ -209,27 +209,28 @@ to tune threading or enable hardware execution providers.
 Both Harrier packages ship multiple quantization formats — pick the one that fits your CPU / GPU
 memory budget. URLs for every variant are exposed as constants on `SentenceEncoder.Quantizations`:
 
-| Variant     | Constant                                | Harrier Medium (0.6b) weights | Harrier Small (270m) weights |
-| ---         | ---                                     | ---:                          | ---:                          |
-| Full (fp32) | `Quantizations.FullModelUrl`            | 2.09 GB (+306 MB)             | 1.11 GB                       |
-| FP16        | `Quantizations.Fp16ModelUrl`            | 1.20 GB                       | 553 MB                        |
-| Q4          | `Quantizations.Q4ModelUrl`              | 399 MB                        | 205 MB                        |
-| Q4 + FP16   | `Quantizations.Q4Fp16ModelUrl`          | 353 MB                        | 172 MB                        |
-| Quantized   | `Quantizations.QuantizedModelUrl` *(default)* | 706 MB                  | 344 MB                        |
+| Variant     | Constant                                       | Harrier Medium (0.6b) weights | Harrier Small (270m) weights |
+| ---         | ---                                            | ---:                          | ---:                          |
+| Full (fp32) | `Quantizations.FullModelUrl`                   | 2.09 GB (+306 MB)             | 1.11 GB                       |
+| FP16        | `Quantizations.Fp16ModelUrl`                   | 1.20 GB                       | 553 MB                        |
+| Q4          | `Quantizations.Q4ModelUrl`                     | 399 MB                        | 205 MB                        |
+| Q4 + FP16   | `Quantizations.Q4Fp16ModelUrl` *(default)*     | 353 MB                        | 172 MB                        |
+| Quantized   | `Quantizations.QuantizedModelUrl`              | 706 MB                        | 344 MB                        |
 
-`Quantized` is the default — it produces float32 output and is the most broadly compatible across
-ONNX Runtime execution providers. `Q4` / `Q4F16` are the smallest on disk; `FP16` keeps the most
-precision per byte; `Full` is the unquantized reference. Each entry has a matching
-`…ModelDataUrl` constant for the external weights file (and the Harrier Medium `Full` variant
-additionally has `FullModelDataUrl2` because its fp32 weights are split into two files).
+`Q4F16` is the default — it's the smallest variant on disk and keeps multilingual retrieval quality
+close to the unquantized reference. Pick `Quantized` when you need a pure float32 output and
+broader ONNX-Runtime execution-provider compatibility; `FP16` for the most precision per byte;
+`Full` for the unquantized reference. Each entry has a matching `…ModelDataUrl` constant for the
+external weights file (and the Harrier Medium `Full` variant additionally has `FullModelDataUrl2`
+because its fp32 weights are split into two files).
 
 ```csharp
 using SentenceTransformers.Harrier.Small;
 
-// Use the smallest variant available (Q4F16, ~172 MB):
+// Use the unquantized reference instead of the default Q4F16:
 using var encoder = await SentenceEncoder.CreateAsync(
-    modelUrl:     SentenceEncoder.Quantizations.Q4Fp16ModelUrl,
-    modelDataUrl: SentenceEncoder.Quantizations.Q4Fp16ModelDataUrl);
+    modelUrl:     SentenceEncoder.Quantizations.FullModelUrl,
+    modelDataUrl: SentenceEncoder.Quantizations.FullModelDataUrl);
 ```
 
 ## How it works
