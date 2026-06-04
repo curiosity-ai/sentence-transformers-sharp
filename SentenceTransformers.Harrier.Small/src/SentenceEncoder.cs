@@ -19,16 +19,17 @@ namespace SentenceTransformers.Harrier.Small
     {
         /// <summary>
         /// Default URL used to download the ONNX model when no path is provided.
-        /// Points to the standard quantized variant (~344 MB external data) which produces
-        /// float32 output and is the most broadly compatible with onnxruntime CPU/GPU providers.
+        /// Points to the Q4F16 variant (~172 MB external data), the smallest variant by disk
+        /// size for Harrier Small. Choose a different <see cref="Quantizations"/> entry when
+        /// you need higher precision or smaller graph latency.
         /// </summary>
-        public const string DefaultModelUrl = Quantizations.QuantizedModelUrl;
+        public const string DefaultModelUrl = Quantizations.Q4Fp16ModelUrl;
 
         /// <summary>
         /// Default URL for the external ONNX data file that accompanies <see cref="DefaultModelUrl"/>.
         /// Hugging Face splits Harrier ONNX models into a small graph file plus a separate weights file.
         /// </summary>
-        public const string DefaultModelDataUrl = Quantizations.QuantizedModelDataUrl;
+        public const string DefaultModelDataUrl = Quantizations.Q4Fp16ModelDataUrl;
 
         /// <summary>
         /// Download URLs for the Harrier Small (270m) ONNX model variants published by
@@ -57,12 +58,12 @@ namespace SentenceTransformers.Harrier.Small
             /// <summary>External weights for <see cref="Q4ModelUrl"/>.</summary>
             public const string Q4ModelDataUrl            = BaseUrl + "model_q4.onnx_data";
 
-            /// <summary>4-bit-with-FP16-residual graph (~172 MB external weights). Smallest variant.</summary>
+            /// <summary>4-bit-with-FP16-residual graph (~172 MB external weights). The default variant - smallest on disk.</summary>
             public const string Q4Fp16ModelUrl            = BaseUrl + "model_q4f16.onnx";
             /// <summary>External weights for <see cref="Q4Fp16ModelUrl"/>.</summary>
             public const string Q4Fp16ModelDataUrl        = BaseUrl + "model_q4f16.onnx_data";
 
-            /// <summary>Standard quantized graph (~344 MB external weights, fp32 output). The default variant.</summary>
+            /// <summary>Standard quantized graph (~344 MB external weights, fp32 output).</summary>
             public const string QuantizedModelUrl         = BaseUrl + "model_quantized.onnx";
             /// <summary>External weights for <see cref="QuantizedModelUrl"/>.</summary>
             public const string QuantizedModelDataUrl     = BaseUrl + "model_quantized.onnx_data";
@@ -91,11 +92,15 @@ namespace SentenceTransformers.Harrier.Small
         /// <param name="modelUrl">URL for the .onnx graph file. Defaults to <see cref="DefaultModelUrl"/>.</param>
         /// <param name="modelDataUrl">URL for the accompanying .onnx_data weights file. Pass null to skip.
         /// Defaults to <see cref="DefaultModelDataUrl"/> when <paramref name="modelUrl"/> is also null.</param>
+        /// <param name="reportProgress">Optional progress callback. Receives a <see cref="DownloadProgress"/>
+        /// roughly twice per second per file. Multi-file downloads (graph + <c>.onnx_data</c>) invoke the
+        /// callback once per file; use <see cref="DownloadProgress.FileName"/> to tell them apart.</param>
         public static async Task<SentenceEncoder> CreateAsync(
             SessionOptions sessionOptions = null,
             string modelUrl = null,
             string modelDataUrl = null,
             string downloadToPath = null,
+            Action<DownloadProgress> reportProgress = null,
             CancellationToken cancellationToken = default)
         {
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small", "harrier-small-model.onnx");
@@ -106,14 +111,14 @@ namespace SentenceTransformers.Harrier.Small
             // If user left both null, use the default pair.
             var resolvedDataUrl = modelDataUrl ?? (modelUrl is null ? DefaultModelDataUrl : null);
 
-            await DownloadModelAsync(resolvedModelUrl, path, cancellationToken);
+            await DownloadModelAsync(resolvedModelUrl, path, reportProgress, cancellationToken);
             if (!string.IsNullOrEmpty(resolvedDataUrl))
             {
                 // ONNX runtime expects the external data file to live next to the .onnx file
                 // with the exact name referenced in the model's external_data entry.
                 var dataFileName = Path.GetFileName(new Uri(resolvedDataUrl).LocalPath);
                 var dataPath = Path.Combine(Path.GetDirectoryName(path)!, dataFileName);
-                await DownloadModelAsync(resolvedDataUrl, dataPath, cancellationToken);
+                await DownloadModelAsync(resolvedDataUrl, dataPath, reportProgress, cancellationToken);
             }
             return new SentenceEncoder(sessionOptions, path);
         }
@@ -391,7 +396,9 @@ namespace SentenceTransformers.Harrier.Small
         /// Only one download runs at a time. On failure, any partial file at <paramref name="localPath"/> is deleted.
         /// Re-used for both the .onnx graph and its accompanying .onnx_data file.
         /// </summary>
-        public static async Task DownloadModelAsync(string modelUrl, string localPath, CancellationToken cancellationToken = default)
+        /// <param name="reportProgress">Optional progress callback. Receives a <see cref="DownloadProgress"/>
+        /// at most twice per second while bytes are flowing. Set to <c>null</c> to skip reporting.</param>
+        public static async Task DownloadModelAsync(string modelUrl, string localPath, Action<DownloadProgress> reportProgress = null, CancellationToken cancellationToken = default)
         {
             if (File.Exists(localPath)) return;
 
@@ -405,6 +412,10 @@ namespace SentenceTransformers.Harrier.Small
                 throw new ArgumentException("Local path must be non-empty.", nameof(localPath));
             }
 
+            var fileName = Path.GetFileName(localPath);
+            // Declared in the outer scope so the Report local function (below) can read it across
+            // the try block. Captured locally in the loop, refreshed when the response changes.
+            long? totalBytes = null;
 
             await _oneDownloadAtATime.WaitAsync(cancellationToken);
             try
@@ -415,10 +426,15 @@ namespace SentenceTransformers.Harrier.Small
                 {
                     response.EnsureSuccessStatusCode();
                     var supportsRange = response.Headers.AcceptRanges.Contains("bytes");
+                    // Content-Length on the first response is the full size; on a ranged retry it's
+                    // the remaining bytes, so capture it here.
+                    totalBytes = response.Content.Headers.ContentLength;
 
                     await using var fileStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
                     var totalBytesRead = 0L;
                     var finished = false;
+                    var lastReportTicks = 0L;
+                    Report(0L); // initial 0% notification so callers can show "starting…"
 
                     while (!finished)
                     {
@@ -430,8 +446,16 @@ namespace SentenceTransformers.Harrier.Small
                             {
                                 await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
                                 totalBytesRead += bytesRead;
+                                // Throttle progress callbacks to ~2 Hz so the consumer (UI / log) isn't flooded.
+                                var nowTicks = Environment.TickCount64;
+                                if (nowTicks - lastReportTicks >= 500)
+                                {
+                                    lastReportTicks = nowTicks;
+                                    Report(totalBytesRead);
+                                }
                             }
                             finished = true;
+                            Report(totalBytesRead); // final 100% notification
                         }
                         catch (Exception ex)
                         {
@@ -454,6 +478,12 @@ namespace SentenceTransformers.Harrier.Small
                             response.Dispose();
                             response = await _downloadClient.SendAsync(newRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                             response.EnsureSuccessStatusCode();
+                            // Re-base the total from the new (possibly ranged) response: a ranged response
+                            // reports the remaining bytes in its Content-Length, so add what's already on disk.
+                            if (response.Content.Headers.ContentLength is long len)
+                            {
+                                totalBytes = totalBytesRead + len;
+                            }
                         }
                     }
                 }
@@ -470,6 +500,15 @@ namespace SentenceTransformers.Harrier.Small
             finally
             {
                 _oneDownloadAtATime.Release();
+            }
+
+            void Report(long received)
+            {
+                if (reportProgress is null) return;
+                var fraction = totalBytes is long total && total > 0
+                    ? Math.Clamp(received / (float)total, 0f, 1f)
+                    : 0f;
+                reportProgress(new DownloadProgress(received, totalBytes, fraction, fileName));
             }
         }
     }
