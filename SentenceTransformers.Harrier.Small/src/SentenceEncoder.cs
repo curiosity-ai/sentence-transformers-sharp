@@ -40,7 +40,7 @@ namespace SentenceTransformers.HarrierSmall
         /// </summary>
         public static class Quantizations
         {
-            private const string BaseUrl = "https://huggingface.co/onnx-community/harrier-oss-v1-270m-ONNX/resolve/main/onnx/";
+            private const string BaseUrl = "https://models.curiosity.ai/harrier-oss-v1-270m-onnx/";
 
             /// <summary>Full-precision (fp32) graph (~1.11 GB external weights).</summary>
             public const string FullModelUrl              = BaseUrl + "model.onnx";

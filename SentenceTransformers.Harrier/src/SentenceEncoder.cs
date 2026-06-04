@@ -22,13 +22,13 @@ namespace SentenceTransformers.Harrier
         /// Points to the standard quantized variant (~706 MB external data) which produces
         /// float32 output and is the most broadly compatible with onnxruntime CPU/GPU providers.
         /// </summary>
-        public const string DefaultModelUrl = "https://models.curiosity.ai/harrier-model_quantized.onnx";
+        public const string DefaultModelUrl = Quantizations.QuantizedModelUrl;
 
         /// <summary>
         /// Default URL for the external ONNX data file that accompanies <see cref="DefaultModelUrl"/>.
         /// Hugging Face splits Harrier ONNX models into a small graph file plus a separate weights file.
         /// </summary>
-        public const string DefaultModelDataUrl = "https://models.curiosity.ai/harrier-model_quantized.onnx_data";
+        public const string DefaultModelDataUrl =  Quantizations.QuantizedModelDataUrl;
 
         /// <summary>
         /// Download URLs for the Harrier 0.6b ONNX model variants published by
@@ -40,7 +40,7 @@ namespace SentenceTransformers.Harrier
         /// </summary>
         public static class Quantizations
         {
-            private const string BaseUrl = "https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX/resolve/main/onnx/";
+            private const string BaseUrl = "https://models.curiosity.ai/harrier-oss-v1-0.6b-onnx/";
 
             /// <summary>Full-precision (fp32) graph (~2.09 GB external + ~306 MB second weights file).</summary>
             public const string FullModelUrl              = BaseUrl + "model.onnx";
