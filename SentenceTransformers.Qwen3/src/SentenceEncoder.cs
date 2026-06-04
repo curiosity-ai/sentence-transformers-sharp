@@ -19,7 +19,7 @@ namespace SentenceTransformers.Qwen3
         /// <summary>
         /// Default URL used to download the ONNX model when no path is provided.
         /// </summary>
-        public const string DefaultModelUrl = "http://models.curiosity.ai/qwen3-06b-dynamic-uint8.onnx";
+        public const string DefaultModelUrl = "https://models.curiosity.ai/qwen3-06b-dynamic-uint8.onnx";
 
         private static readonly SemaphoreSlim _oneDownloadAtATime = new(1, 1);
         private static readonly HttpClient _downloadClient = new() { Timeout = TimeSpan.FromDays(1) };

@@ -22,13 +22,13 @@ namespace SentenceTransformers.Harrier
         /// Points to the standard quantized variant (~706 MB external data) which produces
         /// float32 output and is the most broadly compatible with onnxruntime CPU/GPU providers.
         /// </summary>
-        public const string DefaultModelUrl = "https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX/resolve/main/onnx/model_quantized.onnx";
+        public const string DefaultModelUrl = "https://models.curiosity.ai/harrier-model_quantized.onnx";
 
         /// <summary>
         /// Default URL for the external ONNX data file that accompanies <see cref="DefaultModelUrl"/>.
         /// Hugging Face splits Harrier ONNX models into a small graph file plus a separate weights file.
         /// </summary>
-        public const string DefaultModelDataUrl = "https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX/resolve/main/onnx/model_quantized.onnx_data";
+        public const string DefaultModelDataUrl = "https://models.curiosity.ai/harrier-model_quantized.onnx_data";
 
         private static readonly SemaphoreSlim _oneDownloadAtATime = new(1, 1);
         private static readonly HttpClient _downloadClient = new() { Timeout = TimeSpan.FromDays(1) };
