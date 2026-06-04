@@ -94,11 +94,15 @@ namespace SentenceTransformers.Harrier.Medium
         /// <param name="modelUrl">URL for the .onnx graph file. Defaults to <see cref="DefaultModelUrl"/>.</param>
         /// <param name="modelDataUrl">URL for the accompanying .onnx_data weights file. Pass null to skip.
         /// Defaults to <see cref="DefaultModelDataUrl"/> when <paramref name="modelUrl"/> is also null.</param>
+        /// <param name="reportProgress">Optional progress callback. Receives a <see cref="DownloadProgress"/>
+        /// roughly twice per second per file. Multi-file downloads (graph + <c>.onnx_data</c>) invoke the
+        /// callback once per file; use <see cref="DownloadProgress.FileName"/> to tell them apart.</param>
         public static async Task<SentenceEncoder> CreateAsync(
             SessionOptions sessionOptions = null,
             string modelUrl = null,
             string modelDataUrl = null,
             string downloadToPath = null,
+            Action<DownloadProgress> reportProgress = null,
             CancellationToken cancellationToken = default)
         {
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Medium", "harrier-medium-model.onnx");
@@ -109,7 +113,7 @@ namespace SentenceTransformers.Harrier.Medium
             // If user left both null, use the default pair.
             var resolvedDataUrl = modelDataUrl ?? (modelUrl is null ? DefaultModelDataUrl : null);
 
-            await DownloadModelAsync(resolvedModelUrl, path, cancellationToken);
+            await DownloadModelAsync(resolvedModelUrl, path, reportProgress, cancellationToken);
             if (!string.IsNullOrEmpty(resolvedDataUrl))
             {
                 // ONNX runtime expects the external data file to live next to the .onnx file
@@ -118,7 +122,7 @@ namespace SentenceTransformers.Harrier.Medium
                 // that filename to keep the reference resolvable.
                 var dataFileName = Path.GetFileName(new Uri(resolvedDataUrl).LocalPath);
                 var dataPath = Path.Combine(Path.GetDirectoryName(path)!, dataFileName);
-                await DownloadModelAsync(resolvedDataUrl, dataPath, cancellationToken);
+                await DownloadModelAsync(resolvedDataUrl, dataPath, reportProgress, cancellationToken);
             }
             return new SentenceEncoder(sessionOptions, path);
         }
@@ -393,7 +397,9 @@ namespace SentenceTransformers.Harrier.Medium
         /// Only one download runs at a time. On failure, any partial file at <paramref name="localPath"/> is deleted.
         /// Re-used for both the .onnx graph and its accompanying .onnx_data file.
         /// </summary>
-        public static async Task DownloadModelAsync(string modelUrl, string localPath, CancellationToken cancellationToken = default)
+        /// <param name="reportProgress">Optional progress callback. Receives a <see cref="DownloadProgress"/>
+        /// at most twice per second while bytes are flowing. Set to <c>null</c> to skip reporting.</param>
+        public static async Task DownloadModelAsync(string modelUrl, string localPath, Action<DownloadProgress> reportProgress = null, CancellationToken cancellationToken = default)
         {
             if (File.Exists(localPath)) return;
 
@@ -407,6 +413,10 @@ namespace SentenceTransformers.Harrier.Medium
                 throw new ArgumentException("Local path must be non-empty.", nameof(localPath));
             }
 
+            var fileName = Path.GetFileName(localPath);
+            // Declared in the outer scope so the Report local function (below) can read it across
+            // the try block. Captured locally in the loop, refreshed when the response changes.
+            long? totalBytes = null;
 
             await _oneDownloadAtATime.WaitAsync(cancellationToken);
             try
@@ -417,10 +427,15 @@ namespace SentenceTransformers.Harrier.Medium
                 {
                     response.EnsureSuccessStatusCode();
                     var supportsRange = response.Headers.AcceptRanges.Contains("bytes");
+                    // Content-Length on the first response is the full size; on a ranged retry it's
+                    // the remaining bytes, so capture it here.
+                    totalBytes = response.Content.Headers.ContentLength;
 
                     await using var fileStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
                     var totalBytesRead = 0L;
                     var finished = false;
+                    var lastReportTicks = 0L;
+                    Report(0L); // initial 0% notification so callers can show "starting…"
 
                     while (!finished)
                     {
@@ -432,8 +447,16 @@ namespace SentenceTransformers.Harrier.Medium
                             {
                                 await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
                                 totalBytesRead += bytesRead;
+                                // Throttle progress callbacks to ~2 Hz so the consumer (UI / log) isn't flooded.
+                                var nowTicks = Environment.TickCount64;
+                                if (nowTicks - lastReportTicks >= 500)
+                                {
+                                    lastReportTicks = nowTicks;
+                                    Report(totalBytesRead);
+                                }
                             }
                             finished = true;
+                            Report(totalBytesRead); // final 100% notification
                         }
                         catch (Exception ex)
                         {
@@ -456,6 +479,12 @@ namespace SentenceTransformers.Harrier.Medium
                             response.Dispose();
                             response = await _downloadClient.SendAsync(newRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                             response.EnsureSuccessStatusCode();
+                            // Re-base the total from the new (possibly ranged) response: a ranged response
+                            // reports the remaining bytes in its Content-Length, so add what's already on disk.
+                            if (response.Content.Headers.ContentLength is long len)
+                            {
+                                totalBytes = totalBytesRead + len;
+                            }
                         }
                     }
                 }
@@ -472,6 +501,15 @@ namespace SentenceTransformers.Harrier.Medium
             finally
             {
                 _oneDownloadAtATime.Release();
+            }
+
+            void Report(long received)
+            {
+                if (reportProgress is null) return;
+                var fraction = totalBytes is long total && total > 0
+                    ? Math.Clamp(received / (float)total, 0f, 1f)
+                    : 0f;
+                reportProgress(new DownloadProgress(received, totalBytes, fraction, fileName));
             }
         }
     }

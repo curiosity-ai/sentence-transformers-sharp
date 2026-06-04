@@ -40,15 +40,18 @@ namespace SentenceTransformers.Qwen3
         /// Downloads the model from <paramref name="modelUrl"/> to <paramref name="downloadToPath"/> (or a temp path if null),
         /// then creates an encoder from that path. Tokenizer is loaded from Resources/tokenizer.json or embedded resource.
         /// </summary>
+        /// <param name="reportProgress">Optional progress callback. Receives a <see cref="DownloadProgress"/>
+        /// roughly twice per second while the model is downloading.</param>
         public static async Task<SentenceEncoder> CreateAsync(
             SessionOptions sessionOptions = null,
             string modelUrl = null,
             string downloadToPath = null,
+            Action<DownloadProgress> reportProgress = null,
             CancellationToken cancellationToken = default)
         {
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Qwen3", "qwen3-model.onnx");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await DownloadModelAsync(modelUrl ?? DefaultModelUrl, path, cancellationToken);
+            await DownloadModelAsync(modelUrl ?? DefaultModelUrl, path, reportProgress, cancellationToken);
             return new SentenceEncoder(sessionOptions, path);
         }
 
@@ -310,7 +313,9 @@ namespace SentenceTransformers.Qwen3
         /// Downloads the ONNX model from <paramref name="modelUrl"/> to <paramref name="localPath"/>.
         /// Only one download runs at a time. On failure, any partial file at <paramref name="localPath"/> is deleted.
         /// </summary>
-        public static async Task DownloadModelAsync(string modelUrl, string localPath, CancellationToken cancellationToken = default)
+        /// <param name="reportProgress">Optional progress callback. Receives a <see cref="DownloadProgress"/>
+        /// at most twice per second while bytes are flowing. Set to <c>null</c> to skip reporting.</param>
+        public static async Task DownloadModelAsync(string modelUrl, string localPath, Action<DownloadProgress> reportProgress = null, CancellationToken cancellationToken = default)
         {
             if (File.Exists(localPath)) return;
 
@@ -324,6 +329,10 @@ namespace SentenceTransformers.Qwen3
                 throw new ArgumentException("Local path must be non-empty.", nameof(localPath));
             }
 
+            var fileName = Path.GetFileName(localPath);
+            // Declared in the outer scope so the Report local function (below) can read it across
+            // the try block. Refreshed when the response changes on a ranged retry.
+            long? totalBytes = null;
 
             await _oneDownloadAtATime.WaitAsync(cancellationToken);
             try
@@ -334,10 +343,13 @@ namespace SentenceTransformers.Qwen3
                 {
                     response.EnsureSuccessStatusCode();
                     var supportsRange = response.Headers.AcceptRanges.Contains("bytes");
+                    totalBytes = response.Content.Headers.ContentLength;
 
                     await using var fileStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
                     var totalBytesRead = 0L;
                     var finished = false;
+                    var lastReportTicks = 0L;
+                    Report(0L); // initial 0% notification so callers can show "starting…"
 
                     while (!finished)
                     {
@@ -349,8 +361,15 @@ namespace SentenceTransformers.Qwen3
                             {
                                 await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
                                 totalBytesRead += bytesRead;
+                                var nowTicks = Environment.TickCount64;
+                                if (nowTicks - lastReportTicks >= 500)
+                                {
+                                    lastReportTicks = nowTicks;
+                                    Report(totalBytesRead);
+                                }
                             }
                             finished = true;
+                            Report(totalBytesRead); // final 100% notification
                         }
                         catch (Exception ex)
                         {
@@ -373,6 +392,10 @@ namespace SentenceTransformers.Qwen3
                             response.Dispose();
                             response = await _downloadClient.SendAsync(newRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                             response.EnsureSuccessStatusCode();
+                            if (response.Content.Headers.ContentLength is long len)
+                            {
+                                totalBytes = totalBytesRead + len;
+                            }
                         }
                     }
                 }
@@ -381,7 +404,7 @@ namespace SentenceTransformers.Qwen3
                     response?.Dispose();
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 File.Delete(localPath);
                 throw;
@@ -389,6 +412,15 @@ namespace SentenceTransformers.Qwen3
             finally
             {
                 _oneDownloadAtATime.Release();
+            }
+
+            void Report(long received)
+            {
+                if (reportProgress is null) return;
+                var fraction = totalBytes is long total && total > 0
+                    ? Math.Clamp(received / (float)total, 0f, 1f)
+                    : 0f;
+                reportProgress(new DownloadProgress(received, totalBytes, fraction, fileName));
             }
         }
     }
