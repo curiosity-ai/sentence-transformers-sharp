@@ -2,8 +2,17 @@ using System.Diagnostics;
 using System.Text;
 using SentenceTransformers;
 
+// Set SENTENCE_TRANSFORMERS_TEST=harrier-variants to download and validate every Harrier
+// quantization variant published on Hugging Face. Otherwise run the normal smoke test.
+if (string.Equals(Environment.GetEnvironmentVariable("SENTENCE_TRANSFORMERS_TEST"), "harrier-variants", StringComparison.OrdinalIgnoreCase))
+{
+    await HarrierVariantsTest.RunAsync();
+    return;
+}
+
 var qwenEncTask = SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync();
 var harrierEncTask = SentenceTransformers.Harrier.SentenceEncoder.CreateAsync();
+var harrierSmallEncTask = SentenceTransformers.HarrierSmall.SentenceEncoder.CreateAsync();
 
 await Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
 await Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
@@ -16,6 +25,11 @@ using (var qwenEnc = await qwenEncTask)
 using (var harrierEnc = await harrierEncTask)
 {
     await Main.RunSimple(harrierEnc);
+}
+
+using (var harrierSmallEnc = await harrierSmallEncTask)
+{
+    await Main.RunSimple(harrierSmallEnc);
 }
 
 public static class Main

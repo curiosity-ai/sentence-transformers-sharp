@@ -30,6 +30,46 @@ namespace SentenceTransformers.Harrier
         /// </summary>
         public const string DefaultModelDataUrl = "https://models.curiosity.ai/harrier-model_quantized.onnx_data";
 
+        /// <summary>
+        /// Download URLs for the Harrier 0.6b ONNX model variants published by
+        /// onnx-community/harrier-oss-v1-0.6b-ONNX on Hugging Face. Each variant exposes a small
+        /// <c>.onnx</c> graph file paired with one or more <c>.onnx_data</c> weight files. When
+        /// downloading a graph file, you must also download every <c>…_data*</c> file from the same
+        /// row to the same folder under its exact upstream filename - ONNX Runtime resolves the
+        /// external weights by the name referenced inside the graph.
+        /// </summary>
+        public static class Quantizations
+        {
+            private const string BaseUrl = "https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX/resolve/main/onnx/";
+
+            /// <summary>Full-precision (fp32) graph (~2.09 GB external + ~306 MB second weights file).</summary>
+            public const string FullModelUrl              = BaseUrl + "model.onnx";
+            /// <summary>First external weights file for <see cref="FullModelUrl"/>.</summary>
+            public const string FullModelDataUrl          = BaseUrl + "model.onnx_data";
+            /// <summary>Second external weights file for <see cref="FullModelUrl"/> (fp32 weights are split across two files).</summary>
+            public const string FullModelDataUrl2         = BaseUrl + "model.onnx_data_1";
+
+            /// <summary>FP16 graph (~1.2 GB external weights).</summary>
+            public const string Fp16ModelUrl              = BaseUrl + "model_fp16.onnx";
+            /// <summary>External weights for <see cref="Fp16ModelUrl"/>.</summary>
+            public const string Fp16ModelDataUrl          = BaseUrl + "model_fp16.onnx_data";
+
+            /// <summary>4-bit quantized graph (~399 MB external weights).</summary>
+            public const string Q4ModelUrl                = BaseUrl + "model_q4.onnx";
+            /// <summary>External weights for <see cref="Q4ModelUrl"/>.</summary>
+            public const string Q4ModelDataUrl            = BaseUrl + "model_q4.onnx_data";
+
+            /// <summary>4-bit-with-FP16-residual graph (~353 MB external weights).</summary>
+            public const string Q4Fp16ModelUrl            = BaseUrl + "model_q4f16.onnx";
+            /// <summary>External weights for <see cref="Q4Fp16ModelUrl"/>.</summary>
+            public const string Q4Fp16ModelDataUrl        = BaseUrl + "model_q4f16.onnx_data";
+
+            /// <summary>Standard quantized graph (~706 MB external weights, fp32 output). The default variant.</summary>
+            public const string QuantizedModelUrl         = BaseUrl + "model_quantized.onnx";
+            /// <summary>External weights for <see cref="QuantizedModelUrl"/>.</summary>
+            public const string QuantizedModelDataUrl     = BaseUrl + "model_quantized.onnx_data";
+        }
+
         private static readonly SemaphoreSlim _oneDownloadAtATime = new(1, 1);
         private static readonly HttpClient _downloadClient = new() { Timeout = TimeSpan.FromDays(1) };
 
