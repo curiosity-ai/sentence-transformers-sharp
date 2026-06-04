@@ -1,13 +1,14 @@
-using SentenceTransformers.Harrier;
+using SentenceTransformers.Harrier.Medium;
+using SentenceTransformers.Harrier.Small;
 using SentenceTransformers.Qwen3;
 using SentenceTransformers.Tests.Support;
 
 namespace SentenceTransformers.Tests;
 
 /// <summary>
-/// Tests for the Hugging Face byte-level BPE tokenizers used by Qwen3 and Harrier. The tests
-/// construct the tokenizers directly from the shipped <c>tokenizer.json</c> files (no ONNX model
-/// is loaded).
+/// Tests for the Hugging Face byte-level BPE tokenizers used by Qwen3, Harrier Medium and
+/// Harrier Small. The tests construct the tokenizers directly from the shipped
+/// <c>tokenizer.json</c> files (no ONNX model is loaded).
 /// </summary>
 public class BPETokenizerTests
 {
@@ -116,9 +117,9 @@ public class BPETokenizerTests
     }
 
     [Fact]
-    public void HarrierTokenizer_TokenizeRaw_OriginalsConcatenateToSource()
+    public void HarrierMediumTokenizer_TokenizeRaw_OriginalsConcatenateToSource()
     {
-        using var tok = new HarrierTokenizer(TestPaths.HarrierTokenizerJson, MaxTokens);
+        using var tok = new HarrierMediumTokenizer(TestPaths.HarrierMediumTokenizerJson, MaxTokens);
         var text = "Multilingual embeddings test 123.";
         var raw = tok.TokenizeRaw(text);
         var concat = string.Concat(raw.Select(t => t.Original ?? string.Empty));
@@ -126,9 +127,9 @@ public class BPETokenizerTests
     }
 
     [Fact]
-    public void HarrierTokenizer_TokenizeRawAligned_OffsetsCoverSource()
+    public void HarrierMediumTokenizer_TokenizeRawAligned_OffsetsCoverSource()
     {
-        using var tok = new HarrierTokenizer(TestPaths.HarrierTokenizerJson, MaxTokens);
+        using var tok = new HarrierMediumTokenizer(TestPaths.HarrierMediumTokenizerJson, MaxTokens);
         var text = "Bonjour le monde, ceci est un test.";
         var aligned = tok.TokenizeRawAligned(text);
         Assert.NotEmpty(aligned);
@@ -137,9 +138,9 @@ public class BPETokenizerTests
     }
 
     [Fact]
-    public void HarrierTokenizer_Encode_ProducesAlignedArrays()
+    public void HarrierMediumTokenizer_Encode_ProducesAlignedArrays()
     {
-        using var tok = new HarrierTokenizer(TestPaths.HarrierTokenizerJson, MaxTokens);
+        using var tok = new HarrierMediumTokenizer(TestPaths.HarrierMediumTokenizerJson, MaxTokens);
         var encoded = tok.Encode(["hello world"]);
         Assert.Single(encoded);
         Assert.Equal(encoded[0].InputIds.Length, encoded[0].AttentionMask.Length);
@@ -147,9 +148,48 @@ public class BPETokenizerTests
     }
 
     [Fact]
-    public void HarrierTokenizer_TokenizeSimple_NotEmpty()
+    public void HarrierMediumTokenizer_TokenizeSimple_NotEmpty()
     {
-        using var tok = new HarrierTokenizer(TestPaths.HarrierTokenizerJson, MaxTokens);
+        using var tok = new HarrierMediumTokenizer(TestPaths.HarrierMediumTokenizerJson, MaxTokens);
+        var tokens = tok.TokenizeSimple("Embeddings for multilingual text");
+        Assert.NotEmpty(tokens);
+    }
+
+    [Fact]
+    public void HarrierSmallTokenizer_TokenizeRaw_OriginalsConcatenateToSource()
+    {
+        using var tok = new HarrierSmallTokenizer(TestPaths.HarrierSmallTokenizerJson, MaxTokens);
+        var text = "Multilingual embeddings test 123.";
+        var raw = tok.TokenizeRaw(text);
+        var concat = string.Concat(raw.Select(t => t.Original ?? string.Empty));
+        Assert.Equal(text, concat);
+    }
+
+    [Fact]
+    public void HarrierSmallTokenizer_TokenizeRawAligned_OffsetsCoverSource()
+    {
+        using var tok = new HarrierSmallTokenizer(TestPaths.HarrierSmallTokenizerJson, MaxTokens);
+        var text = "Bonjour le monde, ceci est un test.";
+        var aligned = tok.TokenizeRawAligned(text);
+        Assert.NotEmpty(aligned);
+        Assert.Equal(0, aligned[0].Start);
+        Assert.Equal(text.Length, aligned[^1].ApproximateEnd);
+    }
+
+    [Fact]
+    public void HarrierSmallTokenizer_Encode_ProducesAlignedArrays()
+    {
+        using var tok = new HarrierSmallTokenizer(TestPaths.HarrierSmallTokenizerJson, MaxTokens);
+        var encoded = tok.Encode(["hello world"]);
+        Assert.Single(encoded);
+        Assert.Equal(encoded[0].InputIds.Length, encoded[0].AttentionMask.Length);
+        Assert.Equal(encoded[0].InputIds.Length, encoded[0].TokenTypeIds.Length);
+    }
+
+    [Fact]
+    public void HarrierSmallTokenizer_TokenizeSimple_NotEmpty()
+    {
+        using var tok = new HarrierSmallTokenizer(TestPaths.HarrierSmallTokenizerJson, MaxTokens);
         var tokens = tok.TokenizeSimple("Embeddings for multilingual text");
         Assert.NotEmpty(tokens);
     }
