@@ -36,6 +36,32 @@ foreach (var (name, encoder) in syncEncoders)
     }
 }
 
+// Downloaded models. Each Create call writes the weights into its package's default temp folder
+// (already cached between runs); the bench numbers cover load+encode after the model is on disk.
+//
+// Harrier.Small, Harrier.Medium and Qwen3 each ship Resources/tokenizer.json that copies to the
+// same path in this output, and only one wins the race. Delete the colliding file so each encoder
+// falls back to its own embedded tokenizer (extracted under Path.GetTempPath() per package).
+var collidingTokenizer = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
+if (File.Exists(collidingTokenizer))
+{
+    File.Delete(collidingTokenizer);
+}
+
+using (var harrierSmallEncoder = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync())
+{
+    var run = await EncoderBench.RunAsync("Harrier-Small-270m", harrierSmallEncoder, texts, cfg);
+    results.Add(run);
+    Console.WriteLine();
+}
+
+using (var harrierMediumEncoder = await SentenceTransformers.Harrier.Medium.SentenceEncoder.CreateAsync())
+{
+    var run = await EncoderBench.RunAsync("Harrier-Medium-0.6B", harrierMediumEncoder, texts, cfg);
+    results.Add(run);
+    Console.WriteLine();
+}
+
 using (var qwen3Encoder = await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync())
 {
     var run = await EncoderBench.RunAsync("Qwen3-0.6B", qwen3Encoder, texts, cfg);
