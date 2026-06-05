@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics.Tensors;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
 
@@ -109,74 +110,94 @@ internal sealed class Gemma3Model
         int h = _cfg.HiddenSize;
         int headDim = _cfg.HeadDim;
 
-        // --- token embedding (+ sqrt(hidden) scale) ---
-        var hidden = new float[seq * h];
-        for (int p = 0; p < seq; p++)
+        // All per-forward scratch scales with the sequence length and is multi-megabyte at long
+        // contexts (e.g. gate/up are seq*2048 floats), so it is rented from the shared array pool
+        // rather than allocated (and LOH-collected) on every call. Pooled arrays may be larger than
+        // requested, so every consumer is driven by explicit (seq * dim) lengths, never Array.Length.
+        var pool = ArrayPool<float>.Shared;
+        int hiddenLen = seq * h;
+        var hidden = pool.Rent(hiddenLen);
+        var cos = pool.Rent(seq * headDim);
+        var sin = pool.Rent(seq * headDim);
+        var normed = pool.Rent(hiddenLen);
+        var q = pool.Rent(seq * _cfg.QProjOut);
+        var k = pool.Rent(seq * _cfg.KvProjOut);
+        var v = pool.Rent(seq * _cfg.KvProjOut);
+        var attnOut = pool.Rent(seq * _cfg.QProjOut);
+        var attnProj = pool.Rent(hiddenLen);
+        var gate = pool.Rent(seq * _cfg.IntermediateSize);
+        var up = pool.Rent(seq * _cfg.IntermediateSize);
+        var down = pool.Rent(hiddenLen);
+        try
         {
-            int tok = tokenIds[p];
-            int srcBase = tok * h;
-            int dstBase = p * h;
-            for (int i = 0; i < h; i++)
+            // --- token embedding (+ sqrt(hidden) scale) ---
+            for (int p = 0; p < seq; p++)
             {
-                hidden[dstBase + i] = FloatConversions.BFloat16ToSingle(_embedTokens[srcBase + i]) * _embedScale;
+                int tok = tokenIds[p];
+                int srcBase = tok * h;
+                int dstBase = p * h;
+                for (int i = 0; i < h; i++)
+                {
+                    hidden[dstBase + i] = FloatConversions.BFloat16ToSingle(_embedTokens[srcBase + i]) * _embedScale;
+                }
             }
+
+            // --- rotary tables ---
+            BuildRope(seq, headDim, _cfg.RopeTheta, cos, sin);
+
+            foreach (var layer in _layers)
+            {
+                // ---- self attention ----
+                Ops.RmsNorm(hidden, layer.InputLayerNorm, normed, seq, h, _cfg.RmsNormEps);
+                layer.QProj.Multiply(normed, q, seq);
+                layer.KProj.Multiply(normed, k, seq);
+                layer.VProj.Multiply(normed, v, seq);
+
+                ApplyHeadNorm(q, layer.QNorm, seq, _cfg.NumHeads, headDim);
+                ApplyHeadNorm(k, layer.KNorm, seq, _cfg.NumKvHeads, headDim);
+
+                ApplyRope(q, cos, sin, seq, _cfg.NumHeads, headDim);
+                ApplyRope(k, cos, sin, seq, _cfg.NumKvHeads, headDim);
+
+                Attention(q, k, v, attnOut, seq, headDim);
+
+                layer.OProj.Multiply(attnOut, attnProj, seq);
+                // post-attention norm then residual add
+                Ops.RmsNorm(attnProj, layer.PostAttentionLayerNorm, attnProj, seq, h, _cfg.RmsNormEps);
+                TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), attnProj.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
+
+                // ---- feed forward ----
+                Ops.RmsNorm(hidden, layer.PreFeedforwardLayerNorm, normed, seq, h, _cfg.RmsNormEps);
+                layer.GateProj.Multiply(normed, gate, seq);
+                layer.UpProj.Multiply(normed, up, seq);
+                int ffLen = seq * _cfg.IntermediateSize;
+                Ops.GeGluInPlace(gate.AsSpan(0, ffLen), up.AsSpan(0, ffLen));
+                layer.DownProj.Multiply(gate, down, seq);
+                Ops.RmsNorm(down, layer.PostFeedforwardLayerNorm, down, seq, h, _cfg.RmsNormEps);
+                TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), down.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
+            }
+
+            // ---- final norm + last-token pooling ----
+            // The result is the caller's embedding, so it is a real (small, 640-float) array, not pooled.
+            var lastNormed = new float[h];
+            Ops.RmsNorm(hidden.AsSpan((seq - 1) * h, h), _finalNorm, lastNormed, 1, h, _cfg.RmsNormEps);
+            return lastNormed;
         }
-
-        // --- rotary tables ---
-        var (cos, sin) = BuildRope(seq, headDim, _cfg.RopeTheta);
-
-        // Scratch buffers reused across layers.
-        var normed = new float[seq * h];
-        var q = new float[seq * _cfg.QProjOut];
-        var k = new float[seq * _cfg.KvProjOut];
-        var v = new float[seq * _cfg.KvProjOut];
-        var attnOut = new float[seq * _cfg.QProjOut];
-        var attnProj = new float[seq * h];
-        var gate = new float[seq * _cfg.IntermediateSize];
-        var up = new float[seq * _cfg.IntermediateSize];
-        var down = new float[seq * h];
-
-        foreach (var layer in _layers)
+        finally
         {
-            // ---- self attention ----
-            Ops.RmsNorm(hidden, layer.InputLayerNorm, normed, seq, h, _cfg.RmsNormEps);
-            layer.QProj.Multiply(normed, q, seq);
-            layer.KProj.Multiply(normed, k, seq);
-            layer.VProj.Multiply(normed, v, seq);
-
-            ApplyHeadNorm(q, layer.QNorm, seq, _cfg.NumHeads, headDim);
-            ApplyHeadNorm(k, layer.KNorm, seq, _cfg.NumKvHeads, headDim);
-
-            ApplyRope(q, cos, sin, seq, _cfg.NumHeads, headDim);
-            ApplyRope(k, cos, sin, seq, _cfg.NumKvHeads, headDim);
-
-            Attention(q, k, v, attnOut, seq, headDim);
-
-            layer.OProj.Multiply(attnOut, attnProj, seq);
-            // post-attention norm then residual add
-            Ops.RmsNorm(attnProj, layer.PostAttentionLayerNorm, attnProj, seq, h, _cfg.RmsNormEps);
-            for (int i = 0; i < hidden.Length; i++)
-            {
-                hidden[i] += attnProj[i];
-            }
-
-            // ---- feed forward ----
-            Ops.RmsNorm(hidden, layer.PreFeedforwardLayerNorm, normed, seq, h, _cfg.RmsNormEps);
-            layer.GateProj.Multiply(normed, gate, seq);
-            layer.UpProj.Multiply(normed, up, seq);
-            Ops.GeGluInPlace(gate, up);
-            layer.DownProj.Multiply(gate, down, seq);
-            Ops.RmsNorm(down, layer.PostFeedforwardLayerNorm, down, seq, h, _cfg.RmsNormEps);
-            for (int i = 0; i < hidden.Length; i++)
-            {
-                hidden[i] += down[i];
-            }
+            pool.Return(hidden);
+            pool.Return(cos);
+            pool.Return(sin);
+            pool.Return(normed);
+            pool.Return(q);
+            pool.Return(k);
+            pool.Return(v);
+            pool.Return(attnOut);
+            pool.Return(attnProj);
+            pool.Return(gate);
+            pool.Return(up);
+            pool.Return(down);
         }
-
-        // ---- final norm + last-token pooling ----
-        var lastNormed = new float[h];
-        Ops.RmsNorm(hidden.AsSpan((seq - 1) * h, h), _finalNorm, lastNormed, 1, h, _cfg.RmsNormEps);
-        return lastNormed;
     }
 
     /// <summary>Applies Gemma's per-head Q/K RMSNorm (over <paramref name="headDim"/>) in place.</summary>
@@ -260,12 +281,13 @@ internal sealed class Gemma3Model
         });
     }
 
-    private static (float[] cos, float[] sin) BuildRope(int seq, int headDim, float theta)
+    /// <summary>Fills the caller-provided <paramref name="cos"/>/<paramref name="sin"/> rotary tables
+    /// (each at least <c>seq * headDim</c> long). <paramref name="invFreq"/> is tiny (headDim/2 = 128
+    /// floats) so it is stack-allocated.</summary>
+    private static void BuildRope(int seq, int headDim, float theta, float[] cos, float[] sin)
     {
         int half = headDim / 2;
-        var cos = new float[seq * headDim];
-        var sin = new float[seq * headDim];
-        var invFreq = new float[half];
+        Span<float> invFreq = stackalloc float[half];
         for (int d = 0; d < half; d++)
         {
             invFreq[d] = 1f / MathF.Pow(theta, (2f * d) / headDim);
@@ -284,6 +306,5 @@ internal sealed class Gemma3Model
                 sin[b + d + half] = s;
             }
         }
-        return (cos, sin);
     }
 }
