@@ -233,6 +233,27 @@ using var encoder = await SentenceEncoder.CreateAsync(
     modelDataUrl: SentenceEncoder.Quantizations.FullModelDataUrl);
 ```
 
+## Performance
+
+Encoding throughput on a 4-core Intel® Xeon® @ 2.80 GHz, .NET 10 / ONNX Runtime 1.24.2 CPU
+execution provider, batch size 8, average of 5 iterations after a warmup. The full numbers and
+the harness used to produce them live in
+[`SentenceTransformers.Benchmark/BENCHMARK-RESULT.md`](SentenceTransformers.Benchmark/BENCHMARK-RESULT.md);
+re-run with `dotnet run --project SentenceTransformers.Benchmark -c Release`.
+
+| Model                 | Dim  | ms/iter (batch=8) | Embeddings / hour | Relative to MiniLM |
+| ---                   | ---: | ---:              | ---:              | ---:               |
+| MiniLM-L6-v2          |  384 |   267             |        107,874    | 1.0×               |
+| ArcticXs              |  384 |   350             |         82,257    | 1.3× slower        |
+| Harrier-Small-270m    |  640 | 2,441             |         11,797    | 9× slower          |
+| Qwen3-0.6B            | 1024 | 3,944             |          7,301    | 15× slower         |
+| Harrier-Medium-0.6B   | 1024 | 10,098            |          2,852    | 38× slower         |
+
+The smaller / English-only models are an order of magnitude faster on CPU and are the right
+default for interactive query embedding. The multilingual 0.6b-class models trade speed for
+quality and language coverage — pin them to a background worker and feed them large batches when
+you can. A GPU / DirectML / CoreML execution provider helps the 0.6b-class models the most.
+
 ## How it works
 
 Each model package contains:

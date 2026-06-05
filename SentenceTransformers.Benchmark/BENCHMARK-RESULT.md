@@ -1,15 +1,32 @@
 # Embedding Benchmark Results
 
-This document captures local benchmark measurements for three sentence embedding encoders:
+This document captures local benchmark measurements for the five sentence-embedding encoders
+shipped by this repo:
 
-* **MiniLM-L6-v2** (384-d)
-* **ArcticXs** (384-d)
-* **Qwen3-Embedding-0.6B (ONNX uint8)** (1024-d)
+| Model                  | Dim  | Variant on disk                  |
+| ---                    | ---: | ---                              |
+| **MiniLM-L6-v2**       |  384 | Embedded (no download)           |
+| **ArcticXs**           |  384 | Embedded (no download)           |
+| **Harrier-Small-270m** |  640 | Downloaded — Q4F16 (~172 MB)     |
+| **Harrier-Medium-0.6B**| 1024 | Downloaded — Q4F16 (~353 MB)     |
+| **Qwen3-0.6B**         | 1024 | Downloaded — uint8 (~700 MB)     |
 
-All runs used the same benchmark harness and:
+All runs used the same benchmark harness (`SentenceTransformers.Benchmark`) with:
 
 * **Batch size:** 8
-* **Iterations:** 50
+* **Warmup iterations:** 1
+* **Measured iterations:** 5
+
+Each input is a 3-paragraph, 5-sentence-per-paragraph synthetic document built from a fixed
+vocabulary by `MakeParagraph` in `Program.cs` — average input length is ~600 UTF-8 bytes per item.
+
+## Environment
+
+* CPU: Intel® Xeon® @ 2.80 GHz, 4 cores
+* OS: Linux 6.18.5 x86_64
+* Runtime: .NET 10 (SDK 10.0.108), Release configuration
+* ONNX Runtime: 1.24.2 (CPU execution provider, default session options)
+* sentence-transformers-sharp: 26.6.1581
 
 ---
 
@@ -19,89 +36,111 @@ All runs used the same benchmark harness and:
 
 * **Batch:** 8
 * **Dim:** 384
-* **Time:** 4043.9 ms for 50 iterations
-* **Avg:** 80.88 ms/iter
-* **Input throughput (UTF-8 bytes/s):** 190,756
-* **Output throughput (bytes/s):** 151,932
-* **Embeddings/s:** 98.91
-* **WorkingSet Δ (bytes):** 136,495,104
-* **GC heap Δ (bytes):** 6,094,944
+* **Time:** 1.3 s for 5 iterations
+* **Avg:** 267.0 ms/iter (~33 ms per embedding at batch=8)
+* **Input throughput:** 198.4 UTF-8 MB / hour
+* **Output throughput:** 158.0 MB / hour
+* **Embeddings / hour:** 107,874
 
 ### ArcticXs
 
 * **Batch:** 8
 * **Dim:** 384
-* **Time:** 5726.9 ms for 50 iterations
-* **Avg:** 114.54 ms/iter
-* **Input throughput (UTF-8 bytes/s):** 134,699
-* **Output throughput (bytes/s):** 107,284
-* **Embeddings/s:** 69.85
-* **WorkingSet Δ (bytes):** 71,172,096
-* **GC heap Δ (bytes):** 3,040,536
+* **Time:** 1.8 s for 5 iterations
+* **Avg:** 350.1 ms/iter (~44 ms per embedding at batch=8)
+* **Input throughput:** 151.3 UTF-8 MB / hour
+* **Output throughput:** 120.5 MB / hour
+* **Embeddings / hour:** 82,257
 
-### Qwen3-0.6B (ONNX uint8)
+### Harrier-Small-270m (Q4F16 default)
+
+* **Batch:** 8
+* **Dim:** 640
+* **Time:** 12.2 s for 5 iterations
+* **Avg:** 2,441.4 ms/iter (~305 ms per embedding at batch=8)
+* **Input throughput:** 21.7 UTF-8 MB / hour
+* **Output throughput:** 28.8 MB / hour
+* **Embeddings / hour:** 11,797
+
+### Harrier-Medium-0.6B (Q4F16 default)
 
 * **Batch:** 8
 * **Dim:** 1024
-* **Time:** 67,886.9 ms for 50 iterations
-* **Avg:** 1,357.74 ms/iter
-* **Input throughput (UTF-8 bytes/s):** 11,363
-* **Output throughput (bytes/s):** 24,134
-* **Embeddings/s:** 5.89
-* **WorkingSet Δ (bytes):** 152,567,808
-* **GC heap Δ (bytes):** 7,689,352
+* **Time:** 50.5 s for 5 iterations
+* **Avg:** 10,097.6 ms/iter (~1.26 s per embedding at batch=8)
+* **Input throughput:** 5.2 UTF-8 MB / hour
+* **Output throughput:** 11.1 MB / hour
+* **Embeddings / hour:** 2,852
+
+### Qwen3-0.6B (uint8 quantized)
+
+* **Batch:** 8
+* **Dim:** 1024
+* **Time:** 19.7 s for 5 iterations
+* **Avg:** 3,944.4 ms/iter (~493 ms per embedding at batch=8)
+* **Input throughput:** 13.4 UTF-8 MB / hour
+* **Output throughput:** 28.5 MB / hour
+* **Embeddings / hour:** 7,301
 
 ---
 
 ## Summary table
 
-| Model        | Dim  | Batch | ms/iter  | Emb/s | In MB/s  | Out MB/s | WS Δ (bytes) | GC Δ (bytes) |
-|--------------|------|-------|----------|-------|----------|----------|--------------|--------------|
-| MiniLM-L6-v2 | 384  | 8     | 80.88    | 98.91 | 0.190756 | 0.151932 | 136,495,104  | 6,094,944    |
-| ArcticXs     | 384  | 8     | 114.54   | 69.85 | 0.134699 | 0.107284 | 71,172,096   | 3,040,536    |
-| Qwen3-0.6B   | 1024 | 8     | 1,357.74 | 5.89  | 0.011363 | 0.024134 | 152,567,808  | 7,689,352    |
+| Model                 | Dim  | Batch | ms/iter  | Embeddings/hour | In MB/hour | Out MB/hour |
+| ---                   | ---: | ---:  | ---:     | ---:            | ---:       | ---:        |
+| MiniLM-L6-v2          | 384  | 8     | 267.0    | 107,874         | 198.4      | 158.0       |
+| ArcticXs              | 384  | 8     | 350.1    |  82,257         | 151.3      | 120.5       |
+| Harrier-Small-270m    | 640  | 8     | 2,441.4  |  11,797         |  21.7      |  28.8       |
+| Harrier-Medium-0.6B   | 1024 | 8     | 10,097.6 |   2,852         |   5.2      |  11.1       |
+| Qwen3-0.6B            | 1024 | 8     | 3,944.4  |   7,301         |  13.4      |  28.5       |
 
 ---
 
 ## Quick analysis
 
-### 1) Speed / throughput
+### Speed
 
-* **MiniLM-L6-v2** is the fastest at **~99 embeddings/s**.
-* **ArcticXs** is slower: **~70 embeddings/s** (≈ **1.4×** slower than MiniLM).
-* **Qwen3-0.6B (ONNX)** is dramatically slower: **~5.9 embeddings/s** (≈ **16–17×** slower than MiniLM).
+* **MiniLM-L6-v2** is the fastest at **~108k embeddings/hour**.
+* **ArcticXs** sits at **~82k embeddings/hour** (≈ **1.3×** slower than MiniLM, double the context window).
+* **Harrier-Small-270m** drops to **~12k embeddings/hour** — about **9×** slower than MiniLM, but
+  with multilingual coverage across 94 languages and a 32k-token context.
+* **Qwen3-0.6B** lands at **~7k embeddings/hour**.
+* **Harrier-Medium-0.6B** is the slowest at **~2.9k embeddings/hour** — about **37×** slower than
+  MiniLM. The Q4F16 quantization keeps the weights small on disk (~353 MB) but inference is more
+  arithmetic-heavy than Qwen3's uint8 graph on a CPU execution provider.
 
-A useful way to think about it:
+### What the dimension cost looks like in practice
 
-* At batch=8, **Qwen3** spends about **1.36 seconds per iteration**, i.e. roughly **170 ms per embedding** (not counting any additional pipeline work).
+* MiniLM / ArcticXs → **384-d** (1,536 bytes/embedding as float32)
+* Harrier-Small      → **640-d** (2,560 bytes/embedding as float32)
+* Harrier-Medium / Qwen3 → **1024-d** (4,096 bytes/embedding as float32)
 
-### 2) Vector size impacts downstream storage and bandwidth
+Higher-dim vectors are slower to compare and use more memory in HNSW / similarity indexes — for
+corpora over a few million chunks the 384-d models keep the index footprint manageable.
 
-* MiniLM/ArcticXs produce **384-d** embeddings (~1,536 bytes/embedding as float32).
-* Qwen3 produces **1024-d** embeddings (~4,096 bytes/embedding as float32).
+### Recommendations from these numbers
 
-Even if Qwen3 were equally fast (it is not), it would still:
-
-* consume more storage for vector DB / HNSW indexes,
-* increase memory bandwidth costs,
-* increase query-time compute for similarity scoring.
-
-### 3) Memory observations (Working Set / GC)
-
-* Qwen3 shows the largest **WorkingSet Δ** at **~152.6 MB**, slightly higher than MiniLM’s **~136.5 MB**.
-* ArcticXs shows the smallest **WorkingSet Δ** (**~71.2 MB**).
-
-GC deltas are relatively small compared to Working Set deltas, suggesting most of the footprint is native allocations (runtime/model buffers) rather than managed heap.
-
-### 4) Recommendation (based on these numbers)
-
-* If your primary use-case is **interactive search** (compute query embedding in real-time), **MiniLM** (and possibly ArcticXs) are far more suitable.
-* **Qwen3-0.6B** looks better suited as an **offline/high-quality embedding option** unless performance can be improved significantly (e.g., larger batch sizes, better ORT settings, hardware acceleration such as GPU/CoreML).
+* **Interactive search where queries embed at request time** → MiniLM or ArcticXs. Both finish a
+  batch of 8 in under half a second on a 4-core Xeon.
+* **Multilingual retrieval, default choice** → Harrier-Small. Order of magnitude slower than
+  MiniLM, but the only multilingual option in this list that's also small enough to pre-bundle
+  inside a Docker image (default Q4F16 weights at ~172 MB).
+* **Highest-quality multilingual, batch / offline workloads** → Harrier-Medium or Qwen3. Pin to a
+  background worker and feed it large batches.
 
 ---
 
 ## Notes / next steps
 
-* Repeat with **batch=16/32** to see if Qwen3 throughput improves substantially.
-* Capture platform details (CPU model, OS, .NET runtime, ORT version, execution provider) for reproducibility.
-* If deploying on macOS, consider experimenting with **CoreML EP** (if supported by the model graph) and newer ORT versions.
+* Throughput scales sub-linearly with batch size — repeat with **batch=16/32** if your workload
+  routinely encodes larger batches; the per-iteration overhead is amortised better there.
+* Numbers above are **CPU-only** with default ONNX Runtime session options. A GPU / DirectML /
+  CoreML execution provider would help the 0.6b-class models the most.
+* Re-run after upstream model updates (e.g. a new Harrier quantization landing on the curiosity.ai
+  mirror) to track drift.
+
+Reproduce with:
+
+```bash
+dotnet run --project SentenceTransformers.Benchmark -c Release
+```
