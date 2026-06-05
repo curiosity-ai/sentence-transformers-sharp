@@ -7,36 +7,49 @@ using System.Runtime.Intrinsics.X86;
 namespace SentenceTransformers.Harrier.Small.Pure.Model;
 
 /// <summary>
-/// 256-bit int8 dot-accumulate used by the quantized GEMM kernels: 32 uint8×int8 products accumulated
-/// into 8 int32 lanes. Uses one <c>vpdpbusd</c> instruction on AVX-VNNI hosts, and falls back to
-/// <c>vpmaddubsw</c>+<c>vpmaddwd</c> on plain AVX2 hosts. The <c>IsSupported</c> probes are JIT-time
-/// constants, so the branch is eliminated and the chosen instructions are inlined.
-///
-/// Note: .NET (as of this runtime) does not surface AVX-512 VNNI as an intrinsic, and some server
-/// Xeons report AVX-512 VNNI but not the VEX-encoded AVX-VNNI flag - those land on the AVX2 path.
+/// int8 dot-accumulate used by the quantized GEMM kernels: uint8×int8 products summed into int32 lanes.
+/// It picks the best instruction available at runtime, in throughput order:
+/// <list type="number">
+/// <item><c>AvxVnniInt8.V512</c> - <c>vpdpbsud</c> on 512-bit registers (64 int8 MACs / instruction).</item>
+/// <item><c>AvxVnni</c> (<c>vpdpbusd</c>) / <c>AvxVnniInt8</c> (<c>vpdpbsud</c>) on 256-bit (32 MACs / instruction).</item>
+/// <item><c>Avx512BW</c> / <c>Avx2</c> - widen to int16 + <c>vpmaddwd</c> (.NET does not expose AVX-512
+/// VNNI as a standalone ISA, so this is the AVX-512 fallback when <c>AvxVnniInt8.V512</c> is absent).</item>
+/// </list>
+/// Every path consumes the same operands - a uint8 activation (the symmetric int8 value offset by +128)
+/// and an int8 weight - so the activation buffer and the <c>128 * rowSum</c> offset correction are
+/// shared. The <c>IsSupported</c> probes are JIT-time constants, so dead paths are eliminated and the
+/// chosen instruction is inlined.
 /// </summary>
 internal static class Vnni
 {
-    public static bool IsSupported => AvxVnni.IsSupported || Avx2.IsSupported;
+    /// <summary>Whether any int8 GEMM path is available (true on any AVX2-capable x64).</summary>
+    public static bool IsSupported => AvxVnni.IsSupported || AvxVnniInt8.IsSupported || Avx2.IsSupported;
 
-    /// <summary>Activation zero-point (uint8 offset for the unsigned operand). Always 8-bit; both code
-    /// paths accumulate into int32 without saturation.</summary>
+    /// <summary>Activation zero-point (uint8 offset for the unsigned operand). Always 8-bit; every code
+    /// path accumulates into int32 without saturation.</summary>
     public const int ZeroPoint = 128;
 
     /// <summary>Max magnitude of a quantized activation (8-bit symmetric).</summary>
     public const int QMax = 127;
 
-    /// <summary>True when the 512-bit int8 kernel should be used: AVX-512 present but the (faster
-    /// per-op) 256-bit AVX-VNNI is not, so the extra lane width is the best available win.</summary>
-    public static bool Use512 => !AvxVnni.IsSupported && Avx512BW.IsSupported;
+    /// <summary>Use the 512-bit kernel when a 512-bit int8 dot is available, or when AVX-512 is present
+    /// without any 256-bit int8-VNNI (so the wider widen+madd beats the 256-bit one). A 256-bit
+    /// <c>vpdpbusd</c>/<c>vpdpbsud</c> is faster per element than 512-bit widen+madd, so the 256-bit
+    /// kernel is preferred when one of those exists.</summary>
+    public static bool Use512 =>
+        AvxVnniInt8.V512.IsSupported ||
+        (Avx512BW.IsSupported && !AvxVnni.IsSupported && !AvxVnniInt8.IsSupported);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector256<int> DotAccumulate(Vector256<int> acc, Vector256<byte> a, Vector256<sbyte> b)
     {
         if (AvxVnni.IsSupported)
         {
-            // One vpdpbusd: 32 uint8*int8 products straight into 8 int32 lanes.
-            return AvxVnni.MultiplyWideningAndAdd(acc, a, b);
+            return AvxVnni.MultiplyWideningAndAdd(acc, a, b);          // vpdpbusd: uint8 a * int8 b
+        }
+        if (AvxVnniInt8.IsSupported)
+        {
+            return AvxVnniInt8.MultiplyWideningAndAdd(acc, b, a);      // vpdpbsud: int8 b * uint8 a
         }
         // AVX2 fallback: widen uint8/int8 to int16 and use vpmaddwd (accumulates pairs into int32 with
         // no saturation, so the full 8-bit activation range is safe). vpmaddubsw is avoided because its
@@ -50,10 +63,15 @@ internal static class Vnni
         return acc;
     }
 
-    /// <summary>512-bit int8 dot-accumulate (64 uint8×int8 into 16 int32 lanes) via widen + vpmaddwd.</summary>
+    /// <summary>512-bit int8 dot-accumulate (64 uint8×int8 into 16 int32 lanes).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector512<int> DotAccumulate512(Vector512<int> acc, Vector512<byte> a, Vector512<sbyte> b)
     {
+        if (AvxVnniInt8.V512.IsSupported)
+        {
+            return AvxVnniInt8.V512.MultiplyWideningAndAdd(acc, b, a); // vpdpbsud (512): int8 b * uint8 a
+        }
+        // AVX-512 fallback: widen to int16 and vpmaddwd.
         var aLo = Avx512BW.ConvertToVector512Int16(a.GetLower());
         var aHi = Avx512BW.ConvertToVector512Int16(a.GetUpper());
         var bLo = Avx512BW.ConvertToVector512Int16(b.GetLower());

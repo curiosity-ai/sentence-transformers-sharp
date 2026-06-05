@@ -176,8 +176,9 @@ using var encoder = await SentenceEncoder.CreateAsync(quantization: Quantization
 ```
 
 The `Int8`/`Int4` paths run as true int8 GEMMs and pick the best instruction set available at runtime:
-one `vpdpbusd` per 32 values on AVX-VNNI CPUs, or a widen + `vpmaddwd` sequence on AVX-512 / AVX2 CPUs.
-On an AVX-512 host, also set `DOTNET_PreferredVectorBitWidth=512` to let the JIT emit 512-bit vectors.
+`vpdpbsud` on 512-bit registers (`AvxVnniInt8.V512`, 64 int8 MACs/instruction), `vpdpbusd`/`vpdpbsud`
+on 256-bit (`AvxVnni`/`AvxVnniInt8`), or a widen + `vpmaddwd` sequence on AVX-512 / AVX2 CPUs. On an
+AVX-512 host, also set `DOTNET_PreferredVectorBitWidth=512` to let the JIT emit 512-bit vectors.
 
 **Benchmark — pure C# vs ONNX** (harrier-oss-v1-270m, .NET 10, 4-core Xeon, single-text encode):
 
@@ -185,28 +186,28 @@ On an AVX-512 host, also set `DOTNET_PreferredVectorBitWidth=512` to let the JIT
 | --- | --- | ---: | ---: | ---: | ---: |
 | ONNX `Q4F16` (`SentenceTransformers.Harrier.Small`) | ONNX Runtime | 2.30 | **~40 ms** | **~0.7 s** | **~172 MB** (native) |
 | Pure **fp32** | none | **0.01** | 226 ms | 4.4 s | ~740 MB |
-| Pure **int8** | none | 0.97 | 92 ms | 1.8 s | ~440 MB |
+| Pure **int8** | none | 0.97 | 86 ms | 1.6 s | ~440 MB |
 | Pure **int4** | none | 1.42 | 260 ms | 3.8 s | ~390 MB |
 
 ¹ Largest absolute deviation (on a 0–100 cosine×100 scale) from the published query/document score
 matrix; lower is more faithful — every pure variant tracks the reference more closely than the ONNX
 `Q4F16` weights. ² Approximate model-weight memory; all pure variants share the same bfloat16
-token-embedding table (~335 MB), which is the floor. Numbers are hardware-dependent (the run above is an
-AVX-512 server CPU on which .NET cannot emit AVX-512 VNNI — see below); on a client CPU with AVX-VNNI
-the int8 path is roughly another ~1.5–2× faster.
+token-embedding table (~335 MB), which is the floor. Numbers are **hardware-dependent** — the run above
+is an AVX-512 server CPU where the int8 dot uses widen + `vpmaddwd`; CPUs with the int8-VNNI
+instructions are substantially faster (see below).
 
 **How to read this.** `Int8` is the recommended pure setting — ~2.5× faster than fp32, ~40 % smaller, and
-still more faithful than ONNX `Q4F16`. It lands within ~2–2.5× of ONNX's speed.
+still more faithful than ONNX `Q4F16`.
 
-That residual gap is structural, not a tuning miss. ONNX Runtime's MLAS uses hand-written assembly GEMM
-kernels with **4-bit weights** and direct **AVX-512 VNNI** (`vpdpbusd` on 512-bit registers, 64 int8
-MACs/instruction). .NET 10 does **not** expose AVX-512 VNNI as an intrinsic (it is only reachable via
-`Avx10v1`, which needs newer AVX10 hardware), so on a typical AVX-512 server the pure build must fall
-back to a widen + `vpmaddwd` int8 dot that does ~6× the instructions. On client CPUs that have the
-256-bit AVX-VNNI instructions, .NET *can* emit `vpdpbusd` and the gap narrows further. Matching
-hand-tuned native MLAS from pure managed code is therefore not fully attainable today; the pure build's
-case is **zero native dependencies** (trim/AOT/WASM/mobile, one managed package) and **higher fidelity**,
-at a CPU-inference cost within a small multiple of ONNX.
+How close it gets to ONNX depends on the CPU's int8 instruction set. ONNX Runtime's MLAS uses hand-tuned
+assembly with **4-bit weights** and **int8-VNNI** (`vpdpbusd`/`vpdpbsud`). The pure build emits int8-VNNI
+too when the runtime exposes it: `AvxVnni` (256-bit, Alder Lake and newer client CPUs) or
+`AvxVnniInt8.V512` (512-bit, AVX10.2 / Granite Rapids-class CPUs) — on those it is within ~1.5–2× of ONNX
+and can approach parity with the 512-bit path. The one gap is "classic" AVX-512 servers that report the
+`avx512_vnni` CPUID flag but not `AvxVnni`/`AvxVnniInt8`/AVX10: .NET 10 has no standalone `Avx512Vnni`
+intrinsic, so there the pure build must fall back to widen + `vpmaddwd` (~6× the instructions) and lands
+~2.5× off ONNX. Either way the pure build's case is **zero native dependencies** (trim/AOT/WASM/mobile,
+one managed package) and **higher fidelity**, at a CPU-inference cost within a small multiple of ONNX.
 
 ### Comparing two texts (cosine similarity)
 
