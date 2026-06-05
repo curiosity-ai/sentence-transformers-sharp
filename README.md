@@ -45,6 +45,7 @@ float[][] vectors = await encoder.EncodeAsync(new[]
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Qwen3.svg?label=SentenceTransformers.Qwen3)](https://www.nuget.org/packages/SentenceTransformers.Qwen3/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Qwen3.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Qwen3/) | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | 1024 | 32768 | Multilingual | Downloaded on first use |
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Medium.svg?label=SentenceTransformers.Harrier.Medium)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Medium/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Harrier.Medium.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Medium/) | [harrier-oss-v1-0.6b](https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX) | 1024 | 32768 | Multilingual | Downloaded on first use |
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Small.svg?label=SentenceTransformers.Harrier.Small)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Harrier.Small.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small/) | [harrier-oss-v1-270m](https://huggingface.co/onnx-community/harrier-oss-v1-270m-ONNX) | 640 | 32768 | Multilingual | Downloaded on first use |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Small.Pure.svg?label=SentenceTransformers.Harrier.Small.Pure)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small.Pure/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Harrier.Small.Pure.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small.Pure/) | [harrier-oss-v1-270m](https://huggingface.co/microsoft/harrier-oss-v1-270m) (**pure C#, no ONNX**) | 640 | 32768 | Multilingual | Downloaded on first use |
 
 - **Embedded** models bundle the ONNX weights inside the NuGet package, so the encoder is ready
   immediately after construction.
@@ -135,6 +136,40 @@ float[][] vectors = await encoder.EncodeAsync(new[]
 });
 // vectors[0] is a float[640]
 ```
+
+### Harrier Small, pure C# — no ONNX, no native dependencies
+
+`SentenceTransformers.Harrier.Small.Pure` is a 100% managed reimplementation of Harrier Small. It runs
+the Gemma3 forward pass and the Gemma BPE tokenizer **entirely in C#** (on top of
+`System.Numerics.Tensors`), with **no ONNX Runtime and no native tokenizer** — so there is not a single
+`.so`/`.dll`/`.dylib` to ship. That makes it trim/AOT-friendly and portable to anywhere .NET runs,
+including Blazor WebAssembly and mobile. The API mirrors the ONNX package:
+
+```csharp
+using SentenceTransformers.Harrier.Small.Pure;
+
+// Downloads the original bfloat16 safetensors weights (~540 MB) on first use, then loads them.
+using var encoder = await SentenceEncoder.CreateAsync();
+
+// Queries take a task instruction prefix; documents are encoded as-is.
+float[][] queryVectors = await encoder.EncodeQueriesAsync(
+    new[] { "how much protein should a female eat" },
+    SentenceEncoder.Prompts.WebSearchQuery);
+
+float[][] docVectors = await encoder.EncodeAsync(new[] { "…a passage about dietary protein…" });
+// vectors are L2-normalized float[640]
+```
+
+It produces the same embeddings as the ONNX build: it reproduces the query/document similarity matrix
+published on the [model card](https://huggingface.co/microsoft/harrier-oss-v1-270m) to within 0.01.
+
+**Trade-offs vs the ONNX package.** The pure build trades raw speed and footprint for zero native
+dependencies: it keeps the float32 weights resident (~750 MB RAM) and uses a multi-threaded managed
+GEMM, so it is slower and larger in memory than ONNX Runtime's quantized (`Q4F16`, 172 MB) kernels and
+has no GPU/execution-provider support. Choose **`.Pure`** when a dependency-free, AOT/WASM-friendly,
+single managed package matters more than peak throughput; choose the ONNX `SentenceTransformers.Harrier.Small`
+package when you want the smallest/fastest CPU or GPU inference. *(On-the-fly int8/int4 weight
+quantization to shrink the memory footprint is a planned follow-up.)*
 
 ### Comparing two texts (cosine similarity)
 
@@ -246,6 +281,14 @@ Each model package contains:
 The shared `SentenceTransformers` package provides the [`ISentenceEncoder`](SentenceTransformers/src/ISentenceEncoder.cs)
 contract and the default-implemented chunking helpers, so the model packages only implement
 `EncodeAsync` and expose their `MaxChunkLength` / `Tokenizer`.
+
+The `SentenceTransformers.Harrier.Small.Pure` package is the exception: instead of ONNX Runtime it
+ships its own pure-managed implementation of the model. It reads the original
+[safetensors](https://github.com/huggingface/safetensors) weights directly, runs the Gemma3
+decoder forward pass (RMSNorm, grouped-query attention with Q/K-norm and RoPE, GeGLU MLP, last-token
+pooling) on [`TensorPrimitives`](https://learn.microsoft.com/dotnet/api/system.numerics.tensors.tensorprimitives),
+and tokenizes with a from-scratch Gemma byte-level BPE tokenizer — so it depends only on the .NET base
+class library and `System.Numerics.Tensors`.
 
 ## Contributing & building
 

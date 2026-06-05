@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>AnyCPU</Platforms>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>SentenceTransformers.Harrier.Small.Pure</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Authors>Curiosity GmbH, Othneil Drew</Authors>
+    <Copyright>(c) Copyright 2026 Curiosity GmbH - all right reserved, Copyright (c) 2021 Othneil Drew (Bert Tokenizers)</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>www.curiosity.ai</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/curiosity-ai/sentence-transformers-sharp</RepositoryUrl>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageId>SentenceTransformers.Harrier.Small.Pure</PackageId>
+    <Description>A 100% managed, dependency-free (no ONNX Runtime, no native tokenizer) reimplementation of the Harrier Small (harrier-oss-v1-270m) multilingual embedding model. Loads the original safetensors weights and runs the Gemma3 forward pass and Gemma BPE tokenizer entirely in pure C#.</Description>
+    <PackageTags>Harrier, Gemma3, Multilingual, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings, Sentence Transformers, Pure CSharp, No ONNX, AOT, Data Science, Artificial Intelligence, AI, Neural Networks, Deep Learning</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SentenceTransformers.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pure-managed SIMD primitives (TensorPrimitives). No native dependency. -->
+    <PackageReference Include="System.Numerics.Tensors" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Reuse the Gemma BPE tokenizer.json that already ships with SentenceTransformers.Harrier.Small
+      rather than committing a second 20 MB copy. It is both copied to output (so a consumer that
+      copies Resources/ works) and embedded (so NuGet consumers work without copying anything).
+    -->
+    <None Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <EmbeddedResource Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\tokenizer.json" LogicalName="tokenizer.json" />
+  </ItemGroup>
+</Project>
