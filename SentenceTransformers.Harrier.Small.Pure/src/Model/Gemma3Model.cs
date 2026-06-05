@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
 
 namespace SentenceTransformers.Harrier.Small.Pure.Model;
@@ -221,36 +222,40 @@ internal sealed class Gemma3Model
     {
         int qStride = _cfg.NumHeads * headDim;
         int kvStride = _cfg.NumKvHeads * headDim; // == headDim (1 KV head)
+        int heads = _cfg.NumHeads;
         float scale = _cfg.AttentionScale;
+        var pool = System.Buffers.ArrayPool<float>.Shared;
 
-        // Parallelize over (head, query-position) pairs.
-        int total = _cfg.NumHeads * seq;
-        Parallel.For(0, total, idx =>
+        // Parallelize over query positions; each does all heads. Causal work grows with i, so the
+        // dynamic range partitioner balances the load. Score buffers come from a pool (no per-call
+        // allocations) and the value accumulation is a vectorized scalar*vector add.
+        Parallel.For(0, seq, i =>
         {
-            int head = idx / seq;
-            int i = idx % seq;
-
-            var scores = new float[i + 1];
-            var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
-            for (int j = 0; j <= i; j++)
+            float[] scores = pool.Rent(i + 1);
+            try
             {
-                var kSpan = new ReadOnlySpan<float>(k, j * kvStride, headDim);
-                scores[j] = System.Numerics.Tensors.TensorPrimitives.Dot(qSpan, kSpan) * scale;
-            }
-
-            Ops.SoftmaxInPlace(scores, i + 1);
-
-            int outBase = i * qStride + head * headDim;
-            var outSpan = new Span<float>(attnOut, outBase, headDim);
-            outSpan.Clear();
-            for (int j = 0; j <= i; j++)
-            {
-                float w = scores[j];
-                var vSpan = new ReadOnlySpan<float>(v, j * kvStride, headDim);
-                for (int d = 0; d < headDim; d++)
+                for (int head = 0; head < heads; head++)
                 {
-                    outSpan[d] += w * vSpan[d];
+                    var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
+                    for (int j = 0; j <= i; j++)
+                    {
+                        scores[j] = TensorPrimitives.Dot(qSpan, new ReadOnlySpan<float>(k, j * kvStride, headDim)) * scale;
+                    }
+
+                    Ops.SoftmaxInPlace(scores, i + 1);
+
+                    var outSpan = new Span<float>(attnOut, i * qStride + head * headDim, headDim);
+                    outSpan.Clear();
+                    for (int j = 0; j <= i; j++)
+                    {
+                        // outSpan += scores[j] * v[j]
+                        TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, j * kvStride, headDim), scores[j], outSpan, outSpan);
+                    }
                 }
+            }
+            finally
+            {
+                pool.Return(scores);
             }
         });
     }

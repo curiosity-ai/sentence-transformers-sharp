@@ -164,26 +164,29 @@ It produces the same embeddings as the reference: pure **fp32** reproduces the q
 similarity matrix published on the [model card](https://huggingface.co/microsoft/harrier-oss-v1-270m)
 to within **0.01** — actually closer to the reference than the shipped ONNX `Q4F16` build.
 
-**Choosing a quantization.** The transformer weights can be loaded at reduced precision to shrink the
-in-memory footprint. Pass a `Quantization` to `CreateAsync` (or the constructor):
+**Choosing a quantization.** The transformer weights can be loaded at reduced precision to cut both
+memory and inference time. Pass a `Quantization` to `CreateAsync` (or the constructor):
 
 ```csharp
 using SentenceTransformers.Harrier.Small.Pure;
 using SentenceTransformers.Harrier.Small.Pure.Model;
 
-// fp32 (default, most faithful), Int8 (near-lossless), or Int4 (smallest).
+// fp32 (default, most faithful), Int8 (recommended — fastest & ~40% less memory), or Int4 (smallest).
 using var encoder = await SentenceEncoder.CreateAsync(quantization: Quantization.Int8);
 ```
 
-**Benchmark — pure C# vs ONNX** (harrier-oss-v1-270m, 4-core Xeon @ 2.1 GHz, .NET 10, single-text
-encode unless noted):
+On CPUs with AVX-VNNI the `Int8` and `Int4` paths run as true int8 GEMMs (`vpdpbusd`), so quantization
+speeds inference up as well as shrinking it; on other CPUs they fall back to dequantizing to float.
+
+**Benchmark — pure C# vs ONNX** (harrier-oss-v1-270m, 4-core Xeon @ 2.1 GHz with AVX-VNNI, .NET 10,
+single-text encode unless noted):
 
 | Variant | Native deps | Max err vs model card¹ | Short text | ~512-token text | Batch throughput² | Resident weights³ |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| ONNX `Q4F16` (`SentenceTransformers.Harrier.Small`) | ONNX Runtime | 2.30 | **31 ms** | **0.49 s** | **87 / s** | **~172 MB** (native) |
-| Pure **fp32** | none | **0.01** | 144 ms | 3.74 s | 15 / s | ~740 MB |
-| Pure **int8** | none | 0.12 | 174 ms | 3.71 s | 11 / s | ~440 MB |
-| Pure **int4** | none | 0.80 | 191 ms | 3.88 s | 9 / s | ~390 MB |
+| ONNX `Q4F16` (`SentenceTransformers.Harrier.Small`) | ONNX Runtime | 2.30 | **30 ms** | **0.45 s** | **97 / s** | **~172 MB** (native) |
+| Pure **fp32** | none | **0.01** | 133 ms | 2.62 s | 16 / s | ~740 MB |
+| Pure **int8** | none | 0.98 | 66 ms | 1.39 s | 33 / s | ~440 MB |
+| Pure **int4** | none | 1.14 | 170 ms | 2.43 s | 11 / s | ~390 MB |
 
 ¹ Largest absolute deviation (on a 0–100 cosine×100 scale) from the published query/document score
 matrix; lower is more faithful. ² Sequential single-text encodes per second over a mixed batch (the
@@ -191,14 +194,15 @@ ONNX build additionally benefits from true batched inference). ³ Approximate mo
 pure variants share the same bfloat16 token-embedding table (~335 MB), which is the floor — quantization
 only shrinks the transformer layers.
 
-**How to read this.** The ONNX build is the choice for raw CPU/GPU speed and the smallest footprint:
-its optimized, quantized kernels and execution-provider support make it ~5–8× faster here. The pure
-build trades that speed for **zero native dependencies** (trim/AOT/WASM/mobile friendly, a single
-managed package) and the **highest fidelity** (fp32 matches the reference more closely than the ONNX
-`Q4F16` weights). `Int8` is near-lossless at ~40 % less memory; `Int4` is the smallest and still beats
-the ONNX `Q4F16` build on fidelity. Quantization is currently a memory optimization, not a speed one —
-the activations stay in float32 and the weights are dequantized on the fly, so a future integer-GEMM
-(VNNI) kernel is what would make the quantized paths faster.
+**How to read this.** The ONNX build is still the choice for raw speed and the smallest footprint — its
+optimized native kernels, batching and execution-provider support make it ~3× faster than the pure
+`Int8` path here. The pure build trades that for **zero native dependencies** (trim/AOT/WASM/mobile
+friendly, a single managed package) and the **highest fidelity** (every pure variant tracks the
+reference more closely than the ONNX `Q4F16` weights, and fp32 is essentially exact). **`Int8` is the
+recommended pure setting**: with VNNI it is ~2× faster than fp32 and ~40 % smaller, at a small accuracy
+cost. `Int4` is the smallest on memory but, because the bfloat16 embedding table dominates the
+footprint and its per-group dequant is heavier, it is currently slower than `Int8` with little memory
+gain — prefer `Int8` unless you are extremely memory-constrained.
 
 ### Comparing two texts (cosine similarity)
 

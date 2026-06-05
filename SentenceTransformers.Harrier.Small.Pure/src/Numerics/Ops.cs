@@ -42,6 +42,8 @@ internal static class Ops
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void LinearColumn(float[] x, float[] w, float[] y, int seq, int inDim, int outDim, int o)
     {
+        // TensorPrimitives.Dot is already FMA-optimized with internal unrolling, so a hand-rolled
+        // register-blocked kernel does not beat it for float32 here - keep the simple dot per (o, s).
         var wRow = new ReadOnlySpan<float>(w, o * inDim, inDim);
         for (int s = 0; s < seq; s++)
         {
