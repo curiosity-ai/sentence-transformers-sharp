@@ -20,26 +20,54 @@ var cfg = new BenchConfig(
 
 var results = new List<BenchResult>();
 
-var syncEncoders = new (string Name, ISentenceEncoder Encoder)[]
+// Embedded models are ready immediately.
+var syncEncoders = new (string Name, Func<ISentenceEncoder> Factory)[]
 {
-    ("MiniLM-L6-v2", new SentenceTransformers.MiniLM.SentenceEncoder()),
-    ("ArcticXs",     new SentenceTransformers.ArcticXs.SentenceEncoder()),
+    ("MiniLM-L6-v2", () => new SentenceTransformers.MiniLM.SentenceEncoder()),
+    ("ArcticXs",     () => new SentenceTransformers.ArcticXs.SentenceEncoder()),
 };
 
-foreach (var (name, encoder) in syncEncoders)
+foreach (var (name, factory) in syncEncoders)
 {
-    using (encoder)
-    {
-        var run = await EncoderBench.RunAsync(name, encoder, texts, cfg);
-        results.Add(run);
-        Console.WriteLine();
-    }
+    using var encoder = factory();
+    results.Add(await EncoderBench.RunAsync(name, encoder, texts, cfg));
+    Console.WriteLine();
 }
 
-using (var qwen3Encoder = await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync())
+// The BPE model packages (Qwen3, Harrier Medium, Harrier Small) each ship a
+// Resources/tokenizer.json that copies to the SAME path in this project's output and
+// collide non-deterministically. With the colliding file present, every BPE encoder loads
+// whichever tokenizer won the copy race -> wrong vocab -> out-of-range token ids at
+// inference. Delete it so each encoder falls back to its own embedded tokenizer (extracted
+// to a per-package temp path). See SentenceTransformers.Test/HarrierVariantsTest.cs.
+var collidingTokenizer = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
+if (File.Exists(collidingTokenizer))
 {
-    var run = await EncoderBench.RunAsync("Qwen3-0.6B", qwen3Encoder, texts, cfg);
-    results.Add(run);
+    File.Delete(collidingTokenizer);
+    Console.WriteLine($"(removed colliding {collidingTokenizer} so each BPE model uses its own tokenizer)");
+    Console.WriteLine();
+}
+
+// Downloaded models: weights are fetched on first use, then cached on disk.
+var asyncEncoders = new (string Name, Func<Task<ISentenceEncoder>> Factory)[]
+{
+    ("Qwen3-0.6B",     async () => await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync()),
+    ("Harrier-Medium", async () => await SentenceTransformers.Harrier.Medium.SentenceEncoder.CreateAsync()),
+    ("Harrier-Small",  async () => await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync()),
+};
+
+foreach (var (name, factory) in asyncEncoders)
+{
+    try
+    {
+        Console.WriteLine($"[{name}] downloading / loading model ...");
+        using var encoder = await factory();
+        results.Add(await EncoderBench.RunAsync(name, encoder, texts, cfg));
+    }
+    catch (Exception e)
+    {
+        Console.WriteLine($"[{name}] SKIPPED: {e.Message}");
+    }
     Console.WriteLine();
 }
 
@@ -102,11 +130,9 @@ public sealed record BenchResult(
     int Dimensions,
     int Iterations,
     double TotalSeconds,
-    long InputKB,
-    long OutputKB,
-    double InputMBPerHour,
-    double OutputMBPerHour,
-    double EmbeddingsPerHour
+    long TokensPerBatch,
+    double TokensPerSecond,
+    double MsPerIteration
 );
 
 public static class EncoderBench
@@ -120,6 +146,11 @@ public static class EncoderBench
             batch[i] = corpus[i % corpus.Length];
         }
 
+        // Count the (non-padding) tokens the model actually processes for this batch.
+        // Using each model's own tokenizer + attention mask keeps the metric comparable
+        // even though the families tokenize differently.
+        long tokensPerBatch = CountTokens(encoder, batch);
+
         // Warmup
         for (int i = 0; i < cfg.WarmupIters; i++)
         {
@@ -131,15 +162,6 @@ public static class EncoderBench
         }
 
         // Measure
-        long inputBytes = 0;
-        for (int i = 0; i < cfg.Iterations; i++)
-        {
-            foreach (var s in batch)
-            {
-                inputBytes += Encoding.UTF8.GetByteCount(s);
-            }
-        }
-
         var sw = Stopwatch.StartNew();
         float[][] last = Array.Empty<float[]>();
         for (int i = 0; i < cfg.Iterations; i++)
@@ -149,23 +171,33 @@ public static class EncoderBench
         sw.Stop();
 
         int dim = (last.Length > 0) ? last[0].Length : 0;
-        long outputBytes = (long)cfg.Iterations * cfg.BatchSize * dim * sizeof(float);
-
         double seconds = sw.Elapsed.TotalSeconds;
-        double inputMBperHour  = 3600 * inputBytes / 1024.0/ 1024.0 / seconds;
-        double outputMBperHour = 3600 * outputBytes / 1024.0 / 1024.0 / seconds;
-        double embeddingsPerHour = 3600 * (cfg.Iterations * (double)cfg.BatchSize) / seconds;
+        long totalTokens = tokensPerBatch * cfg.Iterations;
+        double tokensPerSecond = totalTokens / seconds;
+        double msPerIteration = sw.Elapsed.TotalMilliseconds / cfg.Iterations;
 
         Console.WriteLine($"[{name}]");
         Console.WriteLine($"  Batch:             {cfg.BatchSize}");
         Console.WriteLine($"  Dim:               {dim}");
-        Console.WriteLine($"  Time:              {sw.Elapsed.TotalSeconds:n1} s for {cfg.Iterations} iterations");
-        Console.WriteLine($"  Avg:               {sw.Elapsed.TotalSeconds / cfg.Iterations:n1} s per iteration");
-        Console.WriteLine($"  Input throughput:  {inputMBperHour:n1} UTF-8 MB per hour");
-        Console.WriteLine($"  Output throughput: {outputMBperHour:n1} MB per hour");
-        Console.WriteLine($"  Vector throughput: {embeddingsPerHour:n1} per hour");
+        Console.WriteLine($"  Tokens/batch:      {tokensPerBatch:n0}");
+        Console.WriteLine($"  Time:              {seconds:n2} s for {cfg.Iterations} iterations");
+        Console.WriteLine($"  Avg:               {msPerIteration:n1} ms/iter");
+        Console.WriteLine($"  Throughput:        {tokensPerSecond:n1} tokens/s");
 
-        return new BenchResult(name, cfg.BatchSize, dim, cfg.Iterations, sw.Elapsed.TotalMilliseconds, inputBytes, outputBytes, inputMBperHour, outputMBperHour, embeddingsPerHour);
+        return new BenchResult(name, cfg.BatchSize, dim, cfg.Iterations, seconds, tokensPerBatch, tokensPerSecond, msPerIteration);
+    }
+
+    private static long CountTokens(ISentenceEncoder encoder, string[] batch)
+    {
+        long total = 0;
+        foreach (var (_, _, attentionMask) in encoder.Tokenizer.Encode(batch))
+        {
+            foreach (var m in attentionMask)
+            {
+                total += m;
+            }
+        }
+        return total;
     }
 
     public static void PrintTable(List<BenchResult> results)
@@ -175,15 +207,18 @@ public static class EncoderBench
             return;
         }
 
+        // Ratios are expressed relative to MiniLM (the smallest/fastest baseline).
+        var baseline = results.FirstOrDefault(r => r.Name.StartsWith("MiniLM", StringComparison.OrdinalIgnoreCase))
+                       ?? results[0];
+
         var headers = new[]
         {
             "Model",
             "Dim",
             "Batch",
             "ms/iter",
-            "Emb/hour",
-            "In MB/hour",
-            "Out MB/hour"
+            "Tokens/s",
+            "vs MiniLM"
         };
 
         var rows = results.Select(r => new[]
@@ -191,10 +226,9 @@ public static class EncoderBench
             r.Name,
             r.Dimensions.ToString(),
             r.BatchSize.ToString(),
-            (r.TotalSeconds / r.Iterations).ToString("n1"),
-            r.EmbeddingsPerHour.ToString("n1"),
-            r.InputMBPerHour.ToString("n1"),
-            r.OutputMBPerHour.ToString("n1")
+            r.MsPerIteration.ToString("n1"),
+            r.TokensPerSecond.ToString("n1"),
+            (r.TokensPerSecond / baseline.TokensPerSecond).ToString("n2") + "x"
         }).ToList();
 
         var widths = new int[headers.Length];
@@ -212,7 +246,7 @@ public static class EncoderBench
 
         string Pad(string s, int w) => s.PadRight(w);
 
-        Console.WriteLine("=== Benchmark Results ===");
+        Console.WriteLine($"=== Benchmark Results (tokens/s, ratio vs {baseline.Name}) ===");
         Console.WriteLine(string.Join(" | ", headers.Select((h, i) => Pad(h, widths[i]))));
         Console.WriteLine(string.Join("-+-", widths.Select(w => new string('-', w))));
         foreach (var row in rows)
