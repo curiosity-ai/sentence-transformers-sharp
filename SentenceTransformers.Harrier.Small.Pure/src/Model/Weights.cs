@@ -1,9 +1,68 @@
 using System.Buffers;
 using System.Numerics.Tensors;
+using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
 namespace SentenceTransformers.Harrier.Small.Pure.Model;
+
+/// <summary>
+/// 256-bit int8 dot-accumulate used by the quantized GEMM kernels: 32 uint8×int8 products accumulated
+/// into 8 int32 lanes. Uses one <c>vpdpbusd</c> instruction on AVX-VNNI hosts, and falls back to
+/// <c>vpmaddubsw</c>+<c>vpmaddwd</c> on plain AVX2 hosts. The <c>IsSupported</c> probes are JIT-time
+/// constants, so the branch is eliminated and the chosen instructions are inlined.
+///
+/// Note: .NET (as of this runtime) does not surface AVX-512 VNNI as an intrinsic, and some server
+/// Xeons report AVX-512 VNNI but not the VEX-encoded AVX-VNNI flag - those land on the AVX2 path.
+/// </summary>
+internal static class Vnni
+{
+    public static bool IsSupported => AvxVnni.IsSupported || Avx2.IsSupported;
+
+    /// <summary>Activation zero-point (uint8 offset for the unsigned operand). Always 8-bit; both code
+    /// paths accumulate into int32 without saturation.</summary>
+    public const int ZeroPoint = 128;
+
+    /// <summary>Max magnitude of a quantized activation (8-bit symmetric).</summary>
+    public const int QMax = 127;
+
+    /// <summary>True when the 512-bit int8 kernel should be used: AVX-512 present but the (faster
+    /// per-op) 256-bit AVX-VNNI is not, so the extra lane width is the best available win.</summary>
+    public static bool Use512 => !AvxVnni.IsSupported && Avx512BW.IsSupported;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<int> DotAccumulate(Vector256<int> acc, Vector256<byte> a, Vector256<sbyte> b)
+    {
+        if (AvxVnni.IsSupported)
+        {
+            // One vpdpbusd: 32 uint8*int8 products straight into 8 int32 lanes.
+            return AvxVnni.MultiplyWideningAndAdd(acc, a, b);
+        }
+        // AVX2 fallback: widen uint8/int8 to int16 and use vpmaddwd (accumulates pairs into int32 with
+        // no saturation, so the full 8-bit activation range is safe). vpmaddubsw is avoided because its
+        // int16 intermediate would saturate for 8-bit activations.
+        var aLo = Avx2.ConvertToVector256Int16(a.GetLower());
+        var aHi = Avx2.ConvertToVector256Int16(a.GetUpper());
+        var bLo = Avx2.ConvertToVector256Int16(b.GetLower());
+        var bHi = Avx2.ConvertToVector256Int16(b.GetUpper());
+        acc = Avx2.Add(acc, Avx2.MultiplyAddAdjacent(aLo, bLo));
+        acc = Avx2.Add(acc, Avx2.MultiplyAddAdjacent(aHi, bHi));
+        return acc;
+    }
+
+    /// <summary>512-bit int8 dot-accumulate (64 uint8×int8 into 16 int32 lanes) via widen + vpmaddwd.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector512<int> DotAccumulate512(Vector512<int> acc, Vector512<byte> a, Vector512<sbyte> b)
+    {
+        var aLo = Avx512BW.ConvertToVector512Int16(a.GetLower());
+        var aHi = Avx512BW.ConvertToVector512Int16(a.GetUpper());
+        var bLo = Avx512BW.ConvertToVector512Int16(b.GetLower());
+        var bHi = Avx512BW.ConvertToVector512Int16(b.GetUpper());
+        acc += Avx512BW.MultiplyAddAdjacent(aLo, bLo);
+        acc += Avx512BW.MultiplyAddAdjacent(aHi, bHi);
+        return acc;
+    }
+}
 
 /// <summary>Weight storage / compute precision for the transformer's linear layers.</summary>
 public enum Quantization
@@ -51,6 +110,8 @@ internal static class VnniActivations
     {
         byte[] ua = ArrayPool<byte>.Shared.Rent(seq * inDim);
         float[] scale = ArrayPool<float>.Shared.Rent(seq);
+        int zp = Vnni.ZeroPoint;
+        int qmax = Vnni.QMax;
         Parallel.For(0, seq, s =>
         {
             int b = s * inDim;
@@ -59,13 +120,13 @@ internal static class VnniActivations
             {
                 amax = MathF.Max(amax, MathF.Abs(x[b + i]));
             }
-            float sc = amax > 0 ? amax / 127f : 1f;
+            float sc = amax > 0 ? amax / qmax : 1f;
             float inv = 1f / sc;
             scale[s] = sc;
             for (int i = 0; i < inDim; i++)
             {
-                int q = Math.Clamp((int)MathF.Round(x[b + i] * inv), -127, 127);
-                ua[b + i] = (byte)(q + 128);
+                int q = Math.Clamp((int)MathF.Round(x[b + i] * inv), -qmax, qmax);
+                ua[b + i] = (byte)(q + zp);
             }
         });
         return (ua, scale);
@@ -106,7 +167,7 @@ internal sealed class Int8Matrix : IWeightMatrix
     public int InDim { get; }
     public int OutDim { get; }
 
-    private static bool UseVnni(int inDim) => AvxVnni.IsSupported && (inDim % 32 == 0);
+    private static bool UseVnni(int inDim) => Vnni.IsSupported && (inDim % 32 == 0);
 
     private Int8Matrix(sbyte[] q, float[] scale, int[] rowSum, int outDim, int inDim)
     {
@@ -159,57 +220,191 @@ internal sealed class Int8Matrix : IWeightMatrix
 
     /// <summary>True int8 GEMM (W8A8) via VNNI <c>vpdpbusd</c>. Activations are quantized per row to
     /// signed int8, offset by +128 to feed the unsigned operand of <c>vpdpbusd</c>; the offset is
-    /// corrected with the precomputed per-channel weight sum.</summary>
+    /// corrected with the precomputed per-channel weight sum.
+    ///
+    /// The matmul is register-tiled 4 output channels x 2 sequence positions: each activation vector
+    /// load feeds four dot products and each weight vector load feeds two, so the activation matrix is
+    /// read ~4x fewer times. This matmul is memory-bound (the int8 dot itself is cheap), so cutting that
+    /// traffic is the dominant speed-up. The eight accumulators fit in the 16 AVX YMM registers.</summary>
     private void MultiplyVnni(float[] x, float[] y, int seq)
     {
         int inDim = InDim, outDim = OutDim;
         var (ua, aScale) = VnniActivations.Quantize(x, seq, inDim);
         try
         {
-            Parallel.For(0, outDim, o =>
+            bool use512 = Vnni.Use512 && (inDim % 64 == 0);
+            int oTiles = (outDim + 3) / 4;
+            Parallel.For(0, oTiles, ot =>
             {
-                int wBase = o * inDim;
-                float wsc = _scale[o];
-                int offset = 128 * _rowSum[o];
-                int s = 0;
-                // Block 4 sequence positions per weight-row load: each weight vector is reused across
-                // 4 activation rows (4x less weight traffic) and the 4 independent accumulators hide
-                // the vpdpbusd latency.
-                for (; s + 4 <= seq; s += 4)
+                int o0 = ot * 4;
+                if (o0 + 4 <= outDim)
                 {
-                    int u0 = s * inDim, u1 = u0 + inDim, u2 = u1 + inDim, u3 = u2 + inDim;
-                    var a0 = Vector256<int>.Zero;
-                    var a1 = Vector256<int>.Zero;
-                    var a2 = Vector256<int>.Zero;
-                    var a3 = Vector256<int>.Zero;
-                    for (int i = 0; i < inDim; i += 32)
+                    if (use512)
                     {
-                        var wv = Vector256.LoadUnsafe(ref _q[wBase + i]);
-                        a0 = AvxVnni.MultiplyWideningAndAdd(a0, Vector256.LoadUnsafe(ref ua[u0 + i]), wv);
-                        a1 = AvxVnni.MultiplyWideningAndAdd(a1, Vector256.LoadUnsafe(ref ua[u1 + i]), wv);
-                        a2 = AvxVnni.MultiplyWideningAndAdd(a2, Vector256.LoadUnsafe(ref ua[u2 + i]), wv);
-                        a3 = AvxVnni.MultiplyWideningAndAdd(a3, Vector256.LoadUnsafe(ref ua[u3 + i]), wv);
+                        Tile4_512(ua, aScale, y, o0, seq, inDim, outDim);
                     }
-                    y[(s + 0) * outDim + o] = aScale[s + 0] * wsc * (Vector256.Sum(a0) - offset);
-                    y[(s + 1) * outDim + o] = aScale[s + 1] * wsc * (Vector256.Sum(a1) - offset);
-                    y[(s + 2) * outDim + o] = aScale[s + 2] * wsc * (Vector256.Sum(a2) - offset);
-                    y[(s + 3) * outDim + o] = aScale[s + 3] * wsc * (Vector256.Sum(a3) - offset);
+                    else
+                    {
+                        Tile4(ua, aScale, y, o0, seq, inDim, outDim);
+                    }
                 }
-                for (; s < seq; s++)
+                else
                 {
-                    int uBase = s * inDim;
-                    var acc = Vector256<int>.Zero;
-                    for (int i = 0; i < inDim; i += 32)
+                    for (int o = o0; o < outDim; o++)
                     {
-                        acc = AvxVnni.MultiplyWideningAndAdd(acc, Vector256.LoadUnsafe(ref ua[uBase + i]), Vector256.LoadUnsafe(ref _q[wBase + i]));
+                        SingleChannel(ua, aScale, y, o, seq, inDim, outDim);
                     }
-                    y[s * outDim + o] = aScale[s] * wsc * (Vector256.Sum(acc) - offset);
                 }
             });
         }
         finally
         {
             VnniActivations.Return(ua, aScale);
+        }
+    }
+
+    /// <summary>512-bit variant of <see cref="Tile4"/> for AVX-512 hosts (no AVX-512 VNNI is exposed by
+    /// the runtime, so this widens to int16 and uses vpmaddwd): the same 4-output x 2-position register
+    /// tile, processing 64 int8 elements per step.</summary>
+    private void Tile4_512(byte[] ua, float[] aScale, float[] y, int o0, int seq, int inDim, int outDim)
+    {
+        int wb0 = o0 * inDim, wb1 = wb0 + inDim, wb2 = wb1 + inDim, wb3 = wb2 + inDim;
+        float sc0 = _scale[o0], sc1 = _scale[o0 + 1], sc2 = _scale[o0 + 2], sc3 = _scale[o0 + 3];
+        int of0 = Vnni.ZeroPoint * _rowSum[o0], of1 = Vnni.ZeroPoint * _rowSum[o0 + 1], of2 = Vnni.ZeroPoint * _rowSum[o0 + 2], of3 = Vnni.ZeroPoint * _rowSum[o0 + 3];
+
+        int s = 0;
+        for (; s + 2 <= seq; s += 2)
+        {
+            int u0 = s * inDim, u1 = u0 + inDim;
+            var c00 = Vector512<int>.Zero; var c01 = Vector512<int>.Zero; var c02 = Vector512<int>.Zero; var c03 = Vector512<int>.Zero;
+            var c10 = Vector512<int>.Zero; var c11 = Vector512<int>.Zero; var c12 = Vector512<int>.Zero; var c13 = Vector512<int>.Zero;
+            for (int i = 0; i < inDim; i += 64)
+            {
+                var av0 = Vector512.LoadUnsafe(ref ua[u0 + i]);
+                var av1 = Vector512.LoadUnsafe(ref ua[u1 + i]);
+                var w0 = Vector512.LoadUnsafe(ref _q[wb0 + i]);
+                var w1 = Vector512.LoadUnsafe(ref _q[wb1 + i]);
+                var w2 = Vector512.LoadUnsafe(ref _q[wb2 + i]);
+                var w3 = Vector512.LoadUnsafe(ref _q[wb3 + i]);
+                c00 = Vnni.DotAccumulate512(c00, av0, w0);
+                c01 = Vnni.DotAccumulate512(c01, av0, w1);
+                c02 = Vnni.DotAccumulate512(c02, av0, w2);
+                c03 = Vnni.DotAccumulate512(c03, av0, w3);
+                c10 = Vnni.DotAccumulate512(c10, av1, w0);
+                c11 = Vnni.DotAccumulate512(c11, av1, w1);
+                c12 = Vnni.DotAccumulate512(c12, av1, w2);
+                c13 = Vnni.DotAccumulate512(c13, av1, w3);
+            }
+            float as0 = aScale[s], as1 = aScale[s + 1];
+            int b0 = s * outDim + o0, b1 = b0 + outDim;
+            y[b0] = as0 * sc0 * (Vector512.Sum(c00) - of0);
+            y[b0 + 1] = as0 * sc1 * (Vector512.Sum(c01) - of1);
+            y[b0 + 2] = as0 * sc2 * (Vector512.Sum(c02) - of2);
+            y[b0 + 3] = as0 * sc3 * (Vector512.Sum(c03) - of3);
+            y[b1] = as1 * sc0 * (Vector512.Sum(c10) - of0);
+            y[b1 + 1] = as1 * sc1 * (Vector512.Sum(c11) - of1);
+            y[b1 + 2] = as1 * sc2 * (Vector512.Sum(c12) - of2);
+            y[b1 + 3] = as1 * sc3 * (Vector512.Sum(c13) - of3);
+        }
+        for (; s < seq; s++)
+        {
+            int u0 = s * inDim;
+            var c0 = Vector512<int>.Zero; var c1 = Vector512<int>.Zero; var c2 = Vector512<int>.Zero; var c3 = Vector512<int>.Zero;
+            for (int i = 0; i < inDim; i += 64)
+            {
+                var av = Vector512.LoadUnsafe(ref ua[u0 + i]);
+                c0 = Vnni.DotAccumulate512(c0, av, Vector512.LoadUnsafe(ref _q[wb0 + i]));
+                c1 = Vnni.DotAccumulate512(c1, av, Vector512.LoadUnsafe(ref _q[wb1 + i]));
+                c2 = Vnni.DotAccumulate512(c2, av, Vector512.LoadUnsafe(ref _q[wb2 + i]));
+                c3 = Vnni.DotAccumulate512(c3, av, Vector512.LoadUnsafe(ref _q[wb3 + i]));
+            }
+            float as0 = aScale[s];
+            int b0 = s * outDim + o0;
+            y[b0] = as0 * sc0 * (Vector512.Sum(c0) - of0);
+            y[b0 + 1] = as0 * sc1 * (Vector512.Sum(c1) - of1);
+            y[b0 + 2] = as0 * sc2 * (Vector512.Sum(c2) - of2);
+            y[b0 + 3] = as0 * sc3 * (Vector512.Sum(c3) - of3);
+        }
+    }
+
+    /// <summary>Computes a tile of 4 output channels (o0..o0+3) for all sequence positions, blocking
+    /// 2 positions at a time so each activation load is reused across the 4 channels.</summary>
+    private void Tile4(byte[] ua, float[] aScale, float[] y, int o0, int seq, int inDim, int outDim)
+    {
+        int wb0 = o0 * inDim, wb1 = wb0 + inDim, wb2 = wb1 + inDim, wb3 = wb2 + inDim;
+        float sc0 = _scale[o0], sc1 = _scale[o0 + 1], sc2 = _scale[o0 + 2], sc3 = _scale[o0 + 3];
+        int of0 = Vnni.ZeroPoint * _rowSum[o0], of1 = Vnni.ZeroPoint * _rowSum[o0 + 1], of2 = Vnni.ZeroPoint * _rowSum[o0 + 2], of3 = Vnni.ZeroPoint * _rowSum[o0 + 3];
+
+        int s = 0;
+        for (; s + 2 <= seq; s += 2)
+        {
+            int u0 = s * inDim, u1 = u0 + inDim;
+            var c00 = Vector256<int>.Zero; var c01 = Vector256<int>.Zero; var c02 = Vector256<int>.Zero; var c03 = Vector256<int>.Zero;
+            var c10 = Vector256<int>.Zero; var c11 = Vector256<int>.Zero; var c12 = Vector256<int>.Zero; var c13 = Vector256<int>.Zero;
+            for (int i = 0; i < inDim; i += 32)
+            {
+                var av0 = Vector256.LoadUnsafe(ref ua[u0 + i]);
+                var av1 = Vector256.LoadUnsafe(ref ua[u1 + i]);
+                var w0 = Vector256.LoadUnsafe(ref _q[wb0 + i]);
+                var w1 = Vector256.LoadUnsafe(ref _q[wb1 + i]);
+                var w2 = Vector256.LoadUnsafe(ref _q[wb2 + i]);
+                var w3 = Vector256.LoadUnsafe(ref _q[wb3 + i]);
+                c00 = Vnni.DotAccumulate(c00, av0, w0);
+                c01 = Vnni.DotAccumulate(c01, av0, w1);
+                c02 = Vnni.DotAccumulate(c02, av0, w2);
+                c03 = Vnni.DotAccumulate(c03, av0, w3);
+                c10 = Vnni.DotAccumulate(c10, av1, w0);
+                c11 = Vnni.DotAccumulate(c11, av1, w1);
+                c12 = Vnni.DotAccumulate(c12, av1, w2);
+                c13 = Vnni.DotAccumulate(c13, av1, w3);
+            }
+            float as0 = aScale[s], as1 = aScale[s + 1];
+            int b0 = s * outDim + o0, b1 = b0 + outDim;
+            y[b0] = as0 * sc0 * (Vector256.Sum(c00) - of0);
+            y[b0 + 1] = as0 * sc1 * (Vector256.Sum(c01) - of1);
+            y[b0 + 2] = as0 * sc2 * (Vector256.Sum(c02) - of2);
+            y[b0 + 3] = as0 * sc3 * (Vector256.Sum(c03) - of3);
+            y[b1] = as1 * sc0 * (Vector256.Sum(c10) - of0);
+            y[b1 + 1] = as1 * sc1 * (Vector256.Sum(c11) - of1);
+            y[b1 + 2] = as1 * sc2 * (Vector256.Sum(c12) - of2);
+            y[b1 + 3] = as1 * sc3 * (Vector256.Sum(c13) - of3);
+        }
+        for (; s < seq; s++)
+        {
+            int u0 = s * inDim;
+            var c0 = Vector256<int>.Zero; var c1 = Vector256<int>.Zero; var c2 = Vector256<int>.Zero; var c3 = Vector256<int>.Zero;
+            for (int i = 0; i < inDim; i += 32)
+            {
+                var av = Vector256.LoadUnsafe(ref ua[u0 + i]);
+                c0 = Vnni.DotAccumulate(c0, av, Vector256.LoadUnsafe(ref _q[wb0 + i]));
+                c1 = Vnni.DotAccumulate(c1, av, Vector256.LoadUnsafe(ref _q[wb1 + i]));
+                c2 = Vnni.DotAccumulate(c2, av, Vector256.LoadUnsafe(ref _q[wb2 + i]));
+                c3 = Vnni.DotAccumulate(c3, av, Vector256.LoadUnsafe(ref _q[wb3 + i]));
+            }
+            float as0 = aScale[s];
+            int b0 = s * outDim + o0;
+            y[b0] = as0 * sc0 * (Vector256.Sum(c0) - of0);
+            y[b0 + 1] = as0 * sc1 * (Vector256.Sum(c1) - of1);
+            y[b0 + 2] = as0 * sc2 * (Vector256.Sum(c2) - of2);
+            y[b0 + 3] = as0 * sc3 * (Vector256.Sum(c3) - of3);
+        }
+    }
+
+    /// <summary>Tail path for the (rare) output channels that do not fill a 4-wide tile.</summary>
+    private void SingleChannel(byte[] ua, float[] aScale, float[] y, int o, int seq, int inDim, int outDim)
+    {
+        int wBase = o * inDim;
+        float wsc = _scale[o];
+        int offset = Vnni.ZeroPoint * _rowSum[o];
+        for (int s = 0; s < seq; s++)
+        {
+            int uBase = s * inDim;
+            var acc = Vector256<int>.Zero;
+            for (int i = 0; i < inDim; i += 32)
+            {
+                acc = Vnni.DotAccumulate(acc, Vector256.LoadUnsafe(ref ua[uBase + i]), Vector256.LoadUnsafe(ref _q[wBase + i]));
+            }
+            y[s * outDim + o] = aScale[s] * wsc * (Vector256.Sum(acc) - offset);
         }
     }
 
@@ -255,7 +450,7 @@ internal sealed class Int4Matrix : IWeightMatrix
     public int InDim { get; }
     public int OutDim { get; }
 
-    private static bool UseVnni() => AvxVnni.IsSupported && GroupSize == 32;
+    private static bool UseVnni() => Vnni.IsSupported && GroupSize == 32;
 
     private Int4Matrix(byte[] packed, float[] scale, int[] groupSum, int numGroups, int outDim, int inDim)
     {
@@ -357,7 +552,7 @@ internal sealed class Int4Matrix : IWeightMatrix
                         int gStart = g * GroupSize;
                         var a = Vector256.LoadUnsafe(ref ua[sBase + gStart]);
                         var wv = Vector256.LoadUnsafe(ref wbuf[gStart]);
-                        int dot = Vector256.Sum(AvxVnni.MultiplyWideningAndAdd(Vector256<int>.Zero, a, wv)) - 128 * _groupSum[scaleBase + g];
+                        int dot = Vector256.Sum(Vnni.DotAccumulate(Vector256<int>.Zero, a, wv)) - Vnni.ZeroPoint * _groupSum[scaleBase + g];
                         facc += _scale[scaleBase + g] * dot;
                     }
                     y[s * outDim + o] = aScale[s] * facc;

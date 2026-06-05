@@ -175,34 +175,38 @@ using SentenceTransformers.Harrier.Small.Pure.Model;
 using var encoder = await SentenceEncoder.CreateAsync(quantization: Quantization.Int8);
 ```
 
-On CPUs with AVX-VNNI the `Int8` and `Int4` paths run as true int8 GEMMs (`vpdpbusd`), so quantization
-speeds inference up as well as shrinking it; on other CPUs they fall back to dequantizing to float.
+The `Int8`/`Int4` paths run as true int8 GEMMs and pick the best instruction set available at runtime:
+one `vpdpbusd` per 32 values on AVX-VNNI CPUs, or a widen + `vpmaddwd` sequence on AVX-512 / AVX2 CPUs.
+On an AVX-512 host, also set `DOTNET_PreferredVectorBitWidth=512` to let the JIT emit 512-bit vectors.
 
-**Benchmark — pure C# vs ONNX** (harrier-oss-v1-270m, 4-core Xeon @ 2.1 GHz with AVX-VNNI, .NET 10,
-single-text encode unless noted):
+**Benchmark — pure C# vs ONNX** (harrier-oss-v1-270m, .NET 10, 4-core Xeon, single-text encode):
 
-| Variant | Native deps | Max err vs model card¹ | Short text | ~512-token text | Batch throughput² | Resident weights³ |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| ONNX `Q4F16` (`SentenceTransformers.Harrier.Small`) | ONNX Runtime | 2.30 | **30 ms** | **0.45 s** | **97 / s** | **~172 MB** (native) |
-| Pure **fp32** | none | **0.01** | 133 ms | 2.62 s | 16 / s | ~740 MB |
-| Pure **int8** | none | 0.98 | 66 ms | 1.39 s | 33 / s | ~440 MB |
-| Pure **int4** | none | 1.14 | 170 ms | 2.43 s | 11 / s | ~390 MB |
+| Variant | Native deps | Max err vs model card¹ | Short text | ~512-token text | Resident weights² |
+| --- | --- | ---: | ---: | ---: | ---: |
+| ONNX `Q4F16` (`SentenceTransformers.Harrier.Small`) | ONNX Runtime | 2.30 | **~40 ms** | **~0.7 s** | **~172 MB** (native) |
+| Pure **fp32** | none | **0.01** | 226 ms | 4.4 s | ~740 MB |
+| Pure **int8** | none | 0.97 | 92 ms | 1.8 s | ~440 MB |
+| Pure **int4** | none | 1.42 | 260 ms | 3.8 s | ~390 MB |
 
 ¹ Largest absolute deviation (on a 0–100 cosine×100 scale) from the published query/document score
-matrix; lower is more faithful. ² Sequential single-text encodes per second over a mixed batch (the
-ONNX build additionally benefits from true batched inference). ³ Approximate model-weight memory; all
-pure variants share the same bfloat16 token-embedding table (~335 MB), which is the floor — quantization
-only shrinks the transformer layers.
+matrix; lower is more faithful — every pure variant tracks the reference more closely than the ONNX
+`Q4F16` weights. ² Approximate model-weight memory; all pure variants share the same bfloat16
+token-embedding table (~335 MB), which is the floor. Numbers are hardware-dependent (the run above is an
+AVX-512 server CPU on which .NET cannot emit AVX-512 VNNI — see below); on a client CPU with AVX-VNNI
+the int8 path is roughly another ~1.5–2× faster.
 
-**How to read this.** The ONNX build is still the choice for raw speed and the smallest footprint — its
-optimized native kernels, batching and execution-provider support make it ~3× faster than the pure
-`Int8` path here. The pure build trades that for **zero native dependencies** (trim/AOT/WASM/mobile
-friendly, a single managed package) and the **highest fidelity** (every pure variant tracks the
-reference more closely than the ONNX `Q4F16` weights, and fp32 is essentially exact). **`Int8` is the
-recommended pure setting**: with VNNI it is ~2× faster than fp32 and ~40 % smaller, at a small accuracy
-cost. `Int4` is the smallest on memory but, because the bfloat16 embedding table dominates the
-footprint and its per-group dequant is heavier, it is currently slower than `Int8` with little memory
-gain — prefer `Int8` unless you are extremely memory-constrained.
+**How to read this.** `Int8` is the recommended pure setting — ~2.5× faster than fp32, ~40 % smaller, and
+still more faithful than ONNX `Q4F16`. It lands within ~2–2.5× of ONNX's speed.
+
+That residual gap is structural, not a tuning miss. ONNX Runtime's MLAS uses hand-written assembly GEMM
+kernels with **4-bit weights** and direct **AVX-512 VNNI** (`vpdpbusd` on 512-bit registers, 64 int8
+MACs/instruction). .NET 10 does **not** expose AVX-512 VNNI as an intrinsic (it is only reachable via
+`Avx10v1`, which needs newer AVX10 hardware), so on a typical AVX-512 server the pure build must fall
+back to a widen + `vpmaddwd` int8 dot that does ~6× the instructions. On client CPUs that have the
+256-bit AVX-VNNI instructions, .NET *can* emit `vpdpbusd` and the gap narrows further. Matching
+hand-tuned native MLAS from pure managed code is therefore not fully attainable today; the pure build's
+case is **zero native dependencies** (trim/AOT/WASM/mobile, one managed package) and **higher fidelity**,
+at a CPU-inference cost within a small multiple of ONNX.
 
 ### Comparing two texts (cosine similarity)
 
