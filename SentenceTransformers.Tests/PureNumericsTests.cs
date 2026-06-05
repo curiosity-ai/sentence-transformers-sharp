@@ -116,6 +116,37 @@ public class PureNumericsTests
         Assert.Equal(11f, y[3]);  // row1,o1 = 5+6
     }
 
+    [Theory]
+    [InlineData(Quantization.Int8, 0.03f)]
+    [InlineData(Quantization.Int4, 0.08f)]
+    public void QuantizedMatrix_ApproximatesFloatMatMul(Quantization quant, float tolerance)
+    {
+        int seq = 3, inDim = 256, outDim = 64;
+        var rng = new Random(123);
+        var w = new float[outDim * inDim];
+        for (int i = 0; i < w.Length; i++) w[i] = (float)(rng.NextDouble() * 2 - 1);
+        var x = new float[seq * inDim];
+        for (int i = 0; i < x.Length; i++) x[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        var reference = IWeightMatrix.Create((float[])w.Clone(), outDim, inDim, Quantization.None);
+        var quantized = IWeightMatrix.Create((float[])w.Clone(), outDim, inDim, quant);
+
+        var yRef = new float[seq * outDim];
+        var yQ = new float[seq * outDim];
+        reference.Multiply(x, yRef, seq);
+        quantized.Multiply(x, yQ, seq);
+
+        // Compare via relative error on the output vectors (the dot products), which is what matters.
+        double num = 0, den = 0;
+        for (int i = 0; i < yRef.Length; i++)
+        {
+            num += (yRef[i] - yQ[i]) * (yRef[i] - yQ[i]);
+            den += yRef[i] * (double)yRef[i];
+        }
+        double relErr = Math.Sqrt(num / den);
+        Assert.True(relErr < tolerance, $"{quant} relative error {relErr:F4} exceeded {tolerance}");
+    }
+
     [Fact]
     public void SafeTensors_RoundTrips_F32_And_BF16()
     {

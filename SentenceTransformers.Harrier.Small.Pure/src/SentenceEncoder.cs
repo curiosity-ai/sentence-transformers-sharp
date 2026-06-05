@@ -59,10 +59,14 @@ namespace SentenceTransformers.Harrier.Small.Pure
         /// </summary>
         /// <param name="weightsUrl">URL of the <c>.safetensors</c> file. Defaults to <see cref="DefaultWeightsUrl"/>.</param>
         /// <param name="downloadToPath">Where to cache the weights. Defaults to a temp folder.</param>
+        /// <param name="quantization">Weight precision for the transformer layers. <see cref="Quantization.None"/>
+        /// (float32) is the default and exactly matches the reference; <see cref="Quantization.Int8"/> and
+        /// <see cref="Quantization.Int4"/> shrink the in-memory footprint ~4x / ~8x respectively.</param>
         /// <param name="reportProgress">Optional download progress callback (~2 Hz).</param>
         public static async Task<SentenceEncoder> CreateAsync(
             string weightsUrl = null,
             string downloadToPath = null,
+            Quantization quantization = Quantization.None,
             Action<DownloadProgress> reportProgress = null,
             CancellationToken cancellationToken = default)
         {
@@ -70,20 +74,21 @@ namespace SentenceTransformers.Harrier.Small.Pure
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
             await DownloadFileAsync(weightsUrl ?? DefaultWeightsUrl, path, reportProgress, cancellationToken);
-            return new SentenceEncoder(path);
+            return new SentenceEncoder(path, quantization: quantization);
         }
 
         /// <summary>Creates an encoder from an existing safetensors file on disk.</summary>
         /// <param name="safetensorsPath">Path to the harrier-oss-v1-270m <c>model.safetensors</c>.</param>
         /// <param name="tokenizerJsonPath">Optional path to <c>tokenizer.json</c>; when null the embedded copy is used.</param>
-        public SentenceEncoder(string safetensorsPath, string tokenizerJsonPath = null)
+        /// <param name="quantization">Weight precision for the transformer layers (default float32).</param>
+        public SentenceEncoder(string safetensorsPath, string tokenizerJsonPath = null, Quantization quantization = Quantization.None)
         {
             if (string.IsNullOrWhiteSpace(safetensorsPath))
             {
                 throw new ArgumentException("Weights path is required.", nameof(safetensorsPath));
             }
 
-            _model = Gemma3Model.Load(safetensorsPath, new Gemma3Config());
+            _model = Gemma3Model.Load(safetensorsPath, new Gemma3Config(), quantization);
             _tokenizer = LoadTokenizer(tokenizerJsonPath, MaxChunkLength);
             Tokenizer = _tokenizer;
         }

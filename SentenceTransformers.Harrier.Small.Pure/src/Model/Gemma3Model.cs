@@ -38,15 +38,15 @@ internal sealed class Gemma3Model
         public required float[] PostAttentionLayerNorm;
         public required float[] PreFeedforwardLayerNorm;
         public required float[] PostFeedforwardLayerNorm;
-        public required float[] QProj;
-        public required float[] KProj;
-        public required float[] VProj;
-        public required float[] OProj;
+        public required IWeightMatrix QProj;
+        public required IWeightMatrix KProj;
+        public required IWeightMatrix VProj;
+        public required IWeightMatrix OProj;
         public required float[] QNorm;
         public required float[] KNorm;
-        public required float[] GateProj;
-        public required float[] UpProj;
-        public required float[] DownProj;
+        public required IWeightMatrix GateProj;
+        public required IWeightMatrix UpProj;
+        public required IWeightMatrix DownProj;
     }
 
     private Gemma3Model(Gemma3Config cfg, ushort[] embedTokens, Layer[] layers, float[] finalNorm)
@@ -60,13 +60,12 @@ internal sealed class Gemma3Model
         _embedScale = FloatConversions.RoundToBFloat16(MathF.Sqrt(cfg.HiddenSize));
     }
 
-    public static Gemma3Model Load(string safetensorsPath, Gemma3Config cfg)
+    public static Gemma3Model Load(string safetensorsPath, Gemma3Config cfg, Quantization quantization = Quantization.None)
     {
         var st = SafeTensors.Load(safetensorsPath);
 
         // Some exports prefix every tensor with "model."; tolerate both.
         string prefix = st.Contains("embed_tokens.weight") ? "" : "model.";
-        float[] N(string name) => st.ReadFloat(prefix + name);
 
         var embed = st.ReadRaw16(prefix + "embed_tokens.weight");
 
@@ -74,25 +73,30 @@ internal sealed class Gemma3Model
         for (int i = 0; i < cfg.NumLayers; i++)
         {
             string p = $"{prefix}layers.{i}.";
+            // The attention/MLP projections dominate weight size and compute, so they carry the
+            // chosen quantization; the tiny per-channel norm vectors stay in float32.
+            IWeightMatrix Proj(string name, int outDim, int inDim)
+                => IWeightMatrix.Create(st.ReadFloat(p + name), outDim, inDim, quantization);
+
             layers[i] = new Layer
             {
                 InputLayerNorm = st.ReadFloat(p + "input_layernorm.weight"),
                 PostAttentionLayerNorm = st.ReadFloat(p + "post_attention_layernorm.weight"),
                 PreFeedforwardLayerNorm = st.ReadFloat(p + "pre_feedforward_layernorm.weight"),
                 PostFeedforwardLayerNorm = st.ReadFloat(p + "post_feedforward_layernorm.weight"),
-                QProj = st.ReadFloat(p + "self_attn.q_proj.weight"),
-                KProj = st.ReadFloat(p + "self_attn.k_proj.weight"),
-                VProj = st.ReadFloat(p + "self_attn.v_proj.weight"),
-                OProj = st.ReadFloat(p + "self_attn.o_proj.weight"),
+                QProj = Proj("self_attn.q_proj.weight", cfg.QProjOut, cfg.HiddenSize),
+                KProj = Proj("self_attn.k_proj.weight", cfg.KvProjOut, cfg.HiddenSize),
+                VProj = Proj("self_attn.v_proj.weight", cfg.KvProjOut, cfg.HiddenSize),
+                OProj = Proj("self_attn.o_proj.weight", cfg.HiddenSize, cfg.QProjOut),
                 QNorm = st.ReadFloat(p + "self_attn.q_norm.weight"),
                 KNorm = st.ReadFloat(p + "self_attn.k_norm.weight"),
-                GateProj = st.ReadFloat(p + "mlp.gate_proj.weight"),
-                UpProj = st.ReadFloat(p + "mlp.up_proj.weight"),
-                DownProj = st.ReadFloat(p + "mlp.down_proj.weight"),
+                GateProj = Proj("mlp.gate_proj.weight", cfg.IntermediateSize, cfg.HiddenSize),
+                UpProj = Proj("mlp.up_proj.weight", cfg.IntermediateSize, cfg.HiddenSize),
+                DownProj = Proj("mlp.down_proj.weight", cfg.HiddenSize, cfg.IntermediateSize),
             };
         }
 
-        var finalNorm = N("norm.weight");
+        var finalNorm = st.ReadFloat(prefix + "norm.weight");
         return new Gemma3Model(cfg, embed, layers, finalNorm);
     }
 
@@ -135,9 +139,9 @@ internal sealed class Gemma3Model
         {
             // ---- self attention ----
             Ops.RmsNorm(hidden, layer.InputLayerNorm, normed, seq, h, _cfg.RmsNormEps);
-            Ops.Linear(normed, layer.QProj, q, seq, h, _cfg.QProjOut);
-            Ops.Linear(normed, layer.KProj, k, seq, h, _cfg.KvProjOut);
-            Ops.Linear(normed, layer.VProj, v, seq, h, _cfg.KvProjOut);
+            layer.QProj.Multiply(normed, q, seq);
+            layer.KProj.Multiply(normed, k, seq);
+            layer.VProj.Multiply(normed, v, seq);
 
             ApplyHeadNorm(q, layer.QNorm, seq, _cfg.NumHeads, headDim);
             ApplyHeadNorm(k, layer.KNorm, seq, _cfg.NumKvHeads, headDim);
@@ -147,7 +151,7 @@ internal sealed class Gemma3Model
 
             Attention(q, k, v, attnOut, seq, headDim);
 
-            Ops.Linear(attnOut, layer.OProj, attnProj, seq, _cfg.QProjOut, h);
+            layer.OProj.Multiply(attnOut, attnProj, seq);
             // post-attention norm then residual add
             Ops.RmsNorm(attnProj, layer.PostAttentionLayerNorm, attnProj, seq, h, _cfg.RmsNormEps);
             for (int i = 0; i < hidden.Length; i++)
@@ -157,10 +161,10 @@ internal sealed class Gemma3Model
 
             // ---- feed forward ----
             Ops.RmsNorm(hidden, layer.PreFeedforwardLayerNorm, normed, seq, h, _cfg.RmsNormEps);
-            Ops.Linear(normed, layer.GateProj, gate, seq, h, _cfg.IntermediateSize);
-            Ops.Linear(normed, layer.UpProj, up, seq, h, _cfg.IntermediateSize);
+            layer.GateProj.Multiply(normed, gate, seq);
+            layer.UpProj.Multiply(normed, up, seq);
             Ops.GeGluInPlace(gate, up);
-            Ops.Linear(gate, layer.DownProj, down, seq, _cfg.IntermediateSize, h);
+            layer.DownProj.Multiply(gate, down, seq);
             Ops.RmsNorm(down, layer.PostFeedforwardLayerNorm, down, seq, h, _cfg.RmsNormEps);
             for (int i = 0; i < hidden.Length; i++)
             {
