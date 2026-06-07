@@ -1,5 +1,6 @@
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
+using SentenceTransformers;
 
 namespace SentenceTransformers.Harrier.Small.Pure.Numerics;
 
@@ -19,8 +20,9 @@ internal static class Ops
     /// Row-major linear projection without bias: <c>y[s, o] = sum_i x[s, i] * w[o, i]</c>.
     /// This matches PyTorch's <c>nn.Linear</c> weight layout <c>[outDim, inDim]</c>, so each output
     /// channel's weights are contiguous and feed straight into a SIMD dot product. Parallelized over
-    /// the output channels (via <see cref="Parallel.ForAsync(int, int, CancellationToken, Func{int, CancellationToken, ValueTask})"/>,
-    /// so the heavy work does not block the awaiting thread) for anything but the smallest matrices.
+    /// the output channels via <see cref="GlobalThreadPool.ForAsync"/> (a contiguous bucket of output
+    /// channels per worker, body as a <c>static</c> lambda with no closure allocation) for anything
+    /// but the smallest matrices.
     /// </summary>
     /// <param name="x">Input activations, length <c>seq * inDim</c>.</param>
     /// <param name="w">Weight matrix, length <c>outDim * inDim</c>, row-major <c>[outDim, inDim]</c>.</param>
@@ -35,11 +37,13 @@ internal static class Ops
             }
             return Task.CompletedTask;
         }
-        return Parallel.ForAsync(0, outDim, ct, (o, _) =>
+        return GlobalThreadPool.ForAsync(0, outDim, (x, w, y, seq, inDim, outDim), static (start, end, s) =>
         {
-            LinearColumn(x, w, y, seq, inDim, outDim, o);
-            return ValueTask.CompletedTask;
-        });
+            for (int o = start; o < end; o++)
+            {
+                LinearColumn(s.x, s.w, s.y, s.seq, s.inDim, s.outDim, o);
+            }
+        }, ct);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
