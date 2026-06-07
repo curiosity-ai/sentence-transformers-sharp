@@ -117,11 +117,11 @@ namespace SentenceTransformers.Harrier.Small.Pure
 
         /// <summary>Encodes a batch of texts into embeddings. Each input must fit in
         /// <see cref="MaxChunkLength"/> tokens; for longer text use the <c>ChunkAndEncode*</c> helpers.</summary>
-        public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+        public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
         {
             if (sentences is null || sentences.Length == 0)
             {
-                return Task.FromResult(Array.Empty<float[]>());
+                return Array.Empty<float[]>();
             }
 
             var result = new float[sentences.Length][];
@@ -136,14 +136,14 @@ namespace SentenceTransformers.Harrier.Small.Pure
                     result[i] = new float[EmbeddingDimension];
                     continue;
                 }
-                var embedding = _model.Forward(ids);
+                var embedding = await _model.ForwardAsync(ids, cancellationToken).ConfigureAwait(false);
                 if (Normalize)
                 {
                     Ops.L2NormalizeInPlace(embedding);
                 }
                 result[i] = embedding;
             }
-            return Task.FromResult(result);
+            return result;
         }
 
         /// <summary>Encodes queries with the given instruction prompt prefix (see <see cref="Prompts"/>),

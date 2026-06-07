@@ -101,14 +101,14 @@ public class PureNumericsTests
     }
 
     [Fact]
-    public void Linear_ComputesRowMajorMatVec()
+    public async Task Linear_ComputesRowMajorMatVec()
     {
         // y[s,o] = sum_i x[s,i] * w[o,i]
         int seq = 2, inDim = 3, outDim = 2;
         var x = new float[] { 1, 2, 3, /*row1*/ 4, 5, 6 };
         var w = new float[] { 1, 0, 0, /*o0*/ 0, 1, 1 }; // o0 picks x[0], o1 picks x[1]+x[2]
         var y = new float[seq * outDim];
-        Ops.Linear(x, w, y, seq, inDim, outDim);
+        await Ops.LinearAsync(x, w, y, seq, inDim, outDim);
 
         Assert.Equal(1f, y[0]);   // row0,o0 = 1
         Assert.Equal(5f, y[1]);   // row0,o1 = 2+3
@@ -119,7 +119,7 @@ public class PureNumericsTests
     [Theory]
     [InlineData(Quantization.Int8, 0.03f)]
     [InlineData(Quantization.Int4, 0.08f)]
-    public void QuantizedMatrix_ApproximatesFloatMatMul(Quantization quant, float tolerance)
+    public async Task QuantizedMatrix_ApproximatesFloatMatMul(Quantization quant, float tolerance)
     {
         int seq = 3, inDim = 256, outDim = 64;
         var rng = new Random(123);
@@ -133,8 +133,8 @@ public class PureNumericsTests
 
         var yRef = new float[seq * outDim];
         var yQ = new float[seq * outDim];
-        reference.Multiply(x, yRef, seq);
-        quantized.Multiply(x, yQ, seq);
+        await reference.MultiplyAsync(x, yRef, seq, default);
+        await quantized.MultiplyAsync(x, yQ, seq, default);
 
         // Compare via relative error on the output vectors (the dot products), which is what matters.
         double num = 0, den = 0;

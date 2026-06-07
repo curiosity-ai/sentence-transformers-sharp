@@ -19,12 +19,13 @@ internal static class Ops
     /// Row-major linear projection without bias: <c>y[s, o] = sum_i x[s, i] * w[o, i]</c>.
     /// This matches PyTorch's <c>nn.Linear</c> weight layout <c>[outDim, inDim]</c>, so each output
     /// channel's weights are contiguous and feed straight into a SIMD dot product. Parallelized over
-    /// the output channels for anything but the smallest matrices.
+    /// the output channels (via <see cref="Parallel.ForAsync(int, int, CancellationToken, Func{int, CancellationToken, ValueTask})"/>,
+    /// so the heavy work does not block the awaiting thread) for anything but the smallest matrices.
     /// </summary>
     /// <param name="x">Input activations, length <c>seq * inDim</c>.</param>
     /// <param name="w">Weight matrix, length <c>outDim * inDim</c>, row-major <c>[outDim, inDim]</c>.</param>
     /// <param name="y">Output buffer, length <c>seq * outDim</c>.</param>
-    public static void Linear(float[] x, float[] w, float[] y, int seq, int inDim, int outDim)
+    public static Task LinearAsync(float[] x, float[] w, float[] y, int seq, int inDim, int outDim, CancellationToken ct = default)
     {
         if (outDim < ParallelThreshold)
         {
@@ -32,11 +33,13 @@ internal static class Ops
             {
                 LinearColumn(x, w, y, seq, inDim, outDim, o);
             }
+            return Task.CompletedTask;
         }
-        else
+        return Parallel.ForAsync(0, outDim, ct, (o, _) =>
         {
-            Parallel.For(0, outDim, o => LinearColumn(x, w, y, seq, inDim, outDim, o));
-        }
+            LinearColumn(x, w, y, seq, inDim, outDim, o);
+            return ValueTask.CompletedTask;
+        });
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

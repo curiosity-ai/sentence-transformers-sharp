@@ -103,8 +103,11 @@ internal sealed class Gemma3Model
     }
 
     /// <summary>Runs the full forward pass for one tokenized sequence and returns the (un-normalized)
-    /// last-token hidden state - a <c>HiddenSize</c>-length embedding.</summary>
-    public float[] Forward(ReadOnlySpan<int> tokenIds)
+    /// last-token hidden state - a <c>HiddenSize</c>-length embedding. The per-layer matmuls and
+    /// attention parallelize with <c>Parallel.ForAsync</c>, so the heavy CPU work is awaited rather than
+    /// blocking the caller, and <paramref name="ct"/> cancels in-flight compute. Takes <c>int[]</c>
+    /// (not a span) because async methods cannot have ref-struct parameters.</summary>
+    public async Task<float[]> ForwardAsync(int[] tokenIds, CancellationToken ct)
     {
         int seq = tokenIds.Length;
         int h = _cfg.HiddenSize;
@@ -149,9 +152,9 @@ internal sealed class Gemma3Model
             {
                 // ---- self attention ----
                 Ops.RmsNorm(hidden, layer.InputLayerNorm, normed, seq, h, _cfg.RmsNormEps);
-                layer.QProj.Multiply(normed, q, seq);
-                layer.KProj.Multiply(normed, k, seq);
-                layer.VProj.Multiply(normed, v, seq);
+                await layer.QProj.MultiplyAsync(normed, q, seq, ct).ConfigureAwait(false);
+                await layer.KProj.MultiplyAsync(normed, k, seq, ct).ConfigureAwait(false);
+                await layer.VProj.MultiplyAsync(normed, v, seq, ct).ConfigureAwait(false);
 
                 ApplyHeadNorm(q, layer.QNorm, seq, _cfg.NumHeads, headDim);
                 ApplyHeadNorm(k, layer.KNorm, seq, _cfg.NumKvHeads, headDim);
@@ -159,20 +162,20 @@ internal sealed class Gemma3Model
                 ApplyRope(q, cos, sin, seq, _cfg.NumHeads, headDim);
                 ApplyRope(k, cos, sin, seq, _cfg.NumKvHeads, headDim);
 
-                Attention(q, k, v, attnOut, seq, headDim);
+                await AttentionAsync(q, k, v, attnOut, seq, headDim, ct).ConfigureAwait(false);
 
-                layer.OProj.Multiply(attnOut, attnProj, seq);
+                await layer.OProj.MultiplyAsync(attnOut, attnProj, seq, ct).ConfigureAwait(false);
                 // post-attention norm then residual add
                 Ops.RmsNorm(attnProj, layer.PostAttentionLayerNorm, attnProj, seq, h, _cfg.RmsNormEps);
                 TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), attnProj.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
 
                 // ---- feed forward ----
                 Ops.RmsNorm(hidden, layer.PreFeedforwardLayerNorm, normed, seq, h, _cfg.RmsNormEps);
-                layer.GateProj.Multiply(normed, gate, seq);
-                layer.UpProj.Multiply(normed, up, seq);
+                await layer.GateProj.MultiplyAsync(normed, gate, seq, ct).ConfigureAwait(false);
+                await layer.UpProj.MultiplyAsync(normed, up, seq, ct).ConfigureAwait(false);
                 int ffLen = seq * _cfg.IntermediateSize;
                 Ops.GeGluInPlace(gate.AsSpan(0, ffLen), up.AsSpan(0, ffLen));
-                layer.DownProj.Multiply(gate, down, seq);
+                await layer.DownProj.MultiplyAsync(gate, down, seq, ct).ConfigureAwait(false);
                 Ops.RmsNorm(down, layer.PostFeedforwardLayerNorm, down, seq, h, _cfg.RmsNormEps);
                 TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), down.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
             }
@@ -238,47 +241,54 @@ internal sealed class Gemma3Model
         }
     }
 
-    /// <summary>Causal grouped-query attention. The single KV head is shared by all query heads.</summary>
-    private void Attention(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim)
+    /// <summary>Causal grouped-query attention. The single KV head is shared by all query heads.
+    /// Parallelizes over query positions; per-index <c>Parallel.ForAsync</c> dispatch gives dynamic load
+    /// balancing for the triangular causal work and does not block the awaiting thread.</summary>
+    private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, CancellationToken ct)
     {
         int qStride = _cfg.NumHeads * headDim;
         int kvStride = _cfg.NumKvHeads * headDim; // == headDim (1 KV head)
         int heads = _cfg.NumHeads;
         float scale = _cfg.AttentionScale;
-        var pool = System.Buffers.ArrayPool<float>.Shared;
-
-        // Parallelize over query positions; each does all heads. Causal work grows with i, so the
-        // dynamic range partitioner balances the load. Score buffers come from a pool (no per-call
-        // allocations) and the value accumulation is a vectorized scalar*vector add.
-        Parallel.For(0, seq, i =>
+        return Parallel.ForAsync(0, seq, ct, (i, _) =>
         {
-            float[] scores = pool.Rent(i + 1);
-            try
+            AttentionRow(q, k, v, attnOut, i, headDim, qStride, kvStride, heads, scale);
+            return ValueTask.CompletedTask;
+        });
+    }
+
+    /// <summary>Computes attention output for one query position across all heads. Synchronous so the
+    /// pooled score buffer and spans stay out of an async body. Score buffers come from a pool (no
+    /// per-call allocations); the value accumulation is a vectorized scalar*vector add.</summary>
+    private static void AttentionRow(float[] q, float[] k, float[] v, float[] attnOut, int i, int headDim, int qStride, int kvStride, int heads, float scale)
+    {
+        var pool = System.Buffers.ArrayPool<float>.Shared;
+        float[] scores = pool.Rent(i + 1);
+        try
+        {
+            for (int head = 0; head < heads; head++)
             {
-                for (int head = 0; head < heads; head++)
+                var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
+                for (int j = 0; j <= i; j++)
                 {
-                    var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
-                    for (int j = 0; j <= i; j++)
-                    {
-                        scores[j] = TensorPrimitives.Dot(qSpan, new ReadOnlySpan<float>(k, j * kvStride, headDim)) * scale;
-                    }
+                    scores[j] = TensorPrimitives.Dot(qSpan, new ReadOnlySpan<float>(k, j * kvStride, headDim)) * scale;
+                }
 
-                    Ops.SoftmaxInPlace(scores, i + 1);
+                Ops.SoftmaxInPlace(scores, i + 1);
 
-                    var outSpan = new Span<float>(attnOut, i * qStride + head * headDim, headDim);
-                    outSpan.Clear();
-                    for (int j = 0; j <= i; j++)
-                    {
-                        // outSpan += scores[j] * v[j]
-                        TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, j * kvStride, headDim), scores[j], outSpan, outSpan);
-                    }
+                var outSpan = new Span<float>(attnOut, i * qStride + head * headDim, headDim);
+                outSpan.Clear();
+                for (int j = 0; j <= i; j++)
+                {
+                    // outSpan += scores[j] * v[j]
+                    TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, j * kvStride, headDim), scores[j], outSpan, outSpan);
                 }
             }
-            finally
-            {
-                pool.Return(scores);
-            }
-        });
+        }
+        finally
+        {
+            pool.Return(scores);
+        }
     }
 
     /// <summary>Fills the caller-provided <paramref name="cos"/>/<paramref name="sin"/> rotary tables

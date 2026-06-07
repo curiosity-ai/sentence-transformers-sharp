@@ -108,7 +108,11 @@ internal interface IWeightMatrix
 {
     int InDim { get; }
     int OutDim { get; }
-    void Multiply(float[] x, float[] y, int seq);
+
+    /// <summary>Multiplies a batch of activations, parallelizing over output channels with
+    /// <c>Parallel.ForAsync</c> so the (CPU-heavy) work does not block the awaiting thread and honours
+    /// <paramref name="ct"/>.</summary>
+    ValueTask MultiplyAsync(float[] x, float[] y, int seq, CancellationToken ct);
 
     static IWeightMatrix Create(float[] weights, int outDim, int inDim, Quantization quantization) => quantization switch
     {
@@ -124,30 +128,44 @@ internal static class VnniActivations
 {
     /// <summary>Dynamic per-row symmetric int8 activation quantization, offset by +128 into the uint8
     /// operand range that <c>vpdpbusd</c> expects. Returns pooled buffers the caller must return.</summary>
-    public static (byte[] Ua, float[] Scale) Quantize(float[] x, int seq, int inDim)
+    public static async ValueTask<(byte[] Ua, float[] Scale)> QuantizeAsync(float[] x, int seq, int inDim, CancellationToken ct)
     {
         byte[] ua = ArrayPool<byte>.Shared.Rent(seq * inDim);
         float[] scale = ArrayPool<float>.Shared.Rent(seq);
         int zp = Vnni.ZeroPoint;
         int qmax = Vnni.QMax;
-        Parallel.For(0, seq, s =>
+        try
         {
-            int b = s * inDim;
-            float amax = 0f;
-            for (int i = 0; i < inDim; i++)
+            await Parallel.ForAsync(0, seq, ct, (s, _) =>
             {
-                amax = MathF.Max(amax, MathF.Abs(x[b + i]));
-            }
-            float sc = amax > 0 ? amax / qmax : 1f;
-            float inv = 1f / sc;
-            scale[s] = sc;
-            for (int i = 0; i < inDim; i++)
-            {
-                int q = Math.Clamp((int)MathF.Round(x[b + i] * inv), -qmax, qmax);
-                ua[b + i] = (byte)(q + zp);
-            }
-        });
+                QuantizeRow(x, ua, scale, s, inDim, zp, qmax);
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
+        }
+        catch
+        {
+            Return(ua, scale);
+            throw;
+        }
         return (ua, scale);
+    }
+
+    private static void QuantizeRow(float[] x, byte[] ua, float[] scale, int s, int inDim, int zp, int qmax)
+    {
+        int b = s * inDim;
+        float amax = 0f;
+        for (int i = 0; i < inDim; i++)
+        {
+            amax = MathF.Max(amax, MathF.Abs(x[b + i]));
+        }
+        float sc = amax > 0 ? amax / qmax : 1f;
+        float inv = 1f / sc;
+        scale[s] = sc;
+        for (int i = 0; i < inDim; i++)
+        {
+            int q = Math.Clamp((int)MathF.Round(x[b + i] * inv), -qmax, qmax);
+            ua[b + i] = (byte)(q + zp);
+        }
     }
 
     public static void Return(byte[] ua, float[] scale)
@@ -157,14 +175,15 @@ internal static class VnniActivations
     }
 }
 
-/// <summary>Plain float32 weights. Delegates to <see cref="Ops.Linear"/>.</summary>
+/// <summary>Plain float32 weights. Delegates to <see cref="Ops.LinearAsync"/>.</summary>
 internal sealed class FloatMatrix(float[] weights, int outDim, int inDim) : IWeightMatrix
 {
     private readonly float[] _w = weights;
     public int InDim => inDim;
     public int OutDim => outDim;
 
-    public void Multiply(float[] x, float[] y, int seq) => Numerics.Ops.Linear(x, _w, y, seq, inDim, outDim);
+    public ValueTask MultiplyAsync(float[] x, float[] y, int seq, CancellationToken ct)
+        => new ValueTask(Numerics.Ops.LinearAsync(x, _w, y, seq, inDim, outDim, ct));
 }
 
 /// <summary>
@@ -224,17 +243,8 @@ internal sealed class Int8Matrix : IWeightMatrix
         return new Int8Matrix(q, scale, rowSum, outDim, inDim);
     }
 
-    public void Multiply(float[] x, float[] y, int seq)
-    {
-        if (UseVnni(InDim))
-        {
-            MultiplyVnni(x, y, seq);
-        }
-        else
-        {
-            MultiplyFloat(x, y, seq);
-        }
-    }
+    public ValueTask MultiplyAsync(float[] x, float[] y, int seq, CancellationToken ct)
+        => UseVnni(InDim) ? MultiplyVnniAsync(x, y, seq, ct) : MultiplyFloatAsync(x, y, seq, ct);
 
     /// <summary>True int8 GEMM (W8A8) via VNNI <c>vpdpbusd</c>. Activations are quantized per row to
     /// signed int8, offset by +128 to feed the unsigned operand of <c>vpdpbusd</c>; the offset is
@@ -244,15 +254,15 @@ internal sealed class Int8Matrix : IWeightMatrix
     /// load feeds four dot products and each weight vector load feeds two, so the activation matrix is
     /// read ~4x fewer times. This matmul is memory-bound (the int8 dot itself is cheap), so cutting that
     /// traffic is the dominant speed-up. The eight accumulators fit in the 16 AVX YMM registers.</summary>
-    private void MultiplyVnni(float[] x, float[] y, int seq)
+    private async ValueTask MultiplyVnniAsync(float[] x, float[] y, int seq, CancellationToken ct)
     {
         int inDim = InDim, outDim = OutDim;
-        var (ua, aScale) = VnniActivations.Quantize(x, seq, inDim);
+        var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, inDim, ct).ConfigureAwait(false);
         try
         {
             bool use512 = Vnni.Use512 && (inDim % 64 == 0);
             int oTiles = (outDim + 3) / 4;
-            Parallel.For(0, oTiles, ot =>
+            await Parallel.ForAsync(0, oTiles, ct, (ot, _) =>
             {
                 int o0 = ot * 4;
                 if (o0 + 4 <= outDim)
@@ -273,7 +283,8 @@ internal sealed class Int8Matrix : IWeightMatrix
                         SingleChannel(ua, aScale, y, o, seq, inDim, outDim);
                     }
                 }
-            });
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
         }
         finally
         {
@@ -427,23 +438,30 @@ internal sealed class Int8Matrix : IWeightMatrix
     }
 
     /// <summary>Portable fallback: dequantize each weight row to float and dot against float activations.</summary>
-    private void MultiplyFloat(float[] x, float[] y, int seq)
+    private ValueTask MultiplyFloatAsync(float[] x, float[] y, int seq, CancellationToken ct)
     {
         int inDim = InDim, outDim = OutDim;
-        Parallel.For(0, outDim, o =>
+        return new ValueTask(Parallel.ForAsync(0, outDim, ct, (o, _) =>
         {
-            Span<float> buf = stackalloc float[inDim];
-            int baseIdx = o * inDim;
-            float s = _scale[o];
-            for (int i = 0; i < inDim; i++)
-            {
-                buf[i] = _q[baseIdx + i] * s;
-            }
-            for (int sIdx = 0; sIdx < seq; sIdx++)
-            {
-                y[sIdx * outDim + o] = TensorPrimitives.Dot(new ReadOnlySpan<float>(x, sIdx * inDim, inDim), buf);
-            }
-        });
+            FloatColumn(x, y, seq, inDim, outDim, o);
+            return ValueTask.CompletedTask;
+        }));
+    }
+
+    // Separate sync method so the stackalloc/Span does not live inside a (forbidden) async body.
+    private void FloatColumn(float[] x, float[] y, int seq, int inDim, int outDim, int o)
+    {
+        Span<float> buf = stackalloc float[inDim];
+        int baseIdx = o * inDim;
+        float s = _scale[o];
+        for (int i = 0; i < inDim; i++)
+        {
+            buf[i] = _q[baseIdx + i] * s;
+        }
+        for (int sIdx = 0; sIdx < seq; sIdx++)
+        {
+            y[sIdx * outDim + o] = TensorPrimitives.Dot(new ReadOnlySpan<float>(x, sIdx * inDim, inDim), buf);
+        }
     }
 }
 
@@ -529,53 +547,20 @@ internal sealed class Int4Matrix : IWeightMatrix
         return new Int4Matrix(packed, scale, groupSum, numGroups, outDim, inDim);
     }
 
-    public void Multiply(float[] x, float[] y, int seq)
-    {
-        if (UseVnni())
-        {
-            MultiplyVnni(x, y, seq);
-        }
-        else
-        {
-            MultiplyFloat(x, y, seq);
-        }
-    }
+    public ValueTask MultiplyAsync(float[] x, float[] y, int seq, CancellationToken ct)
+        => UseVnni() ? MultiplyVnniAsync(x, y, seq, ct) : MultiplyFloatAsync(x, y, seq, ct);
 
-    private void MultiplyVnni(float[] x, float[] y, int seq)
+    private async ValueTask MultiplyVnniAsync(float[] x, float[] y, int seq, CancellationToken ct)
     {
-        int inDim = InDim, outDim = OutDim, numGroups = _numGroups;
-        var (ua, aScale) = VnniActivations.Quantize(x, seq, inDim);
+        int inDim = InDim, outDim = OutDim;
+        var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, inDim, ct).ConfigureAwait(false);
         try
         {
-            Parallel.For(0, outDim, o =>
+            await Parallel.ForAsync(0, outDim, ct, (o, _) =>
             {
-                // Unpack this output row's nibbles to signed int8 once, reused across all positions.
-                Span<sbyte> wbuf = stackalloc sbyte[inDim];
-                int rowBase = o * inDim;
-                for (int i = 0; i < inDim; i++)
-                {
-                    int idx = rowBase + i;
-                    byte b = _packed[idx >> 1];
-                    int nibble = (idx & 1) == 0 ? (b & 0x0F) : (b >> 4);
-                    wbuf[i] = (sbyte)(nibble - 8);
-                }
-
-                int scaleBase = o * numGroups;
-                for (int s = 0; s < seq; s++)
-                {
-                    int sBase = s * inDim;
-                    float facc = 0f;
-                    for (int g = 0; g < numGroups; g++)
-                    {
-                        int gStart = g * GroupSize;
-                        var a = Vector256.LoadUnsafe(ref ua[sBase + gStart]);
-                        var wv = Vector256.LoadUnsafe(ref wbuf[gStart]);
-                        int dot = Vector256.Sum(Vnni.DotAccumulate(Vector256<int>.Zero, a, wv)) - Vnni.ZeroPoint * _groupSum[scaleBase + g];
-                        facc += _scale[scaleBase + g] * dot;
-                    }
-                    y[s * outDim + o] = aScale[s] * facc;
-                }
-            });
+                VnniColumn(ua, aScale, y, o, seq, inDim, outDim);
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
         }
         finally
         {
@@ -583,29 +568,68 @@ internal sealed class Int4Matrix : IWeightMatrix
         }
     }
 
-    private void MultiplyFloat(float[] x, float[] y, int seq)
+    // Sync (stackalloc) per-channel kernel: unpack this output row's nibbles to signed int8 once,
+    // reused across all positions, then int8-dot each group with its own scale.
+    private void VnniColumn(byte[] ua, float[] aScale, float[] y, int o, int seq, int inDim, int outDim)
     {
-        int inDim = InDim, outDim = OutDim, numGroups = _numGroups;
-        Parallel.For(0, outDim, o =>
+        int numGroups = _numGroups;
+        Span<sbyte> wbuf = stackalloc sbyte[inDim];
+        int rowBase = o * inDim;
+        for (int i = 0; i < inDim; i++)
         {
-            Span<float> buf = stackalloc float[inDim];
-            int rowBase = o * inDim;
+            int idx = rowBase + i;
+            byte b = _packed[idx >> 1];
+            int nibble = (idx & 1) == 0 ? (b & 0x0F) : (b >> 4);
+            wbuf[i] = (sbyte)(nibble - 8);
+        }
+
+        int scaleBase = o * numGroups;
+        for (int s = 0; s < seq; s++)
+        {
+            int sBase = s * inDim;
+            float facc = 0f;
             for (int g = 0; g < numGroups; g++)
             {
-                float s = _scale[o * numGroups + g];
                 int gStart = g * GroupSize;
-                for (int i = 0; i < GroupSize; i++)
-                {
-                    int idx = rowBase + gStart + i;
-                    byte b = _packed[idx >> 1];
-                    int nibble = (idx & 1) == 0 ? (b & 0x0F) : (b >> 4);
-                    buf[gStart + i] = (nibble - 8) * s;
-                }
+                var a = Vector256.LoadUnsafe(ref ua[sBase + gStart]);
+                var wv = Vector256.LoadUnsafe(ref wbuf[gStart]);
+                int dot = Vector256.Sum(Vnni.DotAccumulate(Vector256<int>.Zero, a, wv)) - Vnni.ZeroPoint * _groupSum[scaleBase + g];
+                facc += _scale[scaleBase + g] * dot;
             }
-            for (int sIdx = 0; sIdx < seq; sIdx++)
+            y[s * outDim + o] = aScale[s] * facc;
+        }
+    }
+
+    private ValueTask MultiplyFloatAsync(float[] x, float[] y, int seq, CancellationToken ct)
+    {
+        int inDim = InDim, outDim = OutDim;
+        return new ValueTask(Parallel.ForAsync(0, outDim, ct, (o, _) =>
+        {
+            FloatColumn(x, y, seq, inDim, outDim, o);
+            return ValueTask.CompletedTask;
+        }));
+    }
+
+    private void FloatColumn(float[] x, float[] y, int seq, int inDim, int outDim, int o)
+    {
+        int numGroups = _numGroups;
+        Span<float> buf = stackalloc float[inDim];
+        int rowBase = o * inDim;
+        for (int g = 0; g < numGroups; g++)
+        {
+            float s = _scale[o * numGroups + g];
+            int gStart = g * GroupSize;
+            for (int i = 0; i < GroupSize; i++)
             {
-                y[sIdx * outDim + o] = TensorPrimitives.Dot(new ReadOnlySpan<float>(x, sIdx * inDim, inDim), buf);
+                int idx = rowBase + gStart + i;
+                byte b = _packed[idx >> 1];
+                int nibble = (idx & 1) == 0 ? (b & 0x0F) : (b >> 4);
+                buf[gStart + i] = (nibble - 8) * s;
             }
-        });
+        }
+        for (int sIdx = 0; sIdx < seq; sIdx++)
+        {
+            y[sIdx * outDim + o] = TensorPrimitives.Dot(new ReadOnlySpan<float>(x, sIdx * inDim, inDim), buf);
+        }
     }
 }
