@@ -376,43 +376,57 @@ internal sealed class Int8Matrix : IWeightMatrix
         int of0 = Vnni.ZeroPoint * _rowSum[o0], of1 = Vnni.ZeroPoint * _rowSum[o0 + 1], of2 = Vnni.ZeroPoint * _rowSum[o0 + 2], of3 = Vnni.ZeroPoint * _rowSum[o0 + 3];
 
         int s = 0;
+
+        var c00 = Vector256<int>.Zero; var c01 = Vector256<int>.Zero; var c02 = Vector256<int>.Zero; var c03 = Vector256<int>.Zero;
+        var c10 = Vector256<int>.Zero; var c11 = Vector256<int>.Zero; var c12 = Vector256<int>.Zero; var c13 = Vector256<int>.Zero;
+
         for (; s + 2 <= seq; s += 2)
         {
             int u0 = s * inDim, u1 = u0 + inDim;
-            var c00 = Vector256<int>.Zero; var c01 = Vector256<int>.Zero; var c02 = Vector256<int>.Zero; var c03 = Vector256<int>.Zero;
-            var c10 = Vector256<int>.Zero; var c11 = Vector256<int>.Zero; var c12 = Vector256<int>.Zero; var c13 = Vector256<int>.Zero;
             for (int i = 0; i < inDim; i += 32)
             {
-                var av0 = Vector256.LoadUnsafe(ref ua[u0 + i]);
                 var av1 = Vector256.LoadUnsafe(ref ua[u1 + i]);
+                var av0 = Vector256.LoadUnsafe(ref ua[u0 + i]);
+
+                var w3 = Vector256.LoadUnsafe(ref _q[wb3 + i]);
                 var w0 = Vector256.LoadUnsafe(ref _q[wb0 + i]);
                 var w1 = Vector256.LoadUnsafe(ref _q[wb1 + i]);
                 var w2 = Vector256.LoadUnsafe(ref _q[wb2 + i]);
-                var w3 = Vector256.LoadUnsafe(ref _q[wb3 + i]);
+                
                 c00 = Vnni.DotAccumulate(c00, av0, w0);
                 c01 = Vnni.DotAccumulate(c01, av0, w1);
                 c02 = Vnni.DotAccumulate(c02, av0, w2);
                 c03 = Vnni.DotAccumulate(c03, av0, w3);
+                
                 c10 = Vnni.DotAccumulate(c10, av1, w0);
                 c11 = Vnni.DotAccumulate(c11, av1, w1);
                 c12 = Vnni.DotAccumulate(c12, av1, w2);
                 c13 = Vnni.DotAccumulate(c13, av1, w3);
             }
+            
             float as0 = aScale[s], as1 = aScale[s + 1];
+            
             int b0 = s * outDim + o0, b1 = b0 + outDim;
-            y[b0] = as0 * sc0 * (Vector256.Sum(c00) - of0);
+            
+            y[b0    ] = as0 * sc0 * (Vector256.Sum(c00) - of0);
             y[b0 + 1] = as0 * sc1 * (Vector256.Sum(c01) - of1);
             y[b0 + 2] = as0 * sc2 * (Vector256.Sum(c02) - of2);
             y[b0 + 3] = as0 * sc3 * (Vector256.Sum(c03) - of3);
-            y[b1] = as1 * sc0 * (Vector256.Sum(c10) - of0);
+            
+            y[b1    ] = as1 * sc0 * (Vector256.Sum(c10) - of0);
             y[b1 + 1] = as1 * sc1 * (Vector256.Sum(c11) - of1);
             y[b1 + 2] = as1 * sc2 * (Vector256.Sum(c12) - of2);
             y[b1 + 3] = as1 * sc3 * (Vector256.Sum(c13) - of3);
+
+            //Zero everything out
+            Vector256.Xor(c00, c00); Vector256.Xor(c01, c01); Vector256.Xor(c02, c02); Vector256.Xor(c03, c03);
+            Vector256.Xor(c10, c10); Vector256.Xor(c11, c11); Vector256.Xor(c12, c12); Vector256.Xor(c13, c13);
         }
+
+        var c0 = Vector256<int>.Zero; var c1 = Vector256<int>.Zero; var c2 = Vector256<int>.Zero; var c3 = Vector256<int>.Zero;
         for (; s < seq; s++)
         {
             int u0 = s * inDim;
-            var c0 = Vector256<int>.Zero; var c1 = Vector256<int>.Zero; var c2 = Vector256<int>.Zero; var c3 = Vector256<int>.Zero;
             for (int i = 0; i < inDim; i += 32)
             {
                 var av = Vector256.LoadUnsafe(ref ua[u0 + i]);
@@ -427,6 +441,9 @@ internal sealed class Int8Matrix : IWeightMatrix
             y[b0 + 1] = as0 * sc1 * (Vector256.Sum(c1) - of1);
             y[b0 + 2] = as0 * sc2 * (Vector256.Sum(c2) - of2);
             y[b0 + 3] = as0 * sc3 * (Vector256.Sum(c3) - of3);
+
+            //Zero everything out
+            Vector256.Xor(c0, c0); Vector256.Xor(c1, c1); Vector256.Xor(c2, c2); Vector256.Xor(c3, c3);
         }
     }
 
@@ -469,9 +486,14 @@ internal sealed class Int8Matrix : IWeightMatrix
         {
             buf[i] = _q[baseIdx + i] * s;
         }
+        var outIndex = o;
+        var inIndex = 0;
+        var inSpan = x.AsSpan();
         for (int sIdx = 0; sIdx < seq; sIdx++)
         {
-            y[sIdx * outDim + o] = TensorPrimitives.Dot(new ReadOnlySpan<float>(x, sIdx * inDim, inDim), buf);
+            y[outIndex] = TensorPrimitives.Dot(inSpan.Slice(inIndex, inDim), buf);
+            outIndex += outDim;
+            inIndex += inDim;
         }
     }
 }
