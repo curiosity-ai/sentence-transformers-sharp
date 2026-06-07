@@ -19,6 +19,12 @@ if (args.Length > 0 && args[0] == "harrier-pure-bench")
     return;
 }
 
+if (args.Length > 0 && args[0] == "harrier-diag")
+{
+    await HarrierDiag.RunAsync();
+    return;
+}
+
 // ---- Build a few-paragraph input dataset ----
 var texts = new[]
 {
