@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
 namespace SentenceTransformers;
@@ -10,8 +9,7 @@ namespace SentenceTransformers;
 /// scheduled with a hill-climbing throughput heuristic that interacts badly with the short, fully
 /// CPU-bound bursts a forward pass produces. Here the worker count is fixed (by default
 /// <see cref="Environment.ProcessorCount"/>), every thread is pinned to
-/// <see cref="ThreadPriority.Highest"/> and stays alive for the lifetime of the process, so a parallel
-/// fork takes only the wake-up of N already-running threads.
+/// <see cref="ThreadPriority.Highest"/> and stays alive for the lifetime of the process.
 ///
 /// The <see cref="ForAsync{T}"/> primitive splits <c>[fromInclusive, toExclusive)</c> into one
 /// contiguous bucket per worker; the body runs once per bucket and iterates the range itself. The
@@ -19,19 +17,26 @@ namespace SentenceTransformers;
 /// <c>static</c> lambda (no closure allocations, no display class) - exactly the shape that a hot
 /// matmul loop needs.
 ///
-/// Dispatch is intentionally tight: a single <see cref="SemaphoreSlim.Release(int)"/> wakes N workers
-/// in one call, each worker does a short spin before parking so back-to-back forks (the common case
-/// for a forward pass) keep the cache hot, and the per-call object graph is two allocations - the job
-/// (which is itself the <see cref="System.Threading.Tasks.TaskCompletionSource"/>) plus the body
-/// delegate.
+/// Dispatch is contention-free in the bucket dimension: every bucket is pre-computed and written
+/// directly to a target worker's private mailbox before that worker is signalled. There is no shared
+/// work queue, no per-bucket atomic claim, no per-worker scratch on the job - each worker reads
+/// <c>{ job, start, end }</c> from its own mailbox and writes nothing the other workers will read.
+/// The only shared state the job carries is a single completion counter that each bucket decrements
+/// once at the end, plus the first-exception slot. Workers come from / return to a free-worker stack;
+/// in the steady state of one producer at a time (a forward pass's sequential awaited matmuls) the
+/// stack sees no contention either, and the pool's only remaining lock briefly serializes the (N-1)
+/// finishers of a dispatch as they re-enter the free stack.
 /// </summary>
 public static class GlobalThreadPool
 {
     private static readonly Lock _initLock = new();
     private static volatile bool _initialized;
     private static int _workerCount;
-    private static readonly ConcurrentQueue<Action> _queue = new();
-    private static readonly SemaphoreSlim _hasWork = new(0);
+    private static Worker[] _workers;
+
+    // Free-worker stack. Guarded by its own lock; only briefly held (push or pop of a few refs).
+    private static readonly Lock _freeLock = new();
+    private static readonly Stack<Worker> _free = new();
 
     /// <summary>The number of worker threads in the pool. Initializes the pool with the defaults
     /// (<see cref="Environment.ProcessorCount"/>, <see cref="ThreadPriority.Highest"/>) on first read
@@ -65,17 +70,23 @@ public static class GlobalThreadPool
                 return false;
             }
             int n = Math.Max(1, threadCount);
+            var workers = new Worker[n];
+            for (int i = 0; i < n; i++)
+            {
+                workers[i] = new Worker(i);
+            }
+            _workers = workers;
             _workerCount = n;
+            // Push all workers onto the free stack before starting threads so the first ForAsync
+            // call after Initialize finds a full stack.
+            for (int i = 0; i < n; i++)
+            {
+                _free.Push(workers[i]);
+            }
             _initialized = true;
             for (int i = 0; i < n; i++)
             {
-                var t = new Thread(WorkerLoop)
-                {
-                    IsBackground = true,
-                    Name = $"SentenceTransformers.GlobalThreadPool[{i}]",
-                    Priority = priority,
-                };
-                t.Start();
+                workers[i].Start(priority);
             }
             return true;
         }
@@ -90,34 +101,6 @@ public static class GlobalThreadPool
         }
     }
 
-    private static void WorkerLoop()
-    {
-        // Short spin before parking: forward-pass forks come in rapid bursts (multiple matmuls per
-        // layer x layers), so a bounded spin keeps cache hot and avoids a kernel wakeup for the
-        // common case where the next dispatch arrives within microseconds. The budget is intentionally
-        // tiny - SpinWait switches to Sleep(1) past ~10 iterations on .NET, so 30 is enough to cover
-        // the gap between back-to-back dispatches without pinning a core.
-        const int spinIterations = 30;
-        while (true)
-        {
-            if (_queue.TryDequeue(out var work))
-            {
-                work();
-                continue;
-            }
-            var spin = new SpinWait();
-            while (_queue.IsEmpty && spin.Count < spinIterations)
-            {
-                spin.SpinOnce(sleep1Threshold: -1);
-            }
-            if (!_queue.IsEmpty)
-            {
-                continue;
-            }
-            _hasWork.Wait();
-        }
-    }
-
     /// <summary>
     /// Parallel for-loop over <c>[fromInclusive, toExclusive)</c>: the range is split into
     /// <see cref="WorkerCount"/> (or fewer, for tiny ranges) contiguous buckets and dispatched across
@@ -129,6 +112,10 @@ public static class GlobalThreadPool
     /// struct and write the body as a <c>static</c> lambda, avoiding the closure/display-class
     /// allocations the equivalent <see cref="Parallel.ForAsync(int, int, CancellationToken, Func{int, CancellationToken, ValueTask})"/>
     /// per-index lambda would require.
+    ///
+    /// All bucket boundaries are computed up front and written to each worker's private mailbox - no
+    /// per-bucket atomic claim, no shared work queue. The caller runs the last (smallest) bucket
+    /// inline; the dispatched buckets are 0..buckets-2.
     /// </summary>
     /// <typeparam name="T">Value type carrying any data the body needs. <see cref="ValueTuple"/> is
     /// the usual choice.</typeparam>
@@ -157,59 +144,101 @@ public static class GlobalThreadPool
 
         EnsureInitialized();
 
-        int workers = Math.Min(_workerCount, total);
-        var ctx = new ForContext<T>(workers, state, body, ct, fromInclusive, total);
-        // One delegate allocation (method group) reused by every worker; each worker atomically
-        // claims its bucket index and computes the contiguous range from it. All buckets but one go
-        // to the pool; the caller runs the last bucket inline - the calling thread is about to await
-        // this Task anyway, so spending it on real work (instead of one queue-dispatch + thread
-        // wake-up) is free, and the caller often gets to return synchronously when its bucket happens
-        // to be the last one to finish.
-        int dispatched = workers - 1;
-        if (dispatched > 0)
+        int buckets = Math.Min(_workerCount, total);
+        int baseSize = total / buckets;
+        int remainder = total % buckets;
+        // First `remainder` buckets get one extra element; bucket index `buckets-1` is therefore the
+        // smallest (when remainder > 0), which is what the caller runs inline.
+        int dispatch = buckets - 1;
+
+        var job = new Job<T>(buckets, state, body, ct);
+
+        if (dispatch > 0)
         {
-            Action runner = ctx.RunNextBucket;
-            for (int w = 0; w < dispatched; w++)
+            // Pop up to `dispatch` workers under a brief lock. If the stack is short of workers
+            // (concurrent dispatchers, rare in our use case), the overflow buckets run inline below
+            // - safe but degrades parallelism for that one dispatch.
+            int got;
+            Worker[] taken;
+            lock (_freeLock)
             {
-                _queue.Enqueue(runner);
+                got = Math.Min(dispatch, _free.Count);
+                taken = got == 0 ? Array.Empty<Worker>() : new Worker[got];
+                for (int i = 0; i < got; i++)
+                {
+                    taken[i] = _free.Pop();
+                }
             }
-            _hasWork.Release(dispatched);
+
+            for (int i = 0; i < got; i++)
+            {
+                int start = fromInclusive + i * baseSize + Math.Min(i, remainder);
+                int end = start + baseSize + (i < remainder ? 1 : 0);
+                taken[i].Assign(job, start, end);
+            }
+
+            // Buckets we could not dispatch because the free stack was short: run them inline on the
+            // caller thread (in addition to the caller's normal inline bucket below). For the common
+            // case of one producer at a time this branch never fires.
+            for (int i = got; i < dispatch; i++)
+            {
+                int start = fromInclusive + i * baseSize + Math.Min(i, remainder);
+                int end = start + baseSize + (i < remainder ? 1 : 0);
+                job.RunBucket(start, end);
+            }
         }
-        ctx.RunNextBucket();
-        return ctx.Task;
+
+        // Caller runs the last (smallest) bucket inline - it is about to await this Task anyway, so
+        // spending its thread on real work (instead of one mailbox-write + thread wake-up) is free.
+        {
+            int i = buckets - 1;
+            int start = fromInclusive + i * baseSize + Math.Min(i, remainder);
+            int end = start + baseSize + (i < remainder ? 1 : 0);
+            job.RunBucket(start, end);
+        }
+
+        return job.Task;
     }
 
-    // The job state and its completion source share one allocation: ForContext _is_ the
-    // TaskCompletionSource the caller awaits.
-    private sealed class ForContext<T> : TaskCompletionSource where T : struct
+    private static void ReturnToFree(Worker w)
+    {
+        lock (_freeLock)
+        {
+            _free.Push(w);
+        }
+    }
+
+    /// <summary>Non-generic façade so a <see cref="Worker"/> can hold an <c>IBucketJob</c> reference
+    /// without knowing the closed <c>T</c> at the Job site.</summary>
+    private interface IBucketJob
+    {
+        void RunBucket(int start, int end);
+    }
+
+    /// <summary>The job state and its completion source share one allocation: Job _is_ the
+    /// TaskCompletionSource the caller awaits. The only fields workers race on are <c>_remaining</c>
+    /// (one decrement per bucket; the last one completes the task) and <c>_error</c> (first writer
+    /// wins). Bucket boundaries are passed to <see cref="RunBucket"/> directly - there is no shared
+    /// bucket counter for workers to contend on.</summary>
+    private sealed class Job<T> : TaskCompletionSource, IBucketJob where T : struct
     {
         private readonly Action<int, int, T> _body;
         private readonly T _state;
         private readonly CancellationToken _ct;
-        private readonly int _from;
-        private readonly int _baseSize;
-        private readonly int _remainder;
-        private int _nextBucket = -1;
         private int _remaining;
         private Exception _error;
 
-        public ForContext(int workers, T state, Action<int, int, T> body, CancellationToken ct, int from, int total)
+        public Job(int buckets, T state, Action<int, int, T> body, CancellationToken ct)
             : base(TaskCreationOptions.RunContinuationsAsynchronously)
         {
-            _remaining = workers;
+            _remaining = buckets;
             _state = state;
             _body = body;
             _ct = ct;
-            _from = from;
-            _baseSize = total / workers;
-            _remainder = total % workers;
         }
 
-        public void RunNextBucket()
+        public void RunBucket(int start, int end)
         {
-            int idx = Interlocked.Increment(ref _nextBucket);
-            int start = _from + idx * _baseSize + Math.Min(idx, _remainder);
-            int end = start + _baseSize + (idx < _remainder ? 1 : 0);
             try
             {
                 if (!_ct.IsCancellationRequested && Volatile.Read(ref _error) is null)
@@ -236,6 +265,68 @@ public static class GlobalThreadPool
                 else
                 {
                     SetResult();
+                }
+            }
+        }
+    }
+
+    /// <summary>One pool thread plus its private mailbox. A worker only ever reads its own mailbox
+    /// fields, and the dispatcher only ever writes the mailbox of workers it has popped off the free
+    /// stack - so once the dispatcher's <see cref="Assign"/> returns the worker races on no
+    /// shared mutable state for the duration of the body call.</summary>
+    private sealed class Worker
+    {
+        // Initial 0, no max - we never expect more than one outstanding Release before the worker
+        // Waits, but leaving the max unbounded avoids any chance of SemaphoreFullException from a
+        // race we missed.
+        private readonly SemaphoreSlim _signal = new(0);
+
+        // Mailbox. Written by the dispatcher inside Assign (under happens-before of Release), read
+        // by the worker after Wait (under happens-before of Wait's acquire fence). Plain fields are
+        // safe under that ordering.
+        private IBucketJob _job;
+        private int _start;
+        private int _end;
+
+        public Worker(int id) { Id = id; }
+        public int Id { get; }
+
+        public void Start(ThreadPriority priority)
+        {
+            var t = new Thread(Loop)
+            {
+                IsBackground = true,
+                Name = $"SentenceTransformers.GlobalThreadPool[{Id}]",
+                Priority = priority,
+            };
+            t.Start();
+        }
+
+        public void Assign(IBucketJob job, int start, int end)
+        {
+            _job = job;
+            _start = start;
+            _end = end;
+            _signal.Release();
+        }
+
+        private void Loop()
+        {
+            while (true)
+            {
+                _signal.Wait();
+                var job = _job;
+                int start = _start;
+                int end = _end;
+                _job = null;
+
+                try
+                {
+                    job.RunBucket(start, end);
+                }
+                finally
+                {
+                    ReturnToFree(this);
                 }
             }
         }
