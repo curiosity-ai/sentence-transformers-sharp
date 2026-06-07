@@ -5,6 +5,7 @@ variables:
   projectQwen3:          './SentenceTransformers.Qwen3/SentenceTransformers.Qwen3.csproj'
   projectHarrierMedium:  './SentenceTransformers.Harrier.Medium/SentenceTransformers.Harrier.Medium.csproj'
   projectHarrierSmall:   './SentenceTransformers.Harrier.Small/SentenceTransformers.Harrier.Small.csproj'
+  projectHarrierSmallPure: './SentenceTransformers.Harrier.Small.Pure/SentenceTransformers.Harrier.Small.Pure.csproj'
   solution:              './SentenceTransformers.sln'
   buildConfiguration: 'Release'
   targetVersion: yy.M.$(build.buildId)
@@ -87,6 +88,13 @@ steps:
   inputs:
     command: 'build'
     projects: '$(projectHarrierSmall)'
+    arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
+
+- task: DotNetCoreCLI@2
+  displayName: 'build Harrier.Small.Pure project'
+  inputs:
+    command: 'build'
+    projects: '$(projectHarrierSmallPure)'
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion)  /p:GeneratePackageOnBuild=true'
 
 - task: NuGetCommand@2

@@ -6,10 +6,17 @@ using SentenceTransformers;
 // ---- Build a few-paragraph input dataset ----
 var texts = new[]
 {
-    MakeParagraph(seed: 1, paragraphs: 3, sentencesPerParagraph: 5),
-    MakeParagraph(seed: 2, paragraphs: 3, sentencesPerParagraph: 5),
-    MakeParagraph(seed: 3, paragraphs: 3, sentencesPerParagraph: 5),
-    MakeParagraph(seed: 4, paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 1,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 2,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 3,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 4,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 4,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 5,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 6,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 7,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 8,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 9,  paragraphs: 3, sentencesPerParagraph: 5),
+    MakeParagraph(seed: 10, paragraphs: 3, sentencesPerParagraph: 5),
 };
 
 var cfg = new BenchConfig(
@@ -36,10 +43,59 @@ foreach (var (name, encoder) in syncEncoders)
     }
 }
 
-using (var qwen3Encoder = await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync())
+
+//Qwen3 is disabled with error:
+//  2026-06-07 12:21:15.5696341 [E:onnxruntime:, sequential_executor.cc:572 onnxruntime::ExecuteKernel] Non-zero status code returned while running Gather node. Name:'/0/auto_model/embed_tokens/Gather' Status Message: indices element out of data bounds, idx=236761 must be within the inclusive range [-151669,151668]
+//  Unhandled exception. Microsoft.ML.OnnxRuntime.OnnxRuntimeException: [ErrorCode:InvalidArgument] Non-zero status code returned while running Gather node. Name:'/0/auto_model/embed_tokens/Gather' Status Message: indices element out of data bounds, idx=236761 must be within the inclusive range [-151669,151668]
+//     at Microsoft.ML.OnnxRuntime.InferenceSession.RunImpl(RunOptions options, IntPtr[] inputNames, IntPtr[] inputValues, IntPtr[] outputNames)
+//     at Microsoft.ML.OnnxRuntime.InferenceSession.Run(IReadOnlyCollection`1 inputs, IReadOnlyCollection`1 outputNames, RunOptions options)
+//     at SentenceTransformers.Qwen3.SentenceEncoder.EncodeAsync(String[] sentences, CancellationToken cancellationToken) in D:\work\sentence-transformers-sharp\SentenceTransformers.Qwen3\src\SentenceEncoder.cs:line 159
+//     at EncoderBench.RunAsync(String name, ISentenceEncoder encoder, String[] corpus, BenchConfig cfg) in D:\work\sentence-transformers-sharp\SentenceTransformers.Benchmark\Program.cs:line 169
+//     at Program.<Main>$(String[] args) in D:\work\sentence-transformers-sharp\SentenceTransformers.Benchmark\Program.cs:line 48
+//     at Program.<Main>(String[] args)
+
+//using (var qwen3Encoder = await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync())
+//{
+//    var run = await EncoderBench.RunAsync("Qwen3-0.6B", qwen3Encoder, texts, cfg);
+//    results.Add(run);
+//    Console.WriteLine();
+//}
+
+
+
+// Harrier Small: the ONNX build (Q4F16) vs the pure-C# reimplementation at each weight precision.
+// Both download weights on first use (ONNX graph ~172 MB, Pure safetensors ~540 MB) and cache them,
+// so this section needs network access; it is skipped (not failed) when the weights are unavailable.
+try
 {
-    var run = await EncoderBench.RunAsync("Qwen3-0.6B", qwen3Encoder, texts, cfg);
-    results.Add(run);
+    using (var harrierOnnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync())
+    {
+        results.Add(await EncoderBench.RunAsync("Harrier.Small (ONNX Q4F16)", harrierOnnx, texts, cfg));
+        Console.WriteLine();
+    }
+
+    using (var harrierOnnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(modelUrl:SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelUrl, modelDataUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelDataUrl))
+    {
+        results.Add(await EncoderBench.RunAsync("Harrier.Small (ONNX Int8)", harrierOnnx, texts, cfg));
+        Console.WriteLine();
+    }
+
+    foreach (var quant in new[]
+    {
+        SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None,
+        SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8,
+        SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int4,
+    })
+    {
+        // Pure construction is a non-blocking async factory (CreateAsync downloads then LoadAsync).
+        using var harrierPure = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(quantization: quant);
+        results.Add(await EncoderBench.RunAsync($"Harrier.Small.Pure ({quant})", harrierPure, texts, cfg));
+        Console.WriteLine();
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Skipping Harrier Small comparison (weights unavailable?): {ex.Message}");
     Console.WriteLine();
 }
 

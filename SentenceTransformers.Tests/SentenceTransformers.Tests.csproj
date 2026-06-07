@@ -22,6 +22,7 @@
     <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Harrier.Medium\SentenceTransformers.Harrier.Medium.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small\SentenceTransformers.Harrier.Small.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.Harrier.Small.Pure\SentenceTransformers.Harrier.Small.Pure.csproj" />
   </ItemGroup>
 
   <!--

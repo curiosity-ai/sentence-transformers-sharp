@@ -32,6 +32,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Tests"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Harrier.Small", "SentenceTransformers.Harrier.Small\SentenceTransformers.Harrier.Small.csproj", "{9F327C13-6CF0-4AB1-82DC-EA91776975B2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Harrier.Small.Pure", "SentenceTransformers.Harrier.Small.Pure\SentenceTransformers.Harrier.Small.Pure.csproj", "{2DF263BC-594A-42E9-B8F5-6AF6626A0013}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -174,6 +176,18 @@ Global
 		{9F327C13-6CF0-4AB1-82DC-EA91776975B2}.Release|x64.Build.0 = Release|Any CPU
 		{9F327C13-6CF0-4AB1-82DC-EA91776975B2}.Release|x86.ActiveCfg = Release|Any CPU
 		{9F327C13-6CF0-4AB1-82DC-EA91776975B2}.Release|x86.Build.0 = Release|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Debug|x64.Build.0 = Debug|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Debug|x86.Build.0 = Debug|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Release|x64.ActiveCfg = Release|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Release|x64.Build.0 = Release|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Release|x86.ActiveCfg = Release|Any CPU
+		{2DF263BC-594A-42E9-B8F5-6AF6626A0013}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
