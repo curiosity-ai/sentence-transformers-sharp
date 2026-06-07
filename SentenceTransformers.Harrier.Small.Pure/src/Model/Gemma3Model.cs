@@ -62,23 +62,32 @@ internal sealed class Gemma3Model
         _embedScale = FloatConversions.RoundToBFloat16(MathF.Sqrt(cfg.HiddenSize));
     }
 
-    public static Gemma3Model Load(string safetensorsPath, Gemma3Config cfg, Quantization quantization = Quantization.None)
+    public static async Task<Gemma3Model> LoadAsync(string safetensorsPath, Gemma3Config cfg, Quantization quantization, CancellationToken ct)
     {
-        var st = SafeTensors.Load(safetensorsPath);
+        var st = await SafeTensors.LoadAsync(safetensorsPath, ct).ConfigureAwait(false);
 
         // Some exports prefix every tensor with "model."; tolerate both.
         string prefix = st.Contains("embed_tokens.weight") ? "" : "model.";
 
         var embed = st.ReadRaw16(prefix + "embed_tokens.weight");
 
+        // The attention/MLP projections dominate weight size and compute, so they carry the chosen
+        // quantization (built on Parallel.ForAsync, never blocking); the tiny per-channel norm vectors
+        // stay in float32.
+        Task<IWeightMatrix> Proj(string p, string name, int outDim, int inDim)
+            => IWeightMatrix.CreateAsync(st.ReadFloat(p + name), outDim, inDim, quantization, ct);
+
         var layers = new Layer[cfg.NumLayers];
         for (int i = 0; i < cfg.NumLayers; i++)
         {
             string p = $"{prefix}layers.{i}.";
-            // The attention/MLP projections dominate weight size and compute, so they carry the
-            // chosen quantization; the tiny per-channel norm vectors stay in float32.
-            IWeightMatrix Proj(string name, int outDim, int inDim)
-                => IWeightMatrix.Create(st.ReadFloat(p + name), outDim, inDim, quantization);
+            var qProj = await Proj(p, "self_attn.q_proj.weight", cfg.QProjOut, cfg.HiddenSize).ConfigureAwait(false);
+            var kProj = await Proj(p, "self_attn.k_proj.weight", cfg.KvProjOut, cfg.HiddenSize).ConfigureAwait(false);
+            var vProj = await Proj(p, "self_attn.v_proj.weight", cfg.KvProjOut, cfg.HiddenSize).ConfigureAwait(false);
+            var oProj = await Proj(p, "self_attn.o_proj.weight", cfg.HiddenSize, cfg.QProjOut).ConfigureAwait(false);
+            var gateProj = await Proj(p, "mlp.gate_proj.weight", cfg.IntermediateSize, cfg.HiddenSize).ConfigureAwait(false);
+            var upProj = await Proj(p, "mlp.up_proj.weight", cfg.IntermediateSize, cfg.HiddenSize).ConfigureAwait(false);
+            var downProj = await Proj(p, "mlp.down_proj.weight", cfg.HiddenSize, cfg.IntermediateSize).ConfigureAwait(false);
 
             layers[i] = new Layer
             {
@@ -86,15 +95,15 @@ internal sealed class Gemma3Model
                 PostAttentionLayerNorm = st.ReadFloat(p + "post_attention_layernorm.weight"),
                 PreFeedforwardLayerNorm = st.ReadFloat(p + "pre_feedforward_layernorm.weight"),
                 PostFeedforwardLayerNorm = st.ReadFloat(p + "post_feedforward_layernorm.weight"),
-                QProj = Proj("self_attn.q_proj.weight", cfg.QProjOut, cfg.HiddenSize),
-                KProj = Proj("self_attn.k_proj.weight", cfg.KvProjOut, cfg.HiddenSize),
-                VProj = Proj("self_attn.v_proj.weight", cfg.KvProjOut, cfg.HiddenSize),
-                OProj = Proj("self_attn.o_proj.weight", cfg.HiddenSize, cfg.QProjOut),
+                QProj = qProj,
+                KProj = kProj,
+                VProj = vProj,
+                OProj = oProj,
                 QNorm = st.ReadFloat(p + "self_attn.q_norm.weight"),
                 KNorm = st.ReadFloat(p + "self_attn.k_norm.weight"),
-                GateProj = Proj("mlp.gate_proj.weight", cfg.IntermediateSize, cfg.HiddenSize),
-                UpProj = Proj("mlp.up_proj.weight", cfg.IntermediateSize, cfg.HiddenSize),
-                DownProj = Proj("mlp.down_proj.weight", cfg.HiddenSize, cfg.IntermediateSize),
+                GateProj = gateProj,
+                UpProj = upProj,
+                DownProj = downProj,
             };
         }
 

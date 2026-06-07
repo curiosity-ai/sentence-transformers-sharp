@@ -73,24 +73,36 @@ namespace SentenceTransformers.Harrier.Small.Pure
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Pure", "harrier-small.safetensors");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-            await DownloadFileAsync(weightsUrl ?? DefaultWeightsUrl, path, reportProgress, cancellationToken);
-            return new SentenceEncoder(path, quantization: quantization);
+            await DownloadFileAsync(weightsUrl ?? DefaultWeightsUrl, path, reportProgress, cancellationToken).ConfigureAwait(false);
+            return await LoadAsync(path, quantization: quantization, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
-        /// <summary>Creates an encoder from an existing safetensors file on disk.</summary>
+        /// <summary>Creates an encoder from an existing safetensors file on disk. Loading (including the
+        /// file read and any weight quantization) is fully asynchronous and non-blocking.</summary>
         /// <param name="safetensorsPath">Path to the harrier-oss-v1-270m <c>model.safetensors</c>.</param>
         /// <param name="tokenizerJsonPath">Optional path to <c>tokenizer.json</c>; when null the embedded copy is used.</param>
         /// <param name="quantization">Weight precision for the transformer layers (default float32).</param>
-        public SentenceEncoder(string safetensorsPath, string tokenizerJsonPath = null, Quantization quantization = Quantization.None)
+        public static async Task<SentenceEncoder> LoadAsync(
+            string safetensorsPath,
+            string tokenizerJsonPath = null,
+            Quantization quantization = Quantization.None,
+            CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(safetensorsPath))
             {
                 throw new ArgumentException("Weights path is required.", nameof(safetensorsPath));
             }
 
-            _model = Gemma3Model.Load(safetensorsPath, new Gemma3Config(), quantization);
-            _tokenizer = LoadTokenizer(tokenizerJsonPath, MaxChunkLength);
-            Tokenizer = _tokenizer;
+            var model = await Gemma3Model.LoadAsync(safetensorsPath, new Gemma3Config(), quantization, cancellationToken).ConfigureAwait(false);
+            var tokenizer = LoadTokenizer(tokenizerJsonPath, GetMaxChunkLength());
+            return new SentenceEncoder(model, tokenizer);
+        }
+
+        private SentenceEncoder(Gemma3Model model, HarrierSmallPureTokenizer tokenizer)
+        {
+            _model = model;
+            _tokenizer = tokenizer;
+            Tokenizer = tokenizer;
         }
 
         private static HarrierSmallPureTokenizer LoadTokenizer(string tokenizerJsonPath, int maxTokens)

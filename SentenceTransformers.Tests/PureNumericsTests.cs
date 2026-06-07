@@ -128,8 +128,8 @@ public class PureNumericsTests
         var x = new float[seq * inDim];
         for (int i = 0; i < x.Length; i++) x[i] = (float)(rng.NextDouble() * 2 - 1);
 
-        var reference = IWeightMatrix.Create((float[])w.Clone(), outDim, inDim, Quantization.None);
-        var quantized = IWeightMatrix.Create((float[])w.Clone(), outDim, inDim, quant);
+        var reference = await IWeightMatrix.CreateAsync((float[])w.Clone(), outDim, inDim, Quantization.None, default);
+        var quantized = await IWeightMatrix.CreateAsync((float[])w.Clone(), outDim, inDim, quant, default);
 
         var yRef = new float[seq * outDim];
         var yQ = new float[seq * outDim];

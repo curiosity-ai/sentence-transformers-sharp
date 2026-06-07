@@ -114,13 +114,23 @@ internal interface IWeightMatrix
     /// <paramref name="ct"/>.</summary>
     ValueTask MultiplyAsync(float[] x, float[] y, int seq, CancellationToken ct);
 
-    static IWeightMatrix Create(float[] weights, int outDim, int inDim, Quantization quantization) => quantization switch
+    /// <summary>Builds the weight matrix for the chosen precision. For the quantized variants the
+    /// (CPU-heavy) quantization runs on <c>Parallel.ForAsync</c> so it does not block a thread-pool
+    /// thread when awaited from the async load path.</summary>
+    static async Task<IWeightMatrix> CreateAsync(float[] weights, int outDim, int inDim, Quantization quantization, CancellationToken ct)
     {
-        Quantization.None => new FloatMatrix(weights, outDim, inDim),
-        Quantization.Int8 => Int8Matrix.Quantize(weights, outDim, inDim),
-        Quantization.Int4 => Int4Matrix.Quantize(weights, outDim, inDim),
-        _ => throw new ArgumentOutOfRangeException(nameof(quantization)),
-    };
+        switch (quantization)
+        {
+            case Quantization.None:
+                return new FloatMatrix(weights, outDim, inDim);
+            case Quantization.Int8:
+                return await Int8Matrix.QuantizeAsync(weights, outDim, inDim, ct).ConfigureAwait(false);
+            case Quantization.Int4:
+                return await Int4Matrix.QuantizeAsync(weights, outDim, inDim, ct).ConfigureAwait(false);
+            default:
+                throw new ArgumentOutOfRangeException(nameof(quantization));
+        }
+    }
 }
 
 /// <summary>Shared helpers for the VNNI int8 GEMM paths.</summary>
@@ -215,12 +225,12 @@ internal sealed class Int8Matrix : IWeightMatrix
         OutDim = outDim;
     }
 
-    public static Int8Matrix Quantize(float[] w, int outDim, int inDim)
+    public static async Task<Int8Matrix> QuantizeAsync(float[] w, int outDim, int inDim, CancellationToken ct)
     {
         var q = new sbyte[(long)outDim * inDim <= int.MaxValue ? outDim * inDim : throw new OverflowException()];
         var scale = new float[outDim];
         var rowSum = new int[outDim];
-        Parallel.For(0, outDim, o =>
+        await Parallel.ForAsync(0, outDim, ct, (o, _) =>
         {
             int baseIdx = o * inDim;
             float amax = 0f;
@@ -239,7 +249,8 @@ internal sealed class Int8Matrix : IWeightMatrix
                 sum += v;
             }
             rowSum[o] = sum;
-        });
+            return ValueTask.CompletedTask;
+        }).ConfigureAwait(false);
         return new Int8Matrix(q, scale, rowSum, outDim, inDim);
     }
 
@@ -498,7 +509,7 @@ internal sealed class Int4Matrix : IWeightMatrix
         OutDim = outDim;
     }
 
-    public static Int4Matrix Quantize(float[] w, int outDim, int inDim)
+    public static async Task<Int4Matrix> QuantizeAsync(float[] w, int outDim, int inDim, CancellationToken ct)
     {
         if (inDim % GroupSize != 0)
         {
@@ -509,7 +520,7 @@ internal sealed class Int4Matrix : IWeightMatrix
         var scale = new float[outDim * numGroups];
         var groupSum = new int[outDim * numGroups];
 
-        Parallel.For(0, outDim, o =>
+        await Parallel.ForAsync(0, outDim, ct, (o, _) =>
         {
             int rowBase = o * inDim;
             for (int g = 0; g < numGroups; g++)
@@ -543,7 +554,8 @@ internal sealed class Int4Matrix : IWeightMatrix
                 }
                 groupSum[o * numGroups + g] = sum;
             }
-        });
+            return ValueTask.CompletedTask;
+        }).ConfigureAwait(false);
         return new Int4Matrix(packed, scale, groupSum, numGroups, outDim, inDim);
     }
 

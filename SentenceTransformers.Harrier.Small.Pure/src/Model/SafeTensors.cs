@@ -37,9 +37,14 @@ internal sealed class SafeTensors
 
     /// <summary>Reads the whole file into memory and parses the header. The weights file is a few
     /// hundred MB, so we map it once and keep the raw bytes around for lazy per-tensor widening.</summary>
-    public static SafeTensors Load(string path)
+    public static SafeTensors Load(string path) => Parse(File.ReadAllBytes(path), path);
+
+    /// <summary>Async variant: awaits the (multi-hundred-MB) file read instead of blocking on it.</summary>
+    public static async Task<SafeTensors> LoadAsync(string path, CancellationToken ct)
+        => Parse(await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false), path);
+
+    private static SafeTensors Parse(byte[] bytes, string path)
     {
-        byte[] bytes = File.ReadAllBytes(path);
         if (bytes.Length < 8)
         {
             throw new InvalidDataException($"'{path}' is too small to be a safetensors file.");
