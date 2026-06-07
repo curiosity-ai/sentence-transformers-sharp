@@ -43,6 +43,36 @@ using (var qwen3Encoder = await SentenceTransformers.Qwen3.SentenceEncoder.Creat
     Console.WriteLine();
 }
 
+// Harrier Small: the ONNX build (Q4F16) vs the pure-C# reimplementation at each weight precision.
+// Both download weights on first use (ONNX graph ~172 MB, Pure safetensors ~540 MB) and cache them,
+// so this section needs network access; it is skipped (not failed) when the weights are unavailable.
+try
+{
+    using (var harrierOnnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync())
+    {
+        results.Add(await EncoderBench.RunAsync("Harrier.Small (ONNX Q4F16)", harrierOnnx, texts, cfg));
+        Console.WriteLine();
+    }
+
+    foreach (var quant in new[]
+    {
+        SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None,
+        SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8,
+        SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int4,
+    })
+    {
+        // Pure construction is a non-blocking async factory (CreateAsync downloads then LoadAsync).
+        using var harrierPure = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(quantization: quant);
+        results.Add(await EncoderBench.RunAsync($"Harrier.Small.Pure ({quant})", harrierPure, texts, cfg));
+        Console.WriteLine();
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Skipping Harrier Small comparison (weights unavailable?): {ex.Message}");
+    Console.WriteLine();
+}
+
 EncoderBench.PrintTable(results);
 
 GC.Collect();
