@@ -132,10 +132,12 @@ public static class GlobalThreadPool
         {
             throw new ArgumentNullException(nameof(body));
         }
+
         if (ct.IsCancellationRequested)
         {
             return Task.FromCanceled(ct);
         }
+
         int total = toExclusive - fromInclusive;
         if (total <= 0)
         {
@@ -146,6 +148,7 @@ public static class GlobalThreadPool
 
         int buckets = Math.Min(_workerCount, total);
         int baseSize = total / buckets;
+
         int remainder = total % buckets;
         // First `remainder` buckets get one extra element; bucket index `buckets-1` is therefore the
         // smallest (when remainder > 0), which is what the caller runs inline.

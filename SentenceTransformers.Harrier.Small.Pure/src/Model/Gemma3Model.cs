@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Numerics.Tensors;
+using System.Runtime.CompilerServices;
 using SentenceTransformers;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
 
@@ -75,43 +76,46 @@ internal sealed class Gemma3Model
         // The attention/MLP projections dominate weight size and compute, so they carry the chosen
         // quantization (built on the GlobalThreadPool, never blocking); the tiny per-channel norm
         // vectors stay in float32.
-        Task<IWeightMatrix> Proj(string p, string name, int outDim, int inDim)
-            => IWeightMatrix.CreateAsync(st.ReadFloat(p + name), outDim, inDim, quantization, ct);
+        Task<IWeightMatrix> Proj(string p, string name, int outDim, int inDim) => IWeightMatrix.CreateAsync(st.ReadFloat(p + name), outDim, inDim, quantization, ct);
 
         var layers = new Layer[cfg.NumLayers];
         for (int i = 0; i < cfg.NumLayers; i++)
         {
             string p = $"{prefix}layers.{i}.";
-            var qProj = await Proj(p, "self_attn.q_proj.weight", cfg.QProjOut, cfg.HiddenSize).ConfigureAwait(false);
-            var kProj = await Proj(p, "self_attn.k_proj.weight", cfg.KvProjOut, cfg.HiddenSize).ConfigureAwait(false);
-            var vProj = await Proj(p, "self_attn.v_proj.weight", cfg.KvProjOut, cfg.HiddenSize).ConfigureAwait(false);
-            var oProj = await Proj(p, "self_attn.o_proj.weight", cfg.HiddenSize, cfg.QProjOut).ConfigureAwait(false);
-            var gateProj = await Proj(p, "mlp.gate_proj.weight", cfg.IntermediateSize, cfg.HiddenSize).ConfigureAwait(false);
-            var upProj = await Proj(p, "mlp.up_proj.weight", cfg.IntermediateSize, cfg.HiddenSize).ConfigureAwait(false);
-            var downProj = await Proj(p, "mlp.down_proj.weight", cfg.HiddenSize, cfg.IntermediateSize).ConfigureAwait(false);
+            var qProj    = await Proj(p, "self_attn.q_proj.weight", cfg.QProjOut,         cfg.HiddenSize).ConfigureAwait(false);
+            var kProj    = await Proj(p, "self_attn.k_proj.weight", cfg.KvProjOut,        cfg.HiddenSize).ConfigureAwait(false);
+            var vProj    = await Proj(p, "self_attn.v_proj.weight", cfg.KvProjOut,        cfg.HiddenSize).ConfigureAwait(false);
+            var oProj    = await Proj(p, "self_attn.o_proj.weight", cfg.HiddenSize,       cfg.QProjOut).ConfigureAwait(false);
+            var gateProj = await Proj(p, "mlp.gate_proj.weight",    cfg.IntermediateSize, cfg.HiddenSize).ConfigureAwait(false);
+            var upProj   = await Proj(p, "mlp.up_proj.weight",      cfg.IntermediateSize, cfg.HiddenSize).ConfigureAwait(false);
+            var downProj = await Proj(p, "mlp.down_proj.weight",    cfg.HiddenSize,       cfg.IntermediateSize).ConfigureAwait(false);
 
             layers[i] = new Layer
             {
-                InputLayerNorm = st.ReadFloat(p + "input_layernorm.weight"),
-                PostAttentionLayerNorm = st.ReadFloat(p + "post_attention_layernorm.weight"),
-                PreFeedforwardLayerNorm = st.ReadFloat(p + "pre_feedforward_layernorm.weight"),
+                InputLayerNorm           = st.ReadFloat(p + "input_layernorm.weight"),
+                PostAttentionLayerNorm   = st.ReadFloat(p + "post_attention_layernorm.weight"),
+                PreFeedforwardLayerNorm  = st.ReadFloat(p + "pre_feedforward_layernorm.weight"),
                 PostFeedforwardLayerNorm = st.ReadFloat(p + "post_feedforward_layernorm.weight"),
-                QProj = qProj,
-                KProj = kProj,
-                VProj = vProj,
-                OProj = oProj,
-                QNorm = st.ReadFloat(p + "self_attn.q_norm.weight"),
-                KNorm = st.ReadFloat(p + "self_attn.k_norm.weight"),
-                GateProj = gateProj,
-                UpProj = upProj,
-                DownProj = downProj,
+                QProj                    = qProj,
+                KProj                    = kProj,
+                VProj                    = vProj,
+                OProj                    = oProj,
+                QNorm                    = st.ReadFloat(p + "self_attn.q_norm.weight"),
+                KNorm                    = st.ReadFloat(p + "self_attn.k_norm.weight"),
+                GateProj                 = gateProj,
+                UpProj                   = upProj,
+                DownProj                 = downProj,
             };
         }
 
         var finalNorm = st.ReadFloat(prefix + "norm.weight");
+
         return new Gemma3Model(cfg, embed, layers, finalNorm);
     }
 
+    private static ArrayPool<float> _pooledArray = ArrayPool<float>.Create(512000, 24);
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     /// <summary>Runs the full forward pass for one tokenized sequence and returns the (un-normalized)
     /// last-token hidden state - a <c>HiddenSize</c>-length embedding. The per-layer matmuls and
     /// attention parallelize on the <see cref="GlobalThreadPool"/>, so the heavy CPU work is awaited
@@ -127,20 +131,19 @@ internal sealed class Gemma3Model
         // contexts (e.g. gate/up are seq*2048 floats), so it is rented from the shared array pool
         // rather than allocated (and LOH-collected) on every call. Pooled arrays may be larger than
         // requested, so every consumer is driven by explicit (seq * dim) lengths, never Array.Length.
-        var pool = ArrayPool<float>.Shared;
         int hiddenLen = seq * h;
-        var hidden = pool.Rent(hiddenLen);
-        var cos = pool.Rent(seq * headDim);
-        var sin = pool.Rent(seq * headDim);
-        var normed = pool.Rent(hiddenLen);
-        var q = pool.Rent(seq * _cfg.QProjOut);
-        var k = pool.Rent(seq * _cfg.KvProjOut);
-        var v = pool.Rent(seq * _cfg.KvProjOut);
-        var attnOut = pool.Rent(seq * _cfg.QProjOut);
-        var attnProj = pool.Rent(hiddenLen);
-        var gate = pool.Rent(seq * _cfg.IntermediateSize);
-        var up = pool.Rent(seq * _cfg.IntermediateSize);
-        var down = pool.Rent(hiddenLen);
+        var hidden    = _pooledArray.Rent(hiddenLen); // 156800
+        var cos       = _pooledArray.Rent(seq * headDim);
+        var sin       = _pooledArray.Rent(seq * headDim);
+        var normed    = _pooledArray.Rent(hiddenLen);
+        var q         = _pooledArray.Rent(seq * _cfg.QProjOut); //250880
+        var k         = _pooledArray.Rent(seq * _cfg.KvProjOut);
+        var v         = _pooledArray.Rent(seq * _cfg.KvProjOut);
+        var attnOut   = _pooledArray.Rent(seq * _cfg.QProjOut);
+        var attnProj  = _pooledArray.Rent(hiddenLen);
+        var gate      = _pooledArray.Rent(seq * _cfg.IntermediateSize); // 501760
+        var up        = _pooledArray.Rent(seq * _cfg.IntermediateSize);
+        var down      = _pooledArray.Rent(hiddenLen);
         try
         {
             // --- token embedding (+ sqrt(hidden) scale) ---
@@ -198,21 +201,23 @@ internal sealed class Gemma3Model
         }
         finally
         {
-            pool.Return(hidden);
-            pool.Return(cos);
-            pool.Return(sin);
-            pool.Return(normed);
-            pool.Return(q);
-            pool.Return(k);
-            pool.Return(v);
-            pool.Return(attnOut);
-            pool.Return(attnProj);
-            pool.Return(gate);
-            pool.Return(up);
-            pool.Return(down);
+            _pooledArray.Return(hidden);
+            _pooledArray.Return(cos);
+            _pooledArray.Return(sin);
+            _pooledArray.Return(normed);
+            _pooledArray.Return(q);
+            _pooledArray.Return(k);
+            _pooledArray.Return(v);
+            _pooledArray.Return(attnOut);
+            _pooledArray.Return(attnProj);
+            _pooledArray.Return(gate);
+            _pooledArray.Return(up);
+            _pooledArray.Return(down);
         }
     }
 
+    
+    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
     /// <summary>Applies Gemma's per-head Q/K RMSNorm (over <paramref name="headDim"/>) in place.</summary>
     private void ApplyHeadNorm(float[] x, float[] weight, int seq, int heads, int headDim)
     {
@@ -227,6 +232,7 @@ internal sealed class Gemma3Model
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
     /// <summary>Applies rotary position embeddings in place to every head of <paramref name="x"/>.</summary>
     private static void ApplyRope(float[] x, float[] cos, float[] sin, int seq, int heads, int headDim)
     {
@@ -257,10 +263,11 @@ internal sealed class Gemma3Model
     /// position and the dispatch is fork/join only (no per-row task wake-up).</summary>
     private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, CancellationToken ct)
     {
-        int qStride = _cfg.NumHeads * headDim;
+        int qStride  = _cfg.NumHeads * headDim;
         int kvStride = _cfg.NumKvHeads * headDim; // == headDim (1 KV head)
-        int heads = _cfg.NumHeads;
-        float scale = _cfg.AttentionScale;
+        int heads    = _cfg.NumHeads;
+        float scale  = _cfg.AttentionScale;
+
         return GlobalThreadPool.ForAsync(0, seq, (q, k, v, attnOut, headDim, qStride, kvStride, heads, scale), static (start, end, st) =>
         {
             for (int i = start; i < end; i++)
@@ -270,40 +277,38 @@ internal sealed class Gemma3Model
         }, ct);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
     /// <summary>Computes attention output for one query position across all heads. Synchronous so the
     /// pooled score buffer and spans stay out of an async body. Score buffers come from a pool (no
     /// per-call allocations); the value accumulation is a vectorized scalar*vector add.</summary>
     private static void AttentionRow(float[] q, float[] k, float[] v, float[] attnOut, int i, int headDim, int qStride, int kvStride, int heads, float scale)
     {
-        var pool = System.Buffers.ArrayPool<float>.Shared;
-        float[] scores = pool.Rent(i + 1);
-        try
+        float[] scores = ArrayPool<float>.Shared.Rent(i + 1);
+
+        for (int head = 0; head < heads; head++)
         {
-            for (int head = 0; head < heads; head++)
+            var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
+
+            for (int j = 0; j <= i; j++)
             {
-                var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
-                for (int j = 0; j <= i; j++)
-                {
-                    scores[j] = TensorPrimitives.Dot(qSpan, new ReadOnlySpan<float>(k, j * kvStride, headDim)) * scale;
-                }
+                scores[j] = TensorPrimitives.Dot(qSpan, new ReadOnlySpan<float>(k, j * kvStride, headDim)) * scale;
+            }
 
-                Ops.SoftmaxInPlace(scores, i + 1);
+            Ops.SoftmaxInPlace(scores, i + 1);
 
-                var outSpan = new Span<float>(attnOut, i * qStride + head * headDim, headDim);
-                outSpan.Clear();
-                for (int j = 0; j <= i; j++)
-                {
-                    // outSpan += scores[j] * v[j]
-                    TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, j * kvStride, headDim), scores[j], outSpan, outSpan);
-                }
+            var outSpan = new Span<float>(attnOut, i * qStride + head * headDim, headDim);
+            outSpan.Clear();
+            for (int j = 0; j <= i; j++)
+            {
+                // outSpan += scores[j] * v[j]
+                TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, j * kvStride, headDim), scores[j], outSpan, outSpan);
             }
         }
-        finally
-        {
-            pool.Return(scores);
-        }
+
+        ArrayPool<float>.Shared.Return(scores);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
     /// <summary>Fills the caller-provided <paramref name="cos"/>/<paramref name="sin"/> rotary tables
     /// (each at least <c>seq * headDim</c> long). <paramref name="invFreq"/> is tiny (headDim/2 = 128
     /// floats) so it is stack-allocated.</summary>

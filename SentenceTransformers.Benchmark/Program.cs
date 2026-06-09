@@ -191,6 +191,7 @@ public static class EncoderBench
 {
     public static async Task<BenchResult> RunAsync(string name, ISentenceEncoder encoder, string[] corpus, BenchConfig cfg)
     {
+        Console.WriteLine($"Starting {name}...");
         // Build a batch by repeating corpus
         var batch = new string[cfg.BatchSize];
         for (int i = 0; i < batch.Length; i++)
@@ -198,6 +199,7 @@ public static class EncoderBench
             batch[i] = corpus[i % corpus.Length];
         }
 
+        Console.WriteLine($"Warming up {name}...");
         // Warmup
         for (int i = 0; i < cfg.WarmupIters; i++)
         {
@@ -218,6 +220,7 @@ public static class EncoderBench
             }
         }
 
+        Console.WriteLine($"Enconding {name}...");
         var sw = Stopwatch.StartNew();
         float[][] last = Array.Empty<float[]>();
         for (int i = 0; i < cfg.Iterations; i++)
@@ -225,6 +228,8 @@ public static class EncoderBench
             last = await encoder.EncodeAsync(batch);
         }
         sw.Stop();
+
+        Console.WriteLine($"Done {name} in {sw.Elapsed.TotalSeconds:n1}s"); 
 
         int dim = (last.Length > 0) ? last[0].Length : 0;
         long outputBytes = (long)cfg.Iterations * cfg.BatchSize * dim * sizeof(float);
