@@ -91,8 +91,7 @@ public sealed class HarrierSmallPureTokenizer : TokenizerBase
         }
     }
 
-    public override string IdToToken(int id)
-        => throw new NotSupportedException("HarrierSmallPureTokenizer does not expose IdToToken.");
+    public override string IdToToken(int id) => _bpe.IdToToken(id);
 
     public override List<string> TokenizeSimple(string text)
     {
@@ -100,7 +99,7 @@ public sealed class HarrierSmallPureTokenizer : TokenizerBase
         var result = new List<string>(tokens.Count);
         foreach (var t in tokens)
         {
-            result.Add(t.Token);
+            result.Add(_bpe.IdToToken(t.Id));
         }
         return result;
     }
@@ -116,7 +115,7 @@ public sealed class HarrierSmallPureTokenizer : TokenizerBase
             var row = new (string, int, long)[take];
             for (int i = 0; i < take; i++)
             {
-                row[i] = (tokens[i].Token, tokens[i].Id, 0L);
+                row[i] = (_bpe.IdToToken(tokens[i].Id), tokens[i].Id, 0L);
             }
             result.Add(row);
         }
@@ -125,40 +124,40 @@ public sealed class HarrierSmallPureTokenizer : TokenizerBase
 
     public override List<TokenizedToken> TokenizeRaw(ReadOnlySpan<char> text)
     {
-        var s = text.ToString();
-        if (s.Length == 0)
+        if (text.Length == 0)
         {
             return new List<TokenizedToken>();
         }
+        var s = text.ToString();
         var tokens = EncodeTokens(s, addSpecialTokens: false);
         var result = new List<TokenizedToken>(tokens.Count);
         foreach (var t in tokens)
         {
-            if (t.End <= t.Start)
+            if (t.Length <= 0)
             {
                 continue;
             }
-            result.Add(new TokenizedToken(t.Token, s.Substring(t.Start, t.End - t.Start)));
+            result.Add(new TokenizedToken(_bpe.IdToToken(t.Id), s.Substring(t.Start, t.Length)));
         }
         return result;
     }
 
     public override List<TokenizedTokenAligned> TokenizeRawAligned(ReadOnlySpan<char> text)
     {
-        var s = text.ToString();
-        if (s.Length == 0)
+        if (text.Length == 0)
         {
             return new List<TokenizedTokenAligned>();
         }
+        var s = text.ToString();
         var tokens = EncodeTokens(s, addSpecialTokens: false);
         var result = new List<TokenizedTokenAligned>(tokens.Count);
         foreach (var t in tokens)
         {
-            if (t.End <= t.Start)
+            if (t.Length <= 0)
             {
                 continue;
             }
-            result.Add(new TokenizedTokenAligned(t.Token, s.Substring(t.Start, t.End - t.Start), t.Start, t.End));
+            result.Add(new TokenizedTokenAligned(_bpe.IdToToken(t.Id), s.Substring(t.Start, t.Length), t.Start, t.End));
         }
         return result;
     }
