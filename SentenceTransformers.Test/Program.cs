@@ -10,26 +10,39 @@ if (string.Equals(Environment.GetEnvironmentVariable("SENTENCE_TRANSFORMERS_TEST
     return;
 }
 
-var qwenEncTask = SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync();
-var harrierMediumEncTask = SentenceTransformers.Harrier.Medium.SentenceEncoder.CreateAsync();
-var harrierSmallEncTask = SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync();
+//var qwenEncTask = SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync();
+//var harrierMediumEncTask = SentenceTransformers.Harrier.Medium.SentenceEncoder.CreateAsync();
+var harrierSmallEncTask = SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(downloadToPath: Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small", "quantized"));
+var harrierSmallEncFullTask = SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(modelUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.FullModelUrl, modelDataUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.FullModelDataUrl, downloadToPath: Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small", "full"));
+var harrierSmallEncPureTask = SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync();
 
 await Main.RunSimple(new SentenceTransformers.MiniLM.SentenceEncoder());
 await Main.RunSimple(new SentenceTransformers.ArcticXs.SentenceEncoder());
 
-using (var qwenEnc = await qwenEncTask)
-{
-    await Main.RunSimple(qwenEnc);
-}
+//using (var qwenEnc = await qwenEncTask)
+//{
+//    await Main.RunSimple(qwenEnc);
+//}
 
-using (var harrierMediumEnc = await harrierMediumEncTask)
-{
-    await Main.RunSimple(harrierMediumEnc);
-}
+//using (var harrierMediumEnc = await harrierMediumEncTask)
+//{
+//    await Main.RunSimple(harrierMediumEnc);
+//}
 
 using (var harrierSmallEnc = await harrierSmallEncTask)
 {
     await Main.RunSimple(harrierSmallEnc);
+}
+
+using (var harrierSmallEnc = await harrierSmallEncFullTask)
+{
+    await Main.RunSimple(harrierSmallEnc);
+}
+
+
+using (var harrierSmallPureEnc = await harrierSmallEncPureTask)
+{
+    await Main.RunSimple(harrierSmallPureEnc);
 }
 
 public static class Main
