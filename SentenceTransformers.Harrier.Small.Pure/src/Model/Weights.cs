@@ -142,25 +142,20 @@ internal static class VnniActivations
     /// operand range that <c>vpdpbusd</c> expects. Returns pooled buffers the caller must return.</summary>
     public static async ValueTask<(byte[] Ua, float[] Scale)> QuantizeAsync(float[] x, int seq, int inDim, CancellationToken ct)
     {
-        byte[] ua = ArrayPool<byte>.Shared.Rent(seq * inDim);
+        byte[] ua     = ArrayPool<byte>.Shared.Rent(seq * inDim);
         float[] scale = ArrayPool<float>.Shared.Rent(seq);
+        
         int zp = Vnni.ZeroPoint;
         int qmax = Vnni.QMax;
-        try
+
+        await GlobalThreadPool.ForAsync(0, seq, (x, ua, scale, inDim, zp, qmax), static (start, end, st) =>
         {
-            await GlobalThreadPool.ForAsync(0, seq, (x, ua, scale, inDim, zp, qmax), static (start, end, st) =>
+            for (int s = start; s < end; s++)
             {
-                for (int s = start; s < end; s++)
-                {
-                    QuantizeRow(st.x, st.ua, st.scale, s, st.inDim, st.zp, st.qmax);
-                }
-            }, ct).ConfigureAwait(false);
-        }
-        catch
-        {
-            Return(ua, scale);
-            throw;
-        }
+                QuantizeRow(st.x, st.ua, st.scale, s, st.inDim, st.zp, st.qmax);
+            }
+        }, ct).ConfigureAwait(false);
+
         return (ua, scale);
     }
 

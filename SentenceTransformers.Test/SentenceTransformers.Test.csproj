@@ -20,6 +20,7 @@
 
 
   <ItemGroup>
+    <ProjectReference Include="..\SentenceTransformers.Harrier.Small.Pure\SentenceTransformers.Harrier.Small.Pure.csproj" />
     <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />

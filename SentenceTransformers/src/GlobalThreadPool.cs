@@ -125,8 +125,7 @@ public static class GlobalThreadPool
     /// <param name="body">Bucket body. Receives <c>(start, endExclusive, state)</c>.</param>
     /// <param name="ct">Cancellation token. Already-running buckets run to completion; not-yet-started
     /// buckets are skipped and the returned task transitions to <see cref="TaskStatus.Canceled"/>.</param>
-    public static Task ForAsync<T>(int fromInclusive, int toExclusive, T state, Action<int, int, T> body, CancellationToken ct = default)
-        where T : struct
+    public static Task ForAsync<T>(int fromInclusive, int toExclusive, T state, Action<int, int, T> body, CancellationToken ct = default) where T : struct
     {
         if (body is null)
         {
@@ -139,6 +138,7 @@ public static class GlobalThreadPool
         }
 
         int total = toExclusive - fromInclusive;
+
         if (total <= 0)
         {
             return Task.CompletedTask;
@@ -231,8 +231,7 @@ public static class GlobalThreadPool
         private int _remaining;
         private Exception _error;
 
-        public Job(int buckets, T state, Action<int, int, T> body, CancellationToken ct)
-            : base(TaskCreationOptions.RunContinuationsAsynchronously)
+        public Job(int buckets, T state, Action<int, int, T> body, CancellationToken ct) : base(TaskCreationOptions.RunContinuationsAsynchronously)
         {
             _remaining = buckets;
             _state = state;

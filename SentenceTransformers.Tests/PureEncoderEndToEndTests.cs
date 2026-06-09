@@ -13,17 +13,9 @@ namespace SentenceTransformers.Tests;
 /// </summary>
 public class PureEncoderEndToEndTests
 {
-    private static bool Enabled => Environment.GetEnvironmentVariable("HARRIER_PURE_E2E") == "1";
-
     [Fact]
     public async Task ReproducesModelCardScoreMatrix()
     {
-        if (!Enabled)
-        {
-            // Opt-in: set HARRIER_PURE_E2E=1 to run the weight download + inference parity test.
-            return;
-        }
-
         using var enc = await SentenceEncoder.CreateAsync();
 
         var queries = new[] { "how much protein should a female eat", "summit define" };
