@@ -1,12 +1,21 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
 namespace SentenceTransformers.Harrier.Small.Pure.Tokenizer;
 
-/// <summary>One emitted token: its vocabulary id, surface string, and the [start, end) character span
-/// (UTF-16 indices) it covers in the input text.</summary>
-internal readonly record struct BpeToken(int Id, string Token, int Start, int End);
+/// <summary>One emitted token: its vocabulary id and the <c>[Start, Start+Length)</c> character span
+/// (UTF-16 indices) it covers in <see cref="Source"/>. The token never owns a substring of the input -
+/// callers slice <see cref="Source"/> on demand via <see cref="AsSpan"/> (and look the surface form up
+/// via <see cref="GemmaBpe.IdToToken"/> when they need it).</summary>
+internal readonly record struct BpeToken(int Id, string Source, int Start, int Length)
+{
+    public int End => Start + Length;
+
+    /// <summary>The slice of <see cref="Source"/> this token covers. Allocation-free.</summary>
+    public ReadOnlySpan<char> AsSpan() => Source is null ? default : Source.AsSpan(Start, Length);
+}
 
 /// <summary>
 /// Pure-managed implementation of the Gemma <c>tokenizer.json</c> pipeline (a SentencePiece-style
@@ -28,8 +37,10 @@ internal readonly record struct BpeToken(int Id, string Token, int Start, int En
 internal sealed class GemmaBpe
 {
     private readonly Dictionary<string, int> _vocab;
+    private readonly Dictionary<string, int>.AlternateLookup<ReadOnlySpan<char>> _vocabSpan;
     private readonly Dictionary<(string, string), int> _mergeRanks;
     private readonly int[] _byteToId;            // 256 entries: id of "<0xNN>" or -1
+    private readonly string[] _idToToken;        // reverse map (id -> surface form) for display
     private readonly AddedTokenTrie _added;
     private readonly int _unkId;
 
@@ -43,6 +54,7 @@ internal sealed class GemmaBpe
         Dictionary<string, int> vocab,
         Dictionary<(string, string), int> mergeRanks,
         int[] byteToId,
+        string[] idToToken,
         AddedTokenTrie added,
         int unkId,
         int bosId,
@@ -50,8 +62,10 @@ internal sealed class GemmaBpe
         int padId)
     {
         _vocab = vocab;
+        _vocabSpan = vocab.GetAlternateLookup<ReadOnlySpan<char>>();
         _mergeRanks = mergeRanks;
         _byteToId = byteToId;
+        _idToToken = idToToken;
         _added = added;
         _unkId = unkId;
         BosId = bosId;
@@ -60,6 +74,13 @@ internal sealed class GemmaBpe
     }
 
     public bool TryGetId(string token, out int id) => _vocab.TryGetValue(token, out id);
+
+    public bool TryGetId(ReadOnlySpan<char> token, out int id) => _vocabSpan.TryGetValue(token, out id);
+
+    /// <summary>Returns the surface string for a vocabulary id (the form used in <c>tokenizer.json</c>,
+    /// including the metaspace marker and any <c>&lt;0xNN&gt;</c> byte placeholders).</summary>
+    public string IdToToken(int id)
+        => (uint)id < (uint)_idToToken.Length ? (_idToToken[id] ?? string.Empty) : string.Empty;
 
     public static GemmaBpe FromJson(Stream tokenizerJson)
     {
@@ -70,9 +91,12 @@ internal sealed class GemmaBpe
         // --- vocab ---
         var vocabEl = model.GetProperty("vocab");
         var vocab = new Dictionary<string, int>(vocabEl.GetRawText().Length / 8, StringComparer.Ordinal);
+        int maxId = -1;
         foreach (var prop in vocabEl.EnumerateObject())
         {
-            vocab[prop.Name] = prop.Value.GetInt32();
+            int id = prop.Value.GetInt32();
+            vocab[prop.Name] = id;
+            if (id > maxId) maxId = id;
         }
 
         // --- merges (ordered; index == rank) ---
@@ -100,6 +124,7 @@ internal sealed class GemmaBpe
         // --- added tokens ---
         var trie = new AddedTokenTrie();
         int bos = 2, eos = 1, pad = 0;
+        var addedList = new List<(string Content, int Id)>();
         if (root.TryGetProperty("added_tokens", out var addedEl))
         {
             foreach (var t in addedEl.EnumerateArray())
@@ -107,6 +132,8 @@ internal sealed class GemmaBpe
                 string content = t.GetProperty("content").GetString()!;
                 int id = t.GetProperty("id").GetInt32();
                 trie.Add(content, id);
+                addedList.Add((content, id));
+                if (id > maxId) maxId = id;
                 switch (content)
                 {
                     case "<bos>": bos = id; break;
@@ -116,27 +143,45 @@ internal sealed class GemmaBpe
             }
         }
 
-        return new GemmaBpe(vocab, mergeRanks, byteToId, trie, unkId, bos, eos, pad);
+        // Reverse map: id -> surface string. Filled from vocab first, then added tokens override
+        // any ids that aren't in vocab (defensive; on Gemma's tokenizer.json they coincide).
+        var idToToken = new string[maxId + 1];
+        foreach (var kv in vocab)
+        {
+            idToToken[kv.Value] = kv.Key;
+        }
+        foreach (var (content, id) in addedList)
+        {
+            if (idToToken[id] is null)
+            {
+                idToToken[id] = content;
+            }
+        }
+
+        return new GemmaBpe(vocab, mergeRanks, byteToId, idToToken, trie, unkId, bos, eos, pad);
     }
 
     /// <summary>Tokenizes <paramref name="text"/>. When <paramref name="addSpecialTokens"/> is true the
-    /// result is wrapped with <c>&lt;bos&gt;</c> / <c>&lt;eos&gt;</c> as the post-processor specifies.</summary>
+    /// result is wrapped with <c>&lt;bos&gt;</c> / <c>&lt;eos&gt;</c> as the post-processor specifies.
+    /// Each <see cref="BpeToken"/> in the returned list references <paramref name="text"/> directly -
+    /// no per-token substring is allocated.</summary>
     public List<BpeToken> Encode(string text, bool addSpecialTokens)
     {
         var tokens = new List<BpeToken>(text.Length / 3 + 4);
         if (addSpecialTokens)
         {
-            tokens.Add(new BpeToken(BosId, "<bos>", 0, 0));
+            tokens.Add(new BpeToken(BosId, text, 0, 0));
         }
 
+        var span = text.AsSpan();
         int pos = 0;
-        int n = text.Length;
+        int n = span.Length;
         while (pos < n)
         {
             // Try to match an added token starting here (leftmost-longest).
-            if (_added.TryMatch(text, pos, out int matchLen, out int addedId))
+            if (_added.TryMatch(span, pos, out int matchLen, out int addedId))
             {
-                tokens.Add(new BpeToken(addedId, text.Substring(pos, matchLen), pos, pos + matchLen));
+                tokens.Add(new BpeToken(addedId, text, pos, matchLen));
                 pos += matchLen;
                 continue;
             }
@@ -145,43 +190,59 @@ internal sealed class GemmaBpe
             // normalize it, and BPE it.
             int runStart = pos;
             pos++;
-            while (pos < n && !_added.CouldStartAt(text, pos))
+            while (pos < n && !_added.CouldStartAt(span, pos))
             {
                 pos++;
             }
-            EncodeSegment(text, runStart, pos, tokens);
+            EncodeSegment(text, span.Slice(runStart, pos - runStart), runStart, tokens);
         }
 
         if (addSpecialTokens)
         {
-            tokens.Add(new BpeToken(EosId, "<eos>", n, n));
+            tokens.Add(new BpeToken(EosId, text, n, 0));
         }
         return tokens;
     }
 
-    /// <summary>Normalizes (space -> metaspace) and BPE-encodes the text slice [start, end), appending
-    /// tokens with character offsets into the original text.</summary>
-    private void EncodeSegment(string text, int start, int end, List<BpeToken> output)
+    /// <summary>Normalizes (space -> metaspace) and BPE-encodes <paramref name="segment"/>, which is a
+    /// slice of <paramref name="source"/> starting at <paramref name="charOffset"/>. Space -> metaspace
+    /// is a 1:1 char substitution so character offsets into <paramref name="source"/> are preserved.</summary>
+    private void EncodeSegment(string source, ReadOnlySpan<char> segment, int charOffset, List<BpeToken> output)
     {
-        int len = end - start;
+        int len = segment.Length;
         if (len == 0)
         {
             return;
         }
 
-        // Normalize into a buffer; space -> metaspace is a 1:1 char substitution so offsets are preserved.
-        var chars = new char[len];
-        for (int i = 0; i < len; i++)
+        // Fast path: no spaces -> normalization is a no-op, BPE directly over the source slice.
+        if (segment.IndexOf(' ') < 0)
         {
-            char c = text[start + i];
-            chars[i] = c == ' ' ? Metaspace : c;
+            Bpe(source, segment, charOffset, output);
+            return;
         }
 
-        Bpe(chars, start, output);
+        // Otherwise rent a buffer for the normalized form. Pooling keeps repeated Encode calls
+        // allocation-light. The buffer is only read by Bpe (initial symbols copy 1-2 chars out).
+        var rented = ArrayPool<char>.Shared.Rent(len);
+        try
+        {
+            for (int i = 0; i < len; i++)
+            {
+                char c = segment[i];
+                rented[i] = c == ' ' ? Metaspace : c;
+            }
+            Bpe(source, rented.AsSpan(0, len), charOffset, output);
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(rented);
+        }
     }
 
-    /// <summary>Runs byte-level BPE over a single normalized segment using a priority-queue merge.</summary>
-    private void Bpe(char[] chars, int charOffset, List<BpeToken> output)
+    /// <summary>Runs byte-level BPE over a single normalized segment using a priority-queue merge.
+    /// Emitted tokens reference <paramref name="source"/> directly via <paramref name="charOffset"/>.</summary>
+    private void Bpe(string source, ReadOnlySpan<char> chars, int charOffset, List<BpeToken> output)
     {
         int len = chars.Length;
 
@@ -195,7 +256,7 @@ internal sealed class GemmaBpe
         while (idx < len)
         {
             int cl = char.IsHighSurrogate(chars[idx]) && idx + 1 < len && char.IsLowSurrogate(chars[idx + 1]) ? 2 : 1;
-            sym.Add(new string(chars, idx, cl));
+            sym.Add(chars.Slice(idx, cl).ToString());
             symStart.Add(idx);
             symLen.Add(cl);
             idx += cl;
@@ -277,33 +338,32 @@ internal sealed class GemmaBpe
             }
             string s = sym[i];
             int sStart = charOffset + symStart[i];
-            int sEnd = sStart + symLen[i];
+            int sLen = symLen[i];
 
             if (_vocab.TryGetValue(s, out int id))
             {
-                output.Add(new BpeToken(id, s, sStart, sEnd));
+                output.Add(new BpeToken(id, source, sStart, sLen));
             }
             else
             {
-                EmitByteFallback(s, sStart, sEnd, output);
+                EmitByteFallback(source, s, sStart, sLen, output);
             }
         }
     }
 
-    private void EmitByteFallback(string s, int start, int end, List<BpeToken> output)
+    private void EmitByteFallback(string source, string s, int start, int length, List<BpeToken> output)
     {
-        var bytes = Encoding.UTF8.GetBytes(s);
-        foreach (var b in bytes)
+        // UTF-8 for a single BPE symbol is bounded (a symbol is normally 1-2 UTF-16 code units, so
+        // at most 4 UTF-8 bytes). Use a small stack buffer; spill to the heap only for the unusual
+        // case of a long unmappable run.
+        int maxBytes = Encoding.UTF8.GetMaxByteCount(s.Length);
+        Span<byte> buffer = maxBytes <= 256 ? stackalloc byte[256] : new byte[maxBytes];
+        int written = Encoding.UTF8.GetBytes(s, buffer);
+        for (int i = 0; i < written; i++)
         {
+            byte b = buffer[i];
             int id = _byteToId[b];
-            if (id >= 0)
-            {
-                output.Add(new BpeToken(id, "<0x" + b.ToString("X2", CultureInfo.InvariantCulture) + ">", start, end));
-            }
-            else
-            {
-                output.Add(new BpeToken(_unkId, "<unk>", start, end));
-            }
+            output.Add(new BpeToken(id >= 0 ? id : _unkId, source, start, length));
         }
     }
 

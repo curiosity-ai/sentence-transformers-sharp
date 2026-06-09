@@ -7,6 +7,9 @@ namespace SentenceTransformers.Harrier.Small.Pure.Tokenizer;
 ///
 /// The added tokens here are control strings such as <c>&lt;bos&gt;</c>, <c>&lt;unused42&gt;</c> and
 /// runs of newlines, so they are matched as exact, un-normalized substrings.
+///
+/// Matching operates over <see cref="ReadOnlySpan{T}"/> so the caller never needs to materialise a
+/// substring of the input.
 /// </summary>
 internal sealed class AddedTokenTrie
 {
@@ -40,11 +43,11 @@ internal sealed class AddedTokenTrie
 
     /// <summary>True if any added token could begin at <paramref name="pos"/> (a cheap first-char
     /// gate used to bound the normal-text run scan).</summary>
-    public bool CouldStartAt(string text, int pos)
+    public bool CouldStartAt(ReadOnlySpan<char> text, int pos)
         => _root.Children is { } children && children.ContainsKey(text[pos]);
 
     /// <summary>Attempts the longest added-token match starting at <paramref name="pos"/>.</summary>
-    public bool TryMatch(string text, int pos, out int matchLength, out int tokenId)
+    public bool TryMatch(ReadOnlySpan<char> text, int pos, out int matchLength, out int tokenId)
     {
         matchLength = 0;
         tokenId = -1;
