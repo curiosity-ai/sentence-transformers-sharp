@@ -113,7 +113,7 @@ internal sealed class Gemma3Model
         return new Gemma3Model(cfg, embed, layers, finalNorm);
     }
 
-    private static ArrayPool<float> _pooledArray = ArrayPool<float>.Create(512000, 24);
+    internal static ArrayPool<float> _pooledArray = ArrayPool<float>.Create(512000, 24);
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     /// <summary>Runs the full forward pass for one tokenized sequence and returns the (un-normalized)
