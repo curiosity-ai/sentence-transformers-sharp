@@ -113,6 +113,8 @@ internal sealed class Gemma3Model
         return new Gemma3Model(cfg, embed, layers, finalNorm);
     }
 
+    private static ArrayPool<float> _pooledArray = ArrayPool<float>.Create(512000, 24);
+
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     /// <summary>Runs the full forward pass for one tokenized sequence and returns the (un-normalized)
     /// last-token hidden state - a <c>HiddenSize</c>-length embedding. The per-layer matmuls and
@@ -129,20 +131,19 @@ internal sealed class Gemma3Model
         // contexts (e.g. gate/up are seq*2048 floats), so it is rented from the shared array pool
         // rather than allocated (and LOH-collected) on every call. Pooled arrays may be larger than
         // requested, so every consumer is driven by explicit (seq * dim) lengths, never Array.Length.
-        var pool      = ArrayPool<float>.Shared;
         int hiddenLen = seq * h;
-        var hidden    = pool.Rent(hiddenLen);
-        var cos       = pool.Rent(seq * headDim);
-        var sin       = pool.Rent(seq * headDim);
-        var normed    = pool.Rent(hiddenLen);
-        var q         = pool.Rent(seq * _cfg.QProjOut);
-        var k         = pool.Rent(seq * _cfg.KvProjOut);
-        var v         = pool.Rent(seq * _cfg.KvProjOut);
-        var attnOut   = pool.Rent(seq * _cfg.QProjOut);
-        var attnProj  = pool.Rent(hiddenLen);
-        var gate      = pool.Rent(seq * _cfg.IntermediateSize);
-        var up        = pool.Rent(seq * _cfg.IntermediateSize);
-        var down      = pool.Rent(hiddenLen);
+        var hidden    = _pooledArray.Rent(hiddenLen); // 156800
+        var cos       = _pooledArray.Rent(seq * headDim);
+        var sin       = _pooledArray.Rent(seq * headDim);
+        var normed    = _pooledArray.Rent(hiddenLen);
+        var q         = _pooledArray.Rent(seq * _cfg.QProjOut); //250880
+        var k         = _pooledArray.Rent(seq * _cfg.KvProjOut);
+        var v         = _pooledArray.Rent(seq * _cfg.KvProjOut);
+        var attnOut   = _pooledArray.Rent(seq * _cfg.QProjOut);
+        var attnProj  = _pooledArray.Rent(hiddenLen);
+        var gate      = _pooledArray.Rent(seq * _cfg.IntermediateSize); // 501760
+        var up        = _pooledArray.Rent(seq * _cfg.IntermediateSize);
+        var down      = _pooledArray.Rent(hiddenLen);
         try
         {
             // --- token embedding (+ sqrt(hidden) scale) ---
@@ -200,18 +201,18 @@ internal sealed class Gemma3Model
         }
         finally
         {
-            pool.Return(hidden);
-            pool.Return(cos);
-            pool.Return(sin);
-            pool.Return(normed);
-            pool.Return(q);
-            pool.Return(k);
-            pool.Return(v);
-            pool.Return(attnOut);
-            pool.Return(attnProj);
-            pool.Return(gate);
-            pool.Return(up);
-            pool.Return(down);
+            _pooledArray.Return(hidden);
+            _pooledArray.Return(cos);
+            _pooledArray.Return(sin);
+            _pooledArray.Return(normed);
+            _pooledArray.Return(q);
+            _pooledArray.Return(k);
+            _pooledArray.Return(v);
+            _pooledArray.Return(attnOut);
+            _pooledArray.Return(attnProj);
+            _pooledArray.Return(gate);
+            _pooledArray.Return(up);
+            _pooledArray.Return(down);
         }
     }
 
@@ -287,6 +288,7 @@ internal sealed class Gemma3Model
         for (int head = 0; head < heads; head++)
         {
             var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
+
             for (int j = 0; j <= i; j++)
             {
                 scores[j] = TensorPrimitives.Dot(qSpan, new ReadOnlySpan<float>(k, j * kvStride, headDim)) * scale;
@@ -302,6 +304,8 @@ internal sealed class Gemma3Model
                 TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, j * kvStride, headDim), scores[j], outSpan, outSpan);
             }
         }
+
+        ArrayPool<float>.Shared.Return(scores);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
