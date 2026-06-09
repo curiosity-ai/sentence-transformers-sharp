@@ -28,9 +28,9 @@ namespace SentenceTransformers.Harrier.Small.Pure
         }
 
         /// <summary>Default download URL for the bfloat16 safetensors weights (~540 MB). Points at the
-        /// original Microsoft checkpoint on Hugging Face; override <see cref="CreateAsync"/>'s
+        /// original Microsoft checkpoint on hosted by Curiosity; override <see cref="CreateAsync"/>'s
         /// <c>weightsUrl</c> to use a mirror.</summary>
-        public const string DefaultWeightsUrl = "https://huggingface.co/microsoft/harrier-oss-v1-270m/resolve/main/model.safetensors";
+        public const string DefaultWeightsUrl = "https://models.curiosity.ai/harrier-oss-v1-270m-safetensors/harrier-oss-v1-270m.safetensors";
 
         private static readonly SemaphoreSlim _oneDownloadAtATime = new(1, 1);
         private static readonly HttpClient _downloadClient = new() { Timeout = TimeSpan.FromDays(1) };

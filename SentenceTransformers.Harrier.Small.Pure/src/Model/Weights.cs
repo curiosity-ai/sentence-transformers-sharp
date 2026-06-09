@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using SentenceTransformers;
@@ -319,6 +320,11 @@ internal sealed class Int8Matrix : IWeightMatrix
         float sc0 = _scale[o0], sc1 = _scale[o0 + 1], sc2 = _scale[o0 + 2], sc3 = _scale[o0 + 3];
         int of0 = Vnni.ZeroPoint * _rowSum[o0], of1 = Vnni.ZeroPoint * _rowSum[o0 + 1], of2 = Vnni.ZeroPoint * _rowSum[o0 + 2], of3 = Vnni.ZeroPoint * _rowSum[o0 + 3];
 
+        ref byte uaRef = ref MemoryMarshal.GetArrayDataReference(ua);
+        ref sbyte qRef = ref MemoryMarshal.GetArrayDataReference(_q);
+        ref float aScaleRef = ref MemoryMarshal.GetArrayDataReference(aScale);
+        ref float yRef = ref MemoryMarshal.GetArrayDataReference(y);
+
         int s = 0;
         for (; s + 2 <= seq; s += 2)
         {
@@ -327,12 +333,12 @@ internal sealed class Int8Matrix : IWeightMatrix
             var c10 = Vector512<int>.Zero; var c11 = Vector512<int>.Zero; var c12 = Vector512<int>.Zero; var c13 = Vector512<int>.Zero;
             for (int i = 0; i < inDim; i += 64)
             {
-                var av0 = Vector512.LoadUnsafe(ref ua[u0 + i]);
-                var av1 = Vector512.LoadUnsafe(ref ua[u1 + i]);
-                var w0 = Vector512.LoadUnsafe(ref _q[wb0 + i]);
-                var w1 = Vector512.LoadUnsafe(ref _q[wb1 + i]);
-                var w2 = Vector512.LoadUnsafe(ref _q[wb2 + i]);
-                var w3 = Vector512.LoadUnsafe(ref _q[wb3 + i]);
+                var av0 = Vector512.LoadUnsafe(ref Unsafe.Add(ref uaRef, u0 + i));
+                var av1 = Vector512.LoadUnsafe(ref Unsafe.Add(ref uaRef, u1 + i));
+                var w0  = Vector512.LoadUnsafe(ref Unsafe.Add(ref qRef , wb0 + i));
+                var w1  = Vector512.LoadUnsafe(ref Unsafe.Add(ref qRef , wb1 + i));
+                var w2  = Vector512.LoadUnsafe(ref Unsafe.Add(ref qRef , wb2 + i));
+                var w3  = Vector512.LoadUnsafe(ref Unsafe.Add(ref qRef , wb3 + i));
                 c00 = Vnni.DotAccumulate512(c00, av0, w0);
                 c01 = Vnni.DotAccumulate512(c01, av0, w1);
                 c02 = Vnni.DotAccumulate512(c02, av0, w2);
@@ -342,16 +348,19 @@ internal sealed class Int8Matrix : IWeightMatrix
                 c12 = Vnni.DotAccumulate512(c12, av1, w2);
                 c13 = Vnni.DotAccumulate512(c13, av1, w3);
             }
+            
             float as0 = aScale[s], as1 = aScale[s + 1];
+            
             int b0 = s * outDim + o0, b1 = b0 + outDim;
-            y[b0] = as0 * sc0 * (Vector512.Sum(c00) - of0);
-            y[b0 + 1] = as0 * sc1 * (Vector512.Sum(c01) - of1);
-            y[b0 + 2] = as0 * sc2 * (Vector512.Sum(c02) - of2);
-            y[b0 + 3] = as0 * sc3 * (Vector512.Sum(c03) - of3);
-            y[b1] = as1 * sc0 * (Vector512.Sum(c10) - of0);
-            y[b1 + 1] = as1 * sc1 * (Vector512.Sum(c11) - of1);
-            y[b1 + 2] = as1 * sc2 * (Vector512.Sum(c12) - of2);
-            y[b1 + 3] = as1 * sc3 * (Vector512.Sum(c13) - of3);
+
+            Unsafe.Add(ref yRef, b0)      = as0 * sc0 * (Vector512.Sum(c00) - of0);
+            Unsafe.Add(ref yRef, b0 + 1)  = as0 * sc1 * (Vector512.Sum(c01) - of1);
+            Unsafe.Add(ref yRef, b0 + 2)  = as0 * sc2 * (Vector512.Sum(c02) - of2);
+            Unsafe.Add(ref yRef, b0 + 3)  = as0 * sc3 * (Vector512.Sum(c03) - of3);
+            Unsafe.Add(ref yRef, b1)      = as1 * sc0 * (Vector512.Sum(c10) - of0);
+            Unsafe.Add(ref yRef, b1 + 1)  = as1 * sc1 * (Vector512.Sum(c11) - of1);
+            Unsafe.Add(ref yRef, b1 + 2)  = as1 * sc2 * (Vector512.Sum(c12) - of2);
+            Unsafe.Add(ref yRef, b1 + 3)  = as1 * sc3 * (Vector512.Sum(c13) - of3);
         }
         for (; s < seq; s++)
         {
@@ -359,18 +368,18 @@ internal sealed class Int8Matrix : IWeightMatrix
             var c0 = Vector512<int>.Zero; var c1 = Vector512<int>.Zero; var c2 = Vector512<int>.Zero; var c3 = Vector512<int>.Zero;
             for (int i = 0; i < inDim; i += 64)
             {
-                var av = Vector512.LoadUnsafe(ref ua[u0 + i]);
-                c0 = Vnni.DotAccumulate512(c0, av, Vector512.LoadUnsafe(ref _q[wb0 + i]));
-                c1 = Vnni.DotAccumulate512(c1, av, Vector512.LoadUnsafe(ref _q[wb1 + i]));
-                c2 = Vnni.DotAccumulate512(c2, av, Vector512.LoadUnsafe(ref _q[wb2 + i]));
-                c3 = Vnni.DotAccumulate512(c3, av, Vector512.LoadUnsafe(ref _q[wb3 + i]));
+                var av = Vector512.LoadUnsafe(ref Unsafe.Add(ref uaRef, u0 + i));
+                c0 = Vnni.DotAccumulate512(c0, av, Vector512.LoadUnsafe(ref Unsafe.Add(ref qRef, wb0 + i)));
+                c1 = Vnni.DotAccumulate512(c1, av, Vector512.LoadUnsafe(ref Unsafe.Add(ref qRef, wb1 + i)));
+                c2 = Vnni.DotAccumulate512(c2, av, Vector512.LoadUnsafe(ref Unsafe.Add(ref qRef, wb2 + i)));
+                c3 = Vnni.DotAccumulate512(c3, av, Vector512.LoadUnsafe(ref Unsafe.Add(ref qRef, wb3 + i)));
             }
             float as0 = aScale[s];
             int b0 = s * outDim + o0;
-            y[b0] = as0 * sc0 * (Vector512.Sum(c0) - of0);
-            y[b0 + 1] = as0 * sc1 * (Vector512.Sum(c1) - of1);
-            y[b0 + 2] = as0 * sc2 * (Vector512.Sum(c2) - of2);
-            y[b0 + 3] = as0 * sc3 * (Vector512.Sum(c3) - of3);
+            Unsafe.Add(ref yRef, b0    ) = as0 * sc0 * (Vector512.Sum(c0) - of0);
+            Unsafe.Add(ref yRef, b0 + 1) = as0 * sc1 * (Vector512.Sum(c1) - of1);
+            Unsafe.Add(ref yRef, b0 + 2) = as0 * sc2 * (Vector512.Sum(c2) - of2);
+            Unsafe.Add(ref yRef, b0 + 3) = as0 * sc3 * (Vector512.Sum(c3) - of3);
         }
     }
 
@@ -378,79 +387,137 @@ internal sealed class Int8Matrix : IWeightMatrix
     /// 2 positions at a time so each activation load is reused across the 4 channels.</summary>
     private void Tile4(byte[] ua, float[] aScale, float[] y, int o0, int seq, int inDim, int outDim)
     {
-        int wb0 = o0 * inDim, wb1 = wb0 + inDim, wb2 = wb1 + inDim, wb3 = wb2 + inDim;
-        float sc0 = _scale[o0], sc1 = _scale[o0 + 1], sc2 = _scale[o0 + 2], sc3 = _scale[o0 + 3];
-        int of0 = Vnni.ZeroPoint * _rowSum[o0], of1 = Vnni.ZeroPoint * _rowSum[o0 + 1], of2 = Vnni.ZeroPoint * _rowSum[o0 + 2], of3 = Vnni.ZeroPoint * _rowSum[o0 + 3];
+        int wb0 = o0 * inDim;
+        int wb1 = wb0 + inDim;
+        int wb2 = wb1 + inDim;
+        int wb3 = wb2 + inDim;
+
+        float sc0 = _scale[o0];
+        float sc1 = _scale[o0 + 1];
+        float sc2 = _scale[o0 + 2];
+        float sc3 = _scale[o0 + 3];
+
+        int of0 = Vnni.ZeroPoint * _rowSum[o0];
+        int of1 = Vnni.ZeroPoint * _rowSum[o0 + 1];
+        int of2 = Vnni.ZeroPoint * _rowSum[o0 + 2];
+        int of3 = Vnni.ZeroPoint * _rowSum[o0 + 3];
+
+        ref byte uaRef = ref MemoryMarshal.GetArrayDataReference(ua);
+        ref sbyte qRef = ref MemoryMarshal.GetArrayDataReference(_q);
+        ref float aScaleRef = ref MemoryMarshal.GetArrayDataReference(aScale);
+        ref float yRef = ref MemoryMarshal.GetArrayDataReference(y);
 
         int s = 0;
 
-        var c00 = Vector256<int>.Zero; var c01 = Vector256<int>.Zero; var c02 = Vector256<int>.Zero; var c03 = Vector256<int>.Zero;
-        var c10 = Vector256<int>.Zero; var c11 = Vector256<int>.Zero; var c12 = Vector256<int>.Zero; var c13 = Vector256<int>.Zero;
-
-        for (; s + 2 <= seq; s += 2)
+        for (; s + 4 <= seq; s += 4)
         {
-            int u0 = s * inDim, u1 = u0 + inDim;
+            var c00 = Vector256<int>.Zero; var c01 = Vector256<int>.Zero; var c02 = Vector256<int>.Zero; var c03 = Vector256<int>.Zero;
+            var c10 = Vector256<int>.Zero; var c11 = Vector256<int>.Zero; var c12 = Vector256<int>.Zero; var c13 = Vector256<int>.Zero;
+            var c20 = Vector256<int>.Zero; var c21 = Vector256<int>.Zero; var c22 = Vector256<int>.Zero; var c23 = Vector256<int>.Zero;
+            var c30 = Vector256<int>.Zero; var c31 = Vector256<int>.Zero; var c32 = Vector256<int>.Zero; var c33 = Vector256<int>.Zero;
+
+            int u0 = s * inDim;
+            int u1 = u0 + inDim;
+            int u2 = u1 + inDim;
+            int u3 = u2 + inDim;
+
             for (int i = 0; i < inDim; i += 32)
             {
-                var av1 = Vector256.LoadUnsafe(ref ua[u1 + i]);
-                var av0 = Vector256.LoadUnsafe(ref ua[u0 + i]);
+                var av0 = Vector256.LoadUnsafe(ref Unsafe.Add(ref uaRef, u0 + i));
+                var av1 = Vector256.LoadUnsafe(ref Unsafe.Add(ref uaRef, u1 + i));
+                var av2 = Vector256.LoadUnsafe(ref Unsafe.Add(ref uaRef, u2 + i));
+                var av3 = Vector256.LoadUnsafe(ref Unsafe.Add(ref uaRef, u3 + i));
 
-                var w3 = Vector256.LoadUnsafe(ref _q[wb3 + i]);
-                var w0 = Vector256.LoadUnsafe(ref _q[wb0 + i]);
-                var w1 = Vector256.LoadUnsafe(ref _q[wb1 + i]);
-                var w2 = Vector256.LoadUnsafe(ref _q[wb2 + i]);
-                
+                var w0 = Vector256.LoadUnsafe(ref Unsafe.Add(ref qRef, wb0 + i));
+
                 c00 = Vnni.DotAccumulate(c00, av0, w0);
-                c01 = Vnni.DotAccumulate(c01, av0, w1);
-                c02 = Vnni.DotAccumulate(c02, av0, w2);
-                c03 = Vnni.DotAccumulate(c03, av0, w3);
-                
                 c10 = Vnni.DotAccumulate(c10, av1, w0);
-                c11 = Vnni.DotAccumulate(c11, av1, w1);
-                c12 = Vnni.DotAccumulate(c12, av1, w2);
-                c13 = Vnni.DotAccumulate(c13, av1, w3);
-            }
-            
-            float as0 = aScale[s], as1 = aScale[s + 1];
-            
-            int b0 = s * outDim + o0, b1 = b0 + outDim;
-            
-            y[b0    ] = as0 * sc0 * (Vector256.Sum(c00) - of0);
-            y[b0 + 1] = as0 * sc1 * (Vector256.Sum(c01) - of1);
-            y[b0 + 2] = as0 * sc2 * (Vector256.Sum(c02) - of2);
-            y[b0 + 3] = as0 * sc3 * (Vector256.Sum(c03) - of3);
-            
-            y[b1    ] = as1 * sc0 * (Vector256.Sum(c10) - of0);
-            y[b1 + 1] = as1 * sc1 * (Vector256.Sum(c11) - of1);
-            y[b1 + 2] = as1 * sc2 * (Vector256.Sum(c12) - of2);
-            y[b1 + 3] = as1 * sc3 * (Vector256.Sum(c13) - of3);
+                c20 = Vnni.DotAccumulate(c20, av2, w0);
+                c30 = Vnni.DotAccumulate(c30, av3, w0);
 
-            //Zero everything out
-            Vector256.Xor(c00, c00); Vector256.Xor(c01, c01); Vector256.Xor(c02, c02); Vector256.Xor(c03, c03);
-            Vector256.Xor(c10, c10); Vector256.Xor(c11, c11); Vector256.Xor(c12, c12); Vector256.Xor(c13, c13);
+                var w1 = Vector256.LoadUnsafe(ref Unsafe.Add(ref qRef, wb1 + i));
+
+                c01 = Vnni.DotAccumulate(c01, av0, w1);
+                c11 = Vnni.DotAccumulate(c11, av1, w1);
+                c21 = Vnni.DotAccumulate(c21, av2, w1);
+                c31 = Vnni.DotAccumulate(c31, av3, w1);
+
+                var w2 = Vector256.LoadUnsafe(ref Unsafe.Add(ref qRef, wb2 + i));
+
+                c02 = Vnni.DotAccumulate(c02, av0, w2);
+                c12 = Vnni.DotAccumulate(c12, av1, w2);
+                c22 = Vnni.DotAccumulate(c22, av2, w2);
+                c32 = Vnni.DotAccumulate(c32, av3, w2);
+
+                var w3 = Vector256.LoadUnsafe(ref Unsafe.Add(ref qRef, wb3 + i));
+
+                c03 = Vnni.DotAccumulate(c03, av0, w3);
+                c13 = Vnni.DotAccumulate(c13, av1, w3);
+                c23 = Vnni.DotAccumulate(c23, av2, w3);
+                c33 = Vnni.DotAccumulate(c33, av3, w3);
+            }
+
+            float as0 = Unsafe.Add(ref aScaleRef, s);
+            float as1 = Unsafe.Add(ref aScaleRef, s + 1);
+            float as2 = Unsafe.Add(ref aScaleRef, s + 2);
+            float as3 = Unsafe.Add(ref aScaleRef, s + 3);
+
+            int b0 = s * outDim + o0;
+            int b1 = b0 + outDim;
+            int b2 = b1 + outDim;
+            int b3 = b2 + outDim;
+
+            Unsafe.Add(ref yRef, b0)     = as0 * sc0 * (Vector256.Sum(c00) - of0);
+            Unsafe.Add(ref yRef, b0 + 1) = as0 * sc1 * (Vector256.Sum(c01) - of1);
+            Unsafe.Add(ref yRef, b0 + 2) = as0 * sc2 * (Vector256.Sum(c02) - of2);
+            Unsafe.Add(ref yRef, b0 + 3) = as0 * sc3 * (Vector256.Sum(c03) - of3);
+
+            Unsafe.Add(ref yRef, b1)     = as1 * sc0 * (Vector256.Sum(c10) - of0);
+            Unsafe.Add(ref yRef, b1 + 1) = as1 * sc1 * (Vector256.Sum(c11) - of1);
+            Unsafe.Add(ref yRef, b1 + 2) = as1 * sc2 * (Vector256.Sum(c12) - of2);
+            Unsafe.Add(ref yRef, b1 + 3) = as1 * sc3 * (Vector256.Sum(c13) - of3);
+
+            Unsafe.Add(ref yRef, b2)     = as2 * sc0 * (Vector256.Sum(c20) - of0);
+            Unsafe.Add(ref yRef, b2 + 1) = as2 * sc1 * (Vector256.Sum(c21) - of1);
+            Unsafe.Add(ref yRef, b2 + 2) = as2 * sc2 * (Vector256.Sum(c22) - of2);
+            Unsafe.Add(ref yRef, b2 + 3) = as2 * sc3 * (Vector256.Sum(c23) - of3);
+
+            Unsafe.Add(ref yRef, b3)     = as3 * sc0 * (Vector256.Sum(c30) - of0);
+            Unsafe.Add(ref yRef, b3 + 1) = as3 * sc1 * (Vector256.Sum(c31) - of1);
+            Unsafe.Add(ref yRef, b3 + 2) = as3 * sc2 * (Vector256.Sum(c32) - of2);
+            Unsafe.Add(ref yRef, b3 + 3) = as3 * sc3 * (Vector256.Sum(c33) - of3);
         }
 
-        var c0 = Vector256<int>.Zero; var c1 = Vector256<int>.Zero; var c2 = Vector256<int>.Zero; var c3 = Vector256<int>.Zero;
         for (; s < seq; s++)
         {
+            var c0 = Vector256<int>.Zero; var c1 = Vector256<int>.Zero; var c2 = Vector256<int>.Zero; var c3 = Vector256<int>.Zero;
+
             int u0 = s * inDim;
+
             for (int i = 0; i < inDim; i += 32)
             {
-                var av = Vector256.LoadUnsafe(ref ua[u0 + i]);
-                c0 = Vnni.DotAccumulate(c0, av, Vector256.LoadUnsafe(ref _q[wb0 + i]));
-                c1 = Vnni.DotAccumulate(c1, av, Vector256.LoadUnsafe(ref _q[wb1 + i]));
-                c2 = Vnni.DotAccumulate(c2, av, Vector256.LoadUnsafe(ref _q[wb2 + i]));
-                c3 = Vnni.DotAccumulate(c3, av, Vector256.LoadUnsafe(ref _q[wb3 + i]));
-            }
-            float as0 = aScale[s];
-            int b0 = s * outDim + o0;
-            y[b0] = as0 * sc0 * (Vector256.Sum(c0) - of0);
-            y[b0 + 1] = as0 * sc1 * (Vector256.Sum(c1) - of1);
-            y[b0 + 2] = as0 * sc2 * (Vector256.Sum(c2) - of2);
-            y[b0 + 3] = as0 * sc3 * (Vector256.Sum(c3) - of3);
+                var av = Vector256.LoadUnsafe(ref Unsafe.Add(ref uaRef, u0 + i));
 
-            //Zero everything out
-            Vector256.Xor(c0, c0); Vector256.Xor(c1, c1); Vector256.Xor(c2, c2); Vector256.Xor(c3, c3);
+                var w0 = Vector256.LoadUnsafe(ref Unsafe.Add(ref qRef, wb0 + i));
+                c0 = Vnni.DotAccumulate(c0, av, w0);
+
+                var w1 = Vector256.LoadUnsafe(ref Unsafe.Add(ref qRef, wb1 + i));
+                c1 = Vnni.DotAccumulate(c1, av, w1);
+
+                var w2 = Vector256.LoadUnsafe(ref Unsafe.Add(ref qRef, wb2 + i));
+                c2 = Vnni.DotAccumulate(c2, av, w2);
+
+                var w3 = Vector256.LoadUnsafe(ref Unsafe.Add(ref qRef, wb3 + i));
+                c3 = Vnni.DotAccumulate(c3, av, w3);
+            }
+
+            float as0 = Unsafe.Add(ref aScaleRef, s);
+            int b0    = s * outDim + o0;
+
+            Unsafe.Add(ref yRef, b0)     = as0 * sc0 * (Vector256.Sum(c0) - of0);
+            Unsafe.Add(ref yRef, b0 + 1) = as0 * sc1 * (Vector256.Sum(c1) - of1);
+            Unsafe.Add(ref yRef, b0 + 2) = as0 * sc2 * (Vector256.Sum(c2) - of2);
+            Unsafe.Add(ref yRef, b0 + 3) = as0 * sc3 * (Vector256.Sum(c3) - of3);
         }
     }
 
