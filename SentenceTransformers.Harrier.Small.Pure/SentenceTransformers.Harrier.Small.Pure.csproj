@@ -32,6 +32,8 @@
   <ItemGroup>
     <!-- Pure-managed SIMD primitives (TensorPrimitives). No native dependency. -->
     <PackageReference Include="System.Numerics.Tensors" Version="10.0.3" />
+    <!-- UID128 + Hash128 used to key the BPE vocab/merge tables by span-friendly hashes. -->
+    <PackageReference Include="Mosaik.Core" Version="25.10.62118" />
   </ItemGroup>
 
   <ItemGroup>
