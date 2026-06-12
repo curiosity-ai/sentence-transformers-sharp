@@ -61,6 +61,13 @@ public sealed class HarrierSmallPureTokenizer : TokenizerBase
                 ids[i] = tokens[i].Id;
                 attn[i] = 1L;
             }
+            // The model uses last-token (<eos>) pooling, so right-truncation must keep <eos> as the final
+            // token rather than lopping it off with the tail content. Mirrors Hugging Face truncation,
+            // which preserves post-processor special tokens.
+            if (addSpecialTokens && tokens.Count > MaxTokens && take > 0)
+            {
+                ids[take - 1] = _bpe.EosId;
+            }
             result.Add((ids, typeIds, attn));
         }
         return result;
@@ -79,6 +86,13 @@ public sealed class HarrierSmallPureTokenizer : TokenizerBase
         for (int i = 0; i < take; i++)
         {
             ids[i] = tokens[i].Id;
+        }
+        // Last-token (<eos>) pooling: when the sequence is right-truncated to MaxTokens, the trailing
+        // <eos> would otherwise be dropped, leaving the model to pool over an interior content token.
+        // Force the final kept token back to <eos> so the pooled embedding stays well-defined.
+        if (tokens.Count > MaxTokens && take > 0)
+        {
+            ids[take - 1] = _bpe.EosId;
         }
         return ids;
     }

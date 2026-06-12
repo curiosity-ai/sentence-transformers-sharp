@@ -37,10 +37,12 @@
   <ItemGroup>
     <!--
       Reuse the Gemma BPE tokenizer.json that already ships with SentenceTransformers.Harrier.Small
-      rather than committing a second 20 MB copy. It is both copied to output (so a consumer that
-      copies Resources/ works) and embedded (so NuGet consumers work without copying anything).
+      rather than committing a second 20 MB copy. It is embedded (so NuGet consumers work without
+      copying anything - this is the copy the encoder loads by default) and also copied to output under
+      a model-name-prefixed filename so it cannot collide with another encoder package's generic
+      Resources/tokenizer.json in a shared output directory.
     -->
-    <None Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\harrier-small-pure.tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\tokenizer.json" LogicalName="tokenizer.json" />
   </ItemGroup>
 </Project>

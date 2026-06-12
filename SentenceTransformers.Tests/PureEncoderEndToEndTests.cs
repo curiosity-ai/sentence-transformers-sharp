@@ -9,13 +9,22 @@ namespace SentenceTransformers.Tests;
 /// reference implementation.
 ///
 /// It is opt-in - set the environment variable <c>HARRIER_PURE_E2E=1</c> to run it - so the normal
-/// test run stays fast and offline.
+/// test run stays fast and offline. It deliberately uses the public <see cref="SentenceEncoder.CreateAsync"/>
+/// path: the encoder loads its embedded Gemma tokenizer, so it stays correct even though this test
+/// project references other encoder packages that ship their own <c>Resources/tokenizer.json</c>.
 /// </summary>
 public class PureEncoderEndToEndTests
 {
     [Fact]
     public async Task ReproducesModelCardScoreMatrix()
     {
+        // Opt-in: skip unless explicitly enabled, so the normal suite stays fast and offline.
+        // (xUnit 2.x has no dynamic Assert.Skip, so this returns early instead.)
+        if (Environment.GetEnvironmentVariable("HARRIER_PURE_E2E") != "1")
+        {
+            return;
+        }
+
         using var enc = await SentenceEncoder.CreateAsync();
 
         var queries = new[] { "how much protein should a female eat", "summit define" };

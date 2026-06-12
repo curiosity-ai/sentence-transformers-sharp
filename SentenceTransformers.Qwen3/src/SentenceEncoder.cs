@@ -87,29 +87,36 @@ namespace SentenceTransformers.Qwen3
         }
 
         /// <summary>
-        /// Resolves the tokenizer.json path. Prefers <c>Resources/tokenizer.json</c> next to the application
-        /// (under the app base directory); when that is missing - e.g. when this library is consumed as a NuGet
-        /// package and the consumer did not copy the file to its output - it falls back to the copy embedded in
-        /// this assembly, extracting it once to a temp location.
+        /// Resolves the tokenizer.json path. Prefers the copy embedded in this assembly (extracted once to
+        /// a package-specific temp path) so it can never be shadowed by another encoder package's generic
+        /// <c>Resources/tokenizer.json</c> sharing the output directory. Falls back to the model-name-prefixed
+        /// copy next to the application only if the embedded resource is missing.
         /// </summary>
         private static string ResolveTokenizerPath(string modelOnnxPath)
         {
-            var resourcesPath = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
+            var embedded = TryExtractEmbeddedTokenizer();
+            if (embedded is not null)
+            {
+                return embedded;
+            }
+
+            var resourcesPath = Path.Combine(AppContext.BaseDirectory, "Resources", "qwen3.tokenizer.json");
             if (File.Exists(resourcesPath))
             {
                 return resourcesPath;
             }
 
-            return ExtractEmbeddedTokenizer();
+            throw new FileNotFoundException("tokenizer.json was not found embedded in the SentenceTransformers.Qwen3 assembly or at Resources/qwen3.tokenizer.json.");
         }
 
-        /// <summary>Writes the embedded tokenizer.json to a stable temp path (once) and returns it.</summary>
-        private static string ExtractEmbeddedTokenizer()
+        /// <summary>Writes the embedded tokenizer.json to a stable temp path (once) and returns it, or
+        /// <c>null</c> when no tokenizer is embedded in this assembly.</summary>
+        private static string TryExtractEmbeddedTokenizer()
         {
             var bytes = ResourceLoader.GetResource(typeof(SentenceEncoder).Assembly, "tokenizer.json");
             if (bytes is null)
             {
-                throw new FileNotFoundException("tokenizer.json was not found on disk or embedded in the SentenceTransformers.Qwen3 assembly.");
+                return null;
             }
 
             var cachedPath = Path.Combine(Path.GetTempPath(), "SentenceTransformers.Qwen3", "tokenizer.json");

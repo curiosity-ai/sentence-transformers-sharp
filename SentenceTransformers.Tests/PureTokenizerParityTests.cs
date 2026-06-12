@@ -83,5 +83,7 @@ public class PureTokenizerParityTests
         var encoded = pure.Encode(["one two three four five six seven eight nine ten eleven twelve"]);
         Assert.Single(encoded);
         Assert.True(encoded[0].InputIds.Length <= 8);
+        // Truncation must keep <eos> last so the model's last-token pooling stays well-defined.
+        Assert.Equal(1, encoded[0].InputIds[^1]);
     }
 }
