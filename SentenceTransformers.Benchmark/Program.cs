@@ -4,7 +4,7 @@ using SentenceTransformers;
 
 if (args.Length > 0 && args[0] == "parallel-bench")
 {
-    Console.WriteLine($"Workers: {GlobalThreadPool.WorkerCount} (Environment.ProcessorCount={Environment.ProcessorCount})");
+    Console.WriteLine($"ParallelExecution.Enabled toggled per run (Environment.ProcessorCount={Environment.ProcessorCount})");
     Console.WriteLine();
     ParallelMicrobench.Run(seq:  64, inDim:  640, outDim: 2048, iterations: 200, warmup: 20);
     ParallelMicrobench.Run(seq:  64, inDim: 2048, outDim:  640, iterations: 200, warmup: 20);

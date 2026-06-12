@@ -5,9 +5,9 @@ using SentenceTransformers.Harrier.Small.Pure.Model;
 /// <summary>
 /// End-to-end timing for the Pure encoder on a short batch. Uses the cached weights at the standard
 /// path (see SentenceEncoder.CreateAsync), so it does not redownload on each invocation. Reports
-/// ms/iter for each quantization, which is the metric to watch for the parallelism migration: an
-/// encode is dominated by the per-layer matmul fork/joins now running on
-/// <see cref="SentenceTransformers.GlobalThreadPool"/>.
+/// ms/iter for each quantization. An encode is dominated by the per-layer matmul fork/joins, which
+/// run single-threaded by default or in parallel when <see cref="SentenceTransformers.ParallelExecution.Enabled"/>
+/// is set.
 /// </summary>
 public static class HarrierPureBench
 {

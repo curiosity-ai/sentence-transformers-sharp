@@ -3,11 +3,13 @@ using System.Numerics.Tensors;
 using SentenceTransformers;
 
 /// <summary>
-/// Micro-benchmark that compares <see cref="Parallel.ForAsync"/> (the previous parallelism back-end
-/// used by the Pure inference kernels) against <see cref="GlobalThreadPool.ForAsync"/> (the new
-/// fixed-worker, contiguous-bucket pool). It runs the exact shape that dominates the Pure forward
-/// pass - parallel float dot products over the output channels of a row-major weight matrix - so the
-/// results are representative of a single matmul layer.
+/// Micro-benchmark for the Pure inference kernels' fork/join primitive,
+/// <see cref="ParallelExecution.ForAsync"/>. It runs the exact shape that dominates the Pure forward
+/// pass - a float dot product over the output channels of a row-major weight matrix - single-threaded
+/// (<see cref="ParallelExecution.Enabled"/> = <c>false</c>, the default) and multi-threaded
+/// (<see cref="ParallelExecution.Enabled"/> = <c>true</c>, which dispatches with
+/// <see cref="Parallel.ForAsync(int, int, CancellationToken, Func{int, CancellationToken, ValueTask})"/>),
+/// so the speed-up of enabling parallelism for a single matmul layer is visible.
 /// </summary>
 public static class ParallelMicrobench
 {
@@ -29,48 +31,38 @@ public static class ParallelMicrobench
         // Warm up both paths.
         for (int i = 0; i < warmup; i++)
         {
-            ParallelForAsyncMatmul(x, w, y, seq, inDim, outDim).GetAwaiter().GetResult();
-            GlobalThreadPoolMatmul(x, w, y, seq, inDim, outDim).GetAwaiter().GetResult();
+            Matmul(x, w, y, seq, inDim, outDim, parallel: false).GetAwaiter().GetResult();
+            Matmul(x, w, y, seq, inDim, outDim, parallel: true).GetAwaiter().GetResult();
         }
 
         var sw = Stopwatch.StartNew();
         for (int i = 0; i < iterations; i++)
         {
-            ParallelForAsyncMatmul(x, w, y, seq, inDim, outDim).GetAwaiter().GetResult();
+            Matmul(x, w, y, seq, inDim, outDim, parallel: false).GetAwaiter().GetResult();
         }
         sw.Stop();
-        double parMs = sw.Elapsed.TotalMilliseconds / iterations;
+        double seqMs = sw.Elapsed.TotalMilliseconds / iterations;
 
         sw.Restart();
         for (int i = 0; i < iterations; i++)
         {
-            GlobalThreadPoolMatmul(x, w, y, seq, inDim, outDim).GetAwaiter().GetResult();
+            Matmul(x, w, y, seq, inDim, outDim, parallel: true).GetAwaiter().GetResult();
         }
         sw.Stop();
-        double poolMs = sw.Elapsed.TotalMilliseconds / iterations;
+        double parMs = sw.Elapsed.TotalMilliseconds / iterations;
 
         Console.WriteLine($"[matmul seq={seq} inDim={inDim} outDim={outDim}, iters={iterations}]");
-        Console.WriteLine($"  Parallel.ForAsync   : {parMs,8:F3} ms/iter");
-        Console.WriteLine($"  GlobalThreadPool    : {poolMs,8:F3} ms/iter   ({parMs / poolMs:F2}x)");
+        Console.WriteLine($"  Single-threaded     : {seqMs,8:F3} ms/iter");
+        Console.WriteLine($"  Parallel.ForAsync   : {parMs,8:F3} ms/iter   ({seqMs / parMs:F2}x)");
     }
 
-    private static Task ParallelForAsyncMatmul(float[] x, float[] w, float[] y, int seq, int inDim, int outDim)
+    private static Task Matmul(float[] x, float[] w, float[] y, int seq, int inDim, int outDim, bool parallel)
     {
-        return Parallel.ForAsync(0, outDim, (o, _) =>
+        ParallelExecution.Enabled = parallel;
+        return ParallelExecution.ForAsync(0, outDim, CancellationToken.None, (o, _) =>
         {
             LinearColumn(x, w, y, seq, inDim, outDim, o);
             return ValueTask.CompletedTask;
-        });
-    }
-
-    private static Task GlobalThreadPoolMatmul(float[] x, float[] w, float[] y, int seq, int inDim, int outDim)
-    {
-        return GlobalThreadPool.ForAsync(0, outDim, (x, w, y, seq, inDim, outDim), static (start, end, st) =>
-        {
-            for (int o = start; o < end; o++)
-            {
-                LinearColumn(st.x, st.w, st.y, st.seq, st.inDim, st.outDim, o);
-            }
         });
     }
 

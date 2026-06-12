@@ -111,14 +111,14 @@ internal interface IWeightMatrix
     int InDim { get; }
     int OutDim { get; }
 
-    /// <summary>Multiplies a batch of activations, parallelizing over output channels on the
-    /// <see cref="GlobalThreadPool"/> so the (CPU-heavy) work does not block the awaiting thread and
-    /// honours <paramref name="ct"/>.</summary>
+    /// <summary>Multiplies a batch of activations, parallelizing over output channels with
+    /// <see cref="ParallelExecution.ForAsync"/> so the (CPU-heavy) work does not block the awaiting
+    /// thread and honours <paramref name="ct"/>.</summary>
     ValueTask MultiplyAsync(float[] x, float[] y, int seq, CancellationToken ct);
 
     /// <summary>Builds the weight matrix for the chosen precision. For the quantized variants the
-    /// (CPU-heavy) quantization runs on the <see cref="GlobalThreadPool"/> so it does not block a
-    /// thread-pool thread when awaited from the async load path.</summary>
+    /// (CPU-heavy) quantization runs via <see cref="ParallelExecution.ForAsync"/> so it does not block
+    /// a thread-pool thread when awaited from the async load path.</summary>
     static async Task<IWeightMatrix> CreateAsync(float[] weights, int outDim, int inDim, Quantization quantization, CancellationToken ct)
     {
         switch (quantization)
@@ -148,13 +148,11 @@ internal static class VnniActivations
         int zp = Vnni.ZeroPoint;
         int qmax = Vnni.QMax;
 
-        await GlobalThreadPool.ForAsync(0, seq, (x, ua, scale, inDim, zp, qmax), static (start, end, st) =>
+        await ParallelExecution.ForAsync(0, seq, ct, (s, _) =>
         {
-            for (int s = start; s < end; s++)
-            {
-                QuantizeRow(st.x, st.ua, st.scale, s, st.inDim, st.zp, st.qmax);
-            }
-        }, ct).ConfigureAwait(false);
+            QuantizeRow(x, ua, scale, s, inDim, zp, qmax);
+            return ValueTask.CompletedTask;
+        }).ConfigureAwait(false);
 
         return (ua, scale);
     }
@@ -229,29 +227,27 @@ internal sealed class Int8Matrix : IWeightMatrix
         var q = new sbyte[(long)outDim * inDim <= int.MaxValue ? outDim * inDim : throw new OverflowException()];
         var scale = new float[outDim];
         var rowSum = new int[outDim];
-        await GlobalThreadPool.ForAsync(0, outDim, (w, q, scale, rowSum, inDim), static (start, end, st) =>
+        await ParallelExecution.ForAsync(0, outDim, ct, (o, _) =>
         {
-            for (int o = start; o < end; o++)
+            int baseIdx = o * inDim;
+            float amax = 0f;
+            for (int i = 0; i < inDim; i++)
             {
-                int baseIdx = o * st.inDim;
-                float amax = 0f;
-                for (int i = 0; i < st.inDim; i++)
-                {
-                    amax = MathF.Max(amax, MathF.Abs(st.w[baseIdx + i]));
-                }
-                float s = amax > 0 ? amax / 127f : 1f;
-                float inv = 1f / s;
-                st.scale[o] = s;
-                int sum = 0;
-                for (int i = 0; i < st.inDim; i++)
-                {
-                    int v = Math.Clamp((int)MathF.Round(st.w[baseIdx + i] * inv), -127, 127);
-                    st.q[baseIdx + i] = (sbyte)v;
-                    sum += v;
-                }
-                st.rowSum[o] = sum;
+                amax = MathF.Max(amax, MathF.Abs(w[baseIdx + i]));
             }
-        }, ct).ConfigureAwait(false);
+            float s = amax > 0 ? amax / 127f : 1f;
+            float inv = 1f / s;
+            scale[o] = s;
+            int sum = 0;
+            for (int i = 0; i < inDim; i++)
+            {
+                int v = Math.Clamp((int)MathF.Round(w[baseIdx + i] * inv), -127, 127);
+                q[baseIdx + i] = (sbyte)v;
+                sum += v;
+            }
+            rowSum[o] = sum;
+            return ValueTask.CompletedTask;
+        }).ConfigureAwait(false);
         return new Int8Matrix(q, scale, rowSum, outDim, inDim);
     }
 
@@ -274,31 +270,29 @@ internal sealed class Int8Matrix : IWeightMatrix
         {
             bool use512 = Vnni.Use512 && (inDim % 64 == 0);
             int oTiles = (outDim + 3) / 4;
-            await GlobalThreadPool.ForAsync(0, oTiles, (self: this, ua, aScale, y, seq, inDim, outDim, use512), static (start, end, st) =>
+            await ParallelExecution.ForAsync(0, oTiles, ct, (ot, _) =>
             {
-                for (int ot = start; ot < end; ot++)
+                int o0 = ot * 4;
+                if (o0 + 4 <= outDim)
                 {
-                    int o0 = ot * 4;
-                    if (o0 + 4 <= st.outDim)
+                    if (use512)
                     {
-                        if (st.use512)
-                        {
-                            st.self.Tile4_512(st.ua, st.aScale, st.y, o0, st.seq, st.inDim, st.outDim);
-                        }
-                        else
-                        {
-                            st.self.Tile4(st.ua, st.aScale, st.y, o0, st.seq, st.inDim, st.outDim);
-                        }
+                        Tile4_512(ua, aScale, y, o0, seq, inDim, outDim);
                     }
                     else
                     {
-                        for (int o = o0; o < st.outDim; o++)
-                        {
-                            st.self.SingleChannel(st.ua, st.aScale, st.y, o, st.seq, st.inDim, st.outDim);
-                        }
+                        Tile4(ua, aScale, y, o0, seq, inDim, outDim);
                     }
                 }
-            }, ct).ConfigureAwait(false);
+                else
+                {
+                    for (int o = o0; o < outDim; o++)
+                    {
+                        SingleChannel(ua, aScale, y, o, seq, inDim, outDim);
+                    }
+                }
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
         }
         finally
         {
@@ -538,13 +532,11 @@ internal sealed class Int8Matrix : IWeightMatrix
     private ValueTask MultiplyFloatAsync(float[] x, float[] y, int seq, CancellationToken ct)
     {
         int inDim = InDim, outDim = OutDim;
-        return new ValueTask(GlobalThreadPool.ForAsync(0, outDim, (self: this, x, y, seq, inDim, outDim), static (start, end, st) =>
+        return new ValueTask(ParallelExecution.ForAsync(0, outDim, ct, (o, _) =>
         {
-            for (int o = start; o < end; o++)
-            {
-                st.self.FloatColumn(st.x, st.y, st.seq, st.inDim, st.outDim, o);
-            }
-        }, ct));
+            FloatColumn(x, y, seq, inDim, outDim, o);
+            return ValueTask.CompletedTask;
+        }));
     }
 
     // Separate sync method so the stackalloc/Span does not live inside a (forbidden) async body.
@@ -613,44 +605,42 @@ internal sealed class Int4Matrix : IWeightMatrix
         var scale = new float[outDim * numGroups];
         var groupSum = new int[outDim * numGroups];
 
-        await GlobalThreadPool.ForAsync(0, outDim, (w, packed, scale, groupSum, numGroups, inDim), static (start, end, st) =>
+        await ParallelExecution.ForAsync(0, outDim, ct, (o, _) =>
         {
-            for (int o = start; o < end; o++)
+            int rowBase = o * inDim;
+            for (int g = 0; g < numGroups; g++)
             {
-                int rowBase = o * st.inDim;
-                for (int g = 0; g < st.numGroups; g++)
+                int gStart = g * GroupSize;
+                float amax = 0f;
+                for (int i = 0; i < GroupSize; i++)
                 {
-                    int gStart = g * GroupSize;
-                    float amax = 0f;
-                    for (int i = 0; i < GroupSize; i++)
-                    {
-                        amax = MathF.Max(amax, MathF.Abs(st.w[rowBase + gStart + i]));
-                    }
-                    // Symmetric int4 in [-7, 7]; reserve nibble 0..15 = q + 8.
-                    float s = amax > 0 ? amax / 7f : 1f;
-                    float inv = 1f / s;
-                    st.scale[o * st.numGroups + g] = s;
-                    int sum = 0;
-                    for (int i = 0; i < GroupSize; i++)
-                    {
-                        int idx = rowBase + gStart + i;
-                        int q = Math.Clamp((int)MathF.Round(st.w[idx] * inv), -7, 7);
-                        sum += q;
-                        int nibble = q + 8; // 1..15
-                        int packIdx = idx >> 1;
-                        if ((idx & 1) == 0)
-                        {
-                            st.packed[packIdx] = (byte)((st.packed[packIdx] & 0xF0) | (nibble & 0x0F));
-                        }
-                        else
-                        {
-                            st.packed[packIdx] = (byte)((st.packed[packIdx] & 0x0F) | (nibble << 4));
-                        }
-                    }
-                    st.groupSum[o * st.numGroups + g] = sum;
+                    amax = MathF.Max(amax, MathF.Abs(w[rowBase + gStart + i]));
                 }
+                // Symmetric int4 in [-7, 7]; reserve nibble 0..15 = q + 8.
+                float s = amax > 0 ? amax / 7f : 1f;
+                float inv = 1f / s;
+                scale[o * numGroups + g] = s;
+                int sum = 0;
+                for (int i = 0; i < GroupSize; i++)
+                {
+                    int idx = rowBase + gStart + i;
+                    int q = Math.Clamp((int)MathF.Round(w[idx] * inv), -7, 7);
+                    sum += q;
+                    int nibble = q + 8; // 1..15
+                    int packIdx = idx >> 1;
+                    if ((idx & 1) == 0)
+                    {
+                        packed[packIdx] = (byte)((packed[packIdx] & 0xF0) | (nibble & 0x0F));
+                    }
+                    else
+                    {
+                        packed[packIdx] = (byte)((packed[packIdx] & 0x0F) | (nibble << 4));
+                    }
+                }
+                groupSum[o * numGroups + g] = sum;
             }
-        }, ct).ConfigureAwait(false);
+            return ValueTask.CompletedTask;
+        }).ConfigureAwait(false);
         return new Int4Matrix(packed, scale, groupSum, numGroups, outDim, inDim);
     }
 
@@ -663,13 +653,11 @@ internal sealed class Int4Matrix : IWeightMatrix
         var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, inDim, ct).ConfigureAwait(false);
         try
         {
-            await GlobalThreadPool.ForAsync(0, outDim, (self: this, ua, aScale, y, seq, inDim, outDim), static (start, end, st) =>
+            await ParallelExecution.ForAsync(0, outDim, ct, (o, _) =>
             {
-                for (int o = start; o < end; o++)
-                {
-                    st.self.VnniColumn(st.ua, st.aScale, st.y, o, st.seq, st.inDim, st.outDim);
-                }
-            }, ct).ConfigureAwait(false);
+                VnniColumn(ua, aScale, y, o, seq, inDim, outDim);
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
         }
         finally
         {
@@ -712,13 +700,11 @@ internal sealed class Int4Matrix : IWeightMatrix
     private ValueTask MultiplyFloatAsync(float[] x, float[] y, int seq, CancellationToken ct)
     {
         int inDim = InDim, outDim = OutDim;
-        return new ValueTask(GlobalThreadPool.ForAsync(0, outDim, (self: this, x, y, seq, inDim, outDim), static (start, end, st) =>
+        return new ValueTask(ParallelExecution.ForAsync(0, outDim, ct, (o, _) =>
         {
-            for (int o = start; o < end; o++)
-            {
-                st.self.FloatColumn(st.x, st.y, st.seq, st.inDim, st.outDim, o);
-            }
-        }, ct));
+            FloatColumn(x, y, seq, inDim, outDim, o);
+            return ValueTask.CompletedTask;
+        }));
     }
 
     private void FloatColumn(float[] x, float[] y, int seq, int inDim, int outDim, int o)
