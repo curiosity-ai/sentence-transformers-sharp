@@ -42,7 +42,7 @@
       a model-name-prefixed filename so it cannot collide with another encoder package's generic
       Resources/tokenizer.json in a shared output directory.
     -->
-    <None Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\harrier-small.tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\harrier-small-pure.tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\tokenizer.json" LogicalName="tokenizer.json" />
   </ItemGroup>
 </Project>

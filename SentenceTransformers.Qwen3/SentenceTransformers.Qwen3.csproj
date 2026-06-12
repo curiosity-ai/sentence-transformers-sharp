@@ -32,8 +32,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="Resources\tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <!-- Also embed the tokenizer so NuGet consumers work without copying Resources/tokenizer.json into their output. -->
+    <!-- Copied to output under a model-name-prefixed name so it cannot collide with another encoder
+         package's generic Resources/tokenizer.json in a shared output directory. -->
+    <None Include="Resources\tokenizer.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest">
+      <TargetPath>Resources\qwen3.tokenizer.json</TargetPath>
+    </None>
+    <!-- Also embed the tokenizer so NuGet consumers work without copying anything into their output;
+         this embedded copy is what the encoder loads by default. -->
     <EmbeddedResource Include="Resources\tokenizer.json" />
   </ItemGroup>
 </Project>

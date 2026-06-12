@@ -119,7 +119,7 @@ namespace SentenceTransformers.Harrier.Small.Pure
         /// <summary>Name of the tokenizer copied next to the app. Prefixed with the model name so it
         /// never collides with another encoder package's <c>Resources/tokenizer.json</c> in a shared
         /// output directory.</summary>
-        private const string TokenizerFileName = "harrier-small.tokenizer.json";
+        private const string TokenizerFileName = "harrier-small-pure.tokenizer.json";
 
         private static HarrierSmallPureTokenizer LoadTokenizer(string tokenizerJsonPath, int maxTokens)
         {
