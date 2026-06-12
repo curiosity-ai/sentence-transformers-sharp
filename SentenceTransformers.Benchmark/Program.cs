@@ -25,6 +25,12 @@ if (args.Length > 0 && args[0] == "harrier-diag")
     return;
 }
 
+if (args.Length > 0 && args[0] == "harrier-scaling")
+{
+    await HarrierScalingBench.RunAsync();
+    return;
+}
+
 // ---- Build a few-paragraph input dataset ----
 var texts = new[]
 {
