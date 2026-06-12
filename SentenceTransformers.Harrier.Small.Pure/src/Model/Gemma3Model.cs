@@ -74,8 +74,8 @@ internal sealed class Gemma3Model
         var embed = st.ReadRaw16(prefix + "embed_tokens.weight");
 
         // The attention/MLP projections dominate weight size and compute, so they carry the chosen
-        // quantization (built on the GlobalThreadPool, never blocking); the tiny per-channel norm
-        // vectors stay in float32.
+        // quantization (built on Parallel.ForAsync, never blocking); the tiny per-channel norm vectors
+        // stay in float32.
         Task<IWeightMatrix> Proj(string p, string name, int outDim, int inDim) => IWeightMatrix.CreateAsync(st.ReadFloat(p + name), outDim, inDim, quantization, ct);
 
         var layers = new Layer[cfg.NumLayers];
@@ -118,9 +118,9 @@ internal sealed class Gemma3Model
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     /// <summary>Runs the full forward pass for one tokenized sequence and returns the (un-normalized)
     /// last-token hidden state - a <c>HiddenSize</c>-length embedding. The per-layer matmuls and
-    /// attention parallelize on the <see cref="GlobalThreadPool"/>, so the heavy CPU work is awaited
-    /// rather than blocking the caller, and <paramref name="ct"/> cancels in-flight compute. Takes
-    /// <c>int[]</c> (not a span) because async methods cannot have ref-struct parameters.</summary>
+    /// attention parallelize via <see cref="ParallelExecution.ForAsync"/>, so the heavy CPU work is
+    /// awaited rather than blocking the caller, and <paramref name="ct"/> cancels in-flight compute.
+    /// Takes <c>int[]</c> (not a span) because async methods cannot have ref-struct parameters.</summary>
     public async Task<float[]> ForwardAsync(int[] tokenIds, CancellationToken ct)
     {
         int seq = tokenIds.Length;
@@ -258,9 +258,9 @@ internal sealed class Gemma3Model
     }
 
     /// <summary>Causal grouped-query attention. The single KV head is shared by all query heads.
-    /// Parallelizes over query positions on the <see cref="GlobalThreadPool"/>: each worker gets a
-    /// contiguous bucket of query positions, so the body runs once per bucket instead of once per
-    /// position and the dispatch is fork/join only (no per-row task wake-up).</summary>
+    /// Parallelizes over query positions via <see cref="ParallelExecution.ForAsync"/>: per-index
+    /// <c>Parallel.ForAsync</c> dispatch gives dynamic load balancing for the triangular causal work
+    /// when <see cref="ParallelExecution.Enabled"/>, and runs single-threaded otherwise.</summary>
     private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, CancellationToken ct)
     {
         int qStride  = _cfg.NumHeads * headDim;
@@ -268,13 +268,11 @@ internal sealed class Gemma3Model
         int heads    = _cfg.NumHeads;
         float scale  = _cfg.AttentionScale;
 
-        return GlobalThreadPool.ForAsync(0, seq, (q, k, v, attnOut, headDim, qStride, kvStride, heads, scale), static (start, end, st) =>
+        return ParallelExecution.ForAsync(0, seq, ct, (i, _) =>
         {
-            for (int i = start; i < end; i++)
-            {
-                AttentionRow(st.q, st.k, st.v, st.attnOut, i, st.headDim, st.qStride, st.kvStride, st.heads, st.scale);
-            }
-        }, ct);
+            AttentionRow(q, k, v, attnOut, i, headDim, qStride, kvStride, heads, scale);
+            return ValueTask.CompletedTask;
+        });
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
