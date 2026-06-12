@@ -1,4 +1,5 @@
 using SentenceTransformers.Harrier.Small.Pure;
+using SentenceTransformers.Tests.Support;
 
 namespace SentenceTransformers.Tests;
 
@@ -10,13 +11,29 @@ namespace SentenceTransformers.Tests;
 ///
 /// It is opt-in - set the environment variable <c>HARRIER_PURE_E2E=1</c> to run it - so the normal
 /// test run stays fast and offline.
+///
+/// NOTE: the encoder is loaded with an explicit tokenizer path rather than via <see cref="SentenceEncoder.CreateAsync"/>.
+/// This test project references several encoder packages (Qwen, Harrier Medium/Small, …) that each ship
+/// a <c>Resources/tokenizer.json</c>; those copies collide in the test output directory, so the file
+/// the encoder would auto-resolve there is not guaranteed to be the Gemma tokenizer. Pinning the
+/// Harrier Small tokenizer keeps this test a clean check of the forward pass.
 /// </summary>
 public class PureEncoderEndToEndTests
 {
     [Fact]
     public async Task ReproducesModelCardScoreMatrix()
     {
-        using var enc = await SentenceEncoder.CreateAsync();
+        // Opt-in: skip unless explicitly enabled, so the normal suite stays fast and offline.
+        // (xUnit 2.x has no dynamic Assert.Skip, so this returns early instead.)
+        if (Environment.GetEnvironmentVariable("HARRIER_PURE_E2E") != "1")
+        {
+            return;
+        }
+
+        // Download (or reuse cached) weights, then load with the correct Gemma tokenizer explicitly.
+        var weightsPath = Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Pure", "harrier-small.safetensors");
+        await SentenceEncoder.DownloadFileAsync(SentenceEncoder.DefaultWeightsUrl, weightsPath);
+        using var enc = await SentenceEncoder.LoadAsync(weightsPath, TestPaths.HarrierSmallTokenizerJson);
 
         var queries = new[] { "how much protein should a female eat", "summit define" };
         var documents = new[]
