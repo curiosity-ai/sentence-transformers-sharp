@@ -40,7 +40,11 @@ namespace SentenceTransformers.Harrier.Small.Pure
         public TokenizerBase Tokenizer { get; }
         private readonly HarrierSmallPureTokenizer _tokenizer;
 
-        public static int GetMaxChunkLength() => 32768;
+        /// <summary>Maximum tokens per encoded input. The model itself supports 32768 positions, but the
+        /// pure-managed forward pass uses full (non-windowed) causal attention, so cost grows with the
+        /// square of the sequence length - a 32k-token input takes hours of single-threaded CPU. 2048 keeps
+        /// a single encode in the seconds range; longer texts should be chunked (see <c>ChunkAndEncode*</c>).</summary>
+        public static int GetMaxChunkLength() => 2048;
         public int MaxChunkLength => GetMaxChunkLength();
 
         /// <summary>The embedding dimension produced by this model.</summary>

@@ -28,12 +28,14 @@ public class PureContextLimitTests
         => HarrierSmallPureTokenizer.FromFile(TestPaths.HarrierSmallTokenizerJson, maxTokens);
 
     [Fact]
-    public void MaxChunkLength_MatchesModelContextWindow()
+    public void MaxChunkLength_WithinModelContextWindow()
     {
-        // The exposed chunk length must equal the model's positional context window, otherwise chunks
-        // would be produced that the model cannot position-encode.
-        Assert.Equal(new Gemma3Config().MaxPositionEmbeddings, SentenceEncoder.GetMaxChunkLength());
-        Assert.Equal(32768, SentenceEncoder.GetMaxChunkLength());
+        // The exposed chunk length must never exceed the model's positional context window, otherwise
+        // chunks would be produced that the model cannot position-encode. It is deliberately capped far
+        // below the 32768-position window: the pure forward pass uses full O(n^2) causal attention, so
+        // encoding a 32k-token chunk takes hours of single-threaded CPU (see SentenceEncoder).
+        Assert.True(SentenceEncoder.GetMaxChunkLength() <= new Gemma3Config().MaxPositionEmbeddings);
+        Assert.Equal(2048, SentenceEncoder.GetMaxChunkLength());
     }
 
     [Fact]
