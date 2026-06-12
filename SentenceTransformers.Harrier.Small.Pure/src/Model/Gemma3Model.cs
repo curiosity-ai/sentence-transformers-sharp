@@ -119,7 +119,9 @@ internal sealed class Gemma3Model
     /// <summary>Runs the full forward pass for one tokenized sequence and returns the (un-normalized)
     /// last-token hidden state - a <c>HiddenSize</c>-length embedding. The per-layer matmuls and
     /// attention parallelize via <see cref="ParallelExecution.ForAsync"/>, so the heavy CPU work is
-    /// awaited rather than blocking the caller, and <paramref name="ct"/> cancels in-flight compute.
+    /// awaited rather than blocking the caller. <paramref name="ct"/> is observed at every token
+    /// embedding step and at the start of each transformer layer (in addition to inside the awaited
+    /// matmuls), so cancellation is honoured promptly even when running single-threaded.
     /// Takes <c>int[]</c> (not a span) because async methods cannot have ref-struct parameters.</summary>
     public async Task<float[]> ForwardAsync(int[] tokenIds, CancellationToken ct)
     {
@@ -149,6 +151,7 @@ internal sealed class Gemma3Model
             // --- token embedding (+ sqrt(hidden) scale) ---
             for (int p = 0; p < seq; p++)
             {
+                ct.ThrowIfCancellationRequested();
                 int tok = tokenIds[p];
                 int srcBase = tok * h;
                 int dstBase = p * h;
@@ -163,6 +166,8 @@ internal sealed class Gemma3Model
 
             foreach (var layer in _layers)
             {
+                ct.ThrowIfCancellationRequested();
+
                 // ---- self attention ----
                 Ops.RmsNorm(hidden, layer.InputLayerNorm, normed, seq, h, _cfg.RmsNormEps);
                 await layer.QProj.MultiplyAsync(normed, q, seq, ct).ConfigureAwait(false);
