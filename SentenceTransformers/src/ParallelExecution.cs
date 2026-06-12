@@ -14,10 +14,6 @@ namespace SentenceTransformers;
 /// </summary>
 public static class ParallelExecution
 {
-    /// <summary>When <c>true</c>, kernel loops dispatch with <see cref="Parallel.ForAsync(int, int, CancellationToken, Func{int, CancellationToken, ValueTask})"/>;
-    /// when <c>false</c> (the default) they run single-threaded on the calling thread.</summary>
-    public static bool Enabled;
-
     /// <summary>
     /// Runs <paramref name="body"/> for every index in <c>[fromInclusive, toExclusive)</c>. When
     /// <see cref="Enabled"/> is <c>true</c> the iterations are dispatched with
@@ -25,13 +21,14 @@ public static class ParallelExecution
     /// otherwise they run in order on the calling thread. The returned task completes once every
     /// iteration has finished.
     /// </summary>
-    public static Task ForAsync(int fromInclusive, int toExclusive, CancellationToken ct, Func<int, CancellationToken, ValueTask> body)
+    public static async Task ForAsync(int fromInclusive, int toExclusive, ParallelOptions parallelOptions, Func<int, CancellationToken, ValueTask> body)
     {
-        if (Enabled)
+        if (parallelOptions.MaxDegreeOfParallelism > 1)
         {
-            return Parallel.ForAsync(fromInclusive, toExclusive, ct, body);
+            await Parallel.ForAsync(fromInclusive, toExclusive, parallelOptions, body);
         }
-        return RunSequentialAsync(fromInclusive, toExclusive, ct, body);
+
+        await RunSequentialAsync(fromInclusive, toExclusive, parallelOptions.CancellationToken, body);
     }
 
     private static async Task RunSequentialAsync(int fromInclusive, int toExclusive, CancellationToken ct, Func<int, CancellationToken, ValueTask> body)

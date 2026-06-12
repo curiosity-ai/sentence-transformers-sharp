@@ -108,7 +108,7 @@ public class PureNumericsTests
         var x = new float[] { 1, 2, 3, /*row1*/ 4, 5, 6 };
         var w = new float[] { 1, 0, 0, /*o0*/ 0, 1, 1 }; // o0 picks x[0], o1 picks x[1]+x[2]
         var y = new float[seq * outDim];
-        await Ops.LinearAsync(x, w, y, seq, inDim, outDim);
+        await Ops.LinearAsync(x, w, y, seq, inDim, outDim, new ParallelOptions() {  MaxDegreeOfParallelism = Environment.ProcessorCount });
 
         Assert.Equal(1f, y[0]);   // row0,o0 = 1
         Assert.Equal(5f, y[1]);   // row0,o1 = 2+3

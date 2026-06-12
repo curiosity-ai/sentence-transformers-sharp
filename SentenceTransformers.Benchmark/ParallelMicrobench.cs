@@ -58,8 +58,10 @@ public static class ParallelMicrobench
 
     private static Task Matmul(float[] x, float[] w, float[] y, int seq, int inDim, int outDim, bool parallel)
     {
-        ParallelExecution.Enabled = parallel;
-        return ParallelExecution.ForAsync(0, outDim, CancellationToken.None, (o, _) =>
+        return ParallelExecution.ForAsync(0, outDim, new ParallelOptions()
+        {
+            MaxDegreeOfParallelism = parallel ? Environment.ProcessorCount : 1 
+        }, (o, _) =>
         {
             LinearColumn(x, w, y, seq, inDim, outDim, o);
             return ValueTask.CompletedTask;

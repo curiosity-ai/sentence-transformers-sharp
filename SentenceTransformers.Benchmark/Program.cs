@@ -90,17 +90,17 @@ foreach (var (name, encoder) in syncEncoders)
 // so this section needs network access; it is skipped (not failed) when the weights are unavailable.
 try
 {
-    using (var harrierOnnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync())
-    {
-        results.Add(await EncoderBench.RunAsync("Harrier.Small (ONNX Q4F16)", harrierOnnx, texts, cfg));
-        Console.WriteLine();
-    }
+    //using (var harrierOnnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync())
+    //{
+    //    results.Add(await EncoderBench.RunAsync("Harrier.Small (ONNX Q4F16)", harrierOnnx, texts, cfg));
+    //    Console.WriteLine();
+    //}
 
-    using (var harrierOnnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(modelUrl:SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelUrl, modelDataUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelDataUrl))
-    {
-        results.Add(await EncoderBench.RunAsync("Harrier.Small (ONNX Int8)", harrierOnnx, texts, cfg));
-        Console.WriteLine();
-    }
+    //using (var harrierOnnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(modelUrl:SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelUrl, modelDataUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelDataUrl))
+    //{
+    //    results.Add(await EncoderBench.RunAsync("Harrier.Small (ONNX Int8)", harrierOnnx, texts, cfg));
+    //    Console.WriteLine();
+    //}
 
     foreach (var quant in new[]
     {

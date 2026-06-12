@@ -68,13 +68,19 @@ namespace SentenceTransformers.Harrier.Small.Pure
             string downloadToPath = null,
             Quantization quantization = Quantization.None,
             Action<DownloadProgress> reportProgress = null,
-            CancellationToken cancellationToken = default)
+            ParallelOptions parallelOptions = null)
         {
+
+            parallelOptions ??= new ParallelOptions()
+            {
+                MaxDegreeOfParallelism = Environment.ProcessorCount / 2
+            };
+
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Pure", "harrier-small.safetensors");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-            await DownloadFileAsync(weightsUrl ?? DefaultWeightsUrl, path, reportProgress, cancellationToken).ConfigureAwait(false);
-            return await LoadAsync(path, quantization: quantization, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await DownloadFileAsync(weightsUrl ?? DefaultWeightsUrl, path, reportProgress, parallelOptions.CancellationToken).ConfigureAwait(false);
+            return await LoadAsync(path, quantization: quantization, parallelOptions: parallelOptions).ConfigureAwait(false);
         }
 
         /// <summary>Creates an encoder from an existing safetensors file on disk. Loading (including the
@@ -86,14 +92,19 @@ namespace SentenceTransformers.Harrier.Small.Pure
             string safetensorsPath,
             string tokenizerJsonPath = null,
             Quantization quantization = Quantization.None,
-            CancellationToken cancellationToken = default)
+            ParallelOptions parallelOptions = null)
         {
+            parallelOptions ??= new ParallelOptions()
+            {
+                MaxDegreeOfParallelism = Environment.ProcessorCount / 2
+            };
+
             if (string.IsNullOrWhiteSpace(safetensorsPath))
             {
                 throw new ArgumentException("Weights path is required.", nameof(safetensorsPath));
             }
 
-            var model = await Gemma3Model.LoadAsync(safetensorsPath, new Gemma3Config(), quantization, cancellationToken).ConfigureAwait(false);
+            var model = await Gemma3Model.LoadAsync(safetensorsPath, new Gemma3Config(), quantization, parallelOptions).ConfigureAwait(false);
             var tokenizer = LoadTokenizer(tokenizerJsonPath, GetMaxChunkLength());
             return new SentenceEncoder(model, tokenizer);
         }
@@ -127,9 +138,12 @@ namespace SentenceTransformers.Harrier.Small.Pure
             }
         }
 
+        public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default) => 
+            EncodeAsync(sentences, new ParallelOptions() { CancellationToken = cancellationToken });
+
         /// <summary>Encodes a batch of texts into embeddings. Each input must fit in
         /// <see cref="MaxChunkLength"/> tokens; for longer text use the <c>ChunkAndEncode*</c> helpers.</summary>
-        public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+        public async Task<float[][]> EncodeAsync(string[] sentences, ParallelOptions parallelOptions)
         {
             if (sentences is null || sentences.Length == 0)
             {
@@ -139,7 +153,7 @@ namespace SentenceTransformers.Harrier.Small.Pure
             var result = new float[sentences.Length][];
             for (int i = 0; i < sentences.Length; i++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                parallelOptions.CancellationToken.ThrowIfCancellationRequested();
                 var ids = _tokenizer.EncodeIds(sentences[i] ?? string.Empty);
                 if (ids.Length == 0)
                 {
@@ -148,7 +162,7 @@ namespace SentenceTransformers.Harrier.Small.Pure
                     result[i] = new float[EmbeddingDimension];
                     continue;
                 }
-                var embedding = await _model.ForwardAsync(ids, cancellationToken).ConfigureAwait(false);
+                var embedding = await _model.ForwardAsync(ids, parallelOptions).ConfigureAwait(false);
                 if (Normalize)
                 {
                     Ops.L2NormalizeInPlace(embedding);
@@ -158,9 +172,12 @@ namespace SentenceTransformers.Harrier.Small.Pure
             return result;
         }
 
+        public Task<float[][]> EncodeQueriesAsync(string[] queries, string promptPrefix = Prompts.WebSearchQuery, CancellationToken cancellationToken = default) =>
+                EncodeQueriesAsync(queries, new ParallelOptions() { CancellationToken = cancellationToken, MaxDegreeOfParallelism = Environment.ProcessorCount }, promptPrefix);
+
         /// <summary>Encodes queries with the given instruction prompt prefix (see <see cref="Prompts"/>),
         /// then embeds them. Documents should be encoded with the plain <see cref="EncodeAsync(string[], CancellationToken)"/>.</summary>
-        public Task<float[][]> EncodeQueriesAsync(string[] queries, string promptPrefix = Prompts.WebSearchQuery, CancellationToken cancellationToken = default)
+        public Task<float[][]> EncodeQueriesAsync(string[] queries, ParallelOptions parallelOptions, string promptPrefix = Prompts.WebSearchQuery)
         {
             if (queries is null || queries.Length == 0)
             {
@@ -171,7 +188,7 @@ namespace SentenceTransformers.Harrier.Small.Pure
             {
                 prompted[i] = (promptPrefix ?? string.Empty) + (queries[i] ?? string.Empty);
             }
-            return EncodeAsync(prompted, cancellationToken);
+            return EncodeAsync(prompted, parallelOptions);
         }
 
         public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)

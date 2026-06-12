@@ -64,9 +64,9 @@ internal sealed class Gemma3Model
         _embedScale = FloatConversions.RoundToBFloat16(MathF.Sqrt(cfg.HiddenSize));
     }
 
-    public static async Task<Gemma3Model> LoadAsync(string safetensorsPath, Gemma3Config cfg, Quantization quantization, CancellationToken ct)
+    public static async Task<Gemma3Model> LoadAsync(string safetensorsPath, Gemma3Config cfg, Quantization quantization, ParallelOptions parallelOptions)
     {
-        var st = await SafeTensors.LoadAsync(safetensorsPath, ct).ConfigureAwait(false);
+        var st = await SafeTensors.LoadAsync(safetensorsPath, parallelOptions.CancellationToken).ConfigureAwait(false);
 
         // Some exports prefix every tensor with "model."; tolerate both.
         string prefix = st.Contains("embed_tokens.weight") ? "" : "model.";
@@ -76,7 +76,7 @@ internal sealed class Gemma3Model
         // The attention/MLP projections dominate weight size and compute, so they carry the chosen
         // quantization (built on Parallel.ForAsync, never blocking); the tiny per-channel norm vectors
         // stay in float32.
-        Task<IWeightMatrix> Proj(string p, string name, int outDim, int inDim) => IWeightMatrix.CreateAsync(st.ReadFloat(p + name), outDim, inDim, quantization, ct);
+        Task<IWeightMatrix> Proj(string p, string name, int outDim, int inDim) => IWeightMatrix.CreateAsync(st.ReadFloat(p + name), outDim, inDim, quantization, parallelOptions);
 
         var layers = new Layer[cfg.NumLayers];
         for (int i = 0; i < cfg.NumLayers; i++)
@@ -123,7 +123,7 @@ internal sealed class Gemma3Model
     /// embedding step and at the start of each transformer layer (in addition to inside the awaited
     /// matmuls), so cancellation is honoured promptly even when running single-threaded.
     /// Takes <c>int[]</c> (not a span) because async methods cannot have ref-struct parameters.</summary>
-    public async Task<float[]> ForwardAsync(int[] tokenIds, CancellationToken ct)
+    public async Task<float[]> ForwardAsync(int[] tokenIds, ParallelOptions parallelOptions)
     {
         int seq = tokenIds.Length;
         int h = _cfg.HiddenSize;
@@ -151,7 +151,6 @@ internal sealed class Gemma3Model
             // --- token embedding (+ sqrt(hidden) scale) ---
             for (int p = 0; p < seq; p++)
             {
-                ct.ThrowIfCancellationRequested();
                 int tok = tokenIds[p];
                 int srcBase = tok * h;
                 int dstBase = p * h;
@@ -166,13 +165,13 @@ internal sealed class Gemma3Model
 
             foreach (var layer in _layers)
             {
-                ct.ThrowIfCancellationRequested();
+                parallelOptions.CancellationToken.ThrowIfCancellationRequested();
 
                 // ---- self attention ----
                 Ops.RmsNorm(hidden, layer.InputLayerNorm, normed, seq, h, _cfg.RmsNormEps);
-                await layer.QProj.MultiplyAsync(normed, q, seq, ct).ConfigureAwait(false);
-                await layer.KProj.MultiplyAsync(normed, k, seq, ct).ConfigureAwait(false);
-                await layer.VProj.MultiplyAsync(normed, v, seq, ct).ConfigureAwait(false);
+                await layer.QProj.MultiplyAsync(normed, q, seq, parallelOptions).ConfigureAwait(false);
+                await layer.KProj.MultiplyAsync(normed, k, seq, parallelOptions).ConfigureAwait(false);
+                await layer.VProj.MultiplyAsync(normed, v, seq, parallelOptions).ConfigureAwait(false);
 
                 ApplyHeadNorm(q, layer.QNorm, seq, _cfg.NumHeads, headDim);
                 ApplyHeadNorm(k, layer.KNorm, seq, _cfg.NumKvHeads, headDim);
@@ -180,20 +179,20 @@ internal sealed class Gemma3Model
                 ApplyRope(q, cos, sin, seq, _cfg.NumHeads, headDim);
                 ApplyRope(k, cos, sin, seq, _cfg.NumKvHeads, headDim);
 
-                await AttentionAsync(q, k, v, attnOut, seq, headDim, ct).ConfigureAwait(false);
+                await AttentionAsync(q, k, v, attnOut, seq, headDim, parallelOptions).ConfigureAwait(false);
 
-                await layer.OProj.MultiplyAsync(attnOut, attnProj, seq, ct).ConfigureAwait(false);
+                await layer.OProj.MultiplyAsync(attnOut, attnProj, seq, parallelOptions).ConfigureAwait(false);
                 // post-attention norm then residual add
                 Ops.RmsNorm(attnProj, layer.PostAttentionLayerNorm, attnProj, seq, h, _cfg.RmsNormEps);
                 TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), attnProj.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
 
                 // ---- feed forward ----
                 Ops.RmsNorm(hidden, layer.PreFeedforwardLayerNorm, normed, seq, h, _cfg.RmsNormEps);
-                await layer.GateProj.MultiplyAsync(normed, gate, seq, ct).ConfigureAwait(false);
-                await layer.UpProj.MultiplyAsync(normed, up, seq, ct).ConfigureAwait(false);
+                await layer.GateProj.MultiplyAsync(normed, gate, seq, parallelOptions).ConfigureAwait(false);
+                await layer.UpProj.MultiplyAsync(normed, up, seq, parallelOptions).ConfigureAwait(false);
                 int ffLen = seq * _cfg.IntermediateSize;
                 Ops.GeGluInPlace(gate.AsSpan(0, ffLen), up.AsSpan(0, ffLen));
-                await layer.DownProj.MultiplyAsync(gate, down, seq, ct).ConfigureAwait(false);
+                await layer.DownProj.MultiplyAsync(gate, down, seq, parallelOptions).ConfigureAwait(false);
                 Ops.RmsNorm(down, layer.PostFeedforwardLayerNorm, down, seq, h, _cfg.RmsNormEps);
                 TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), down.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
             }
@@ -266,14 +265,14 @@ internal sealed class Gemma3Model
     /// Parallelizes over query positions via <see cref="ParallelExecution.ForAsync"/>: per-index
     /// <c>Parallel.ForAsync</c> dispatch gives dynamic load balancing for the triangular causal work
     /// when <see cref="ParallelExecution.Enabled"/>, and runs single-threaded otherwise.</summary>
-    private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, CancellationToken ct)
+    private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, ParallelOptions parallelOptions)
     {
         int qStride  = _cfg.NumHeads * headDim;
         int kvStride = _cfg.NumKvHeads * headDim; // == headDim (1 KV head)
         int heads    = _cfg.NumHeads;
         float scale  = _cfg.AttentionScale;
 
-        return ParallelExecution.ForAsync(0, seq, ct, (i, _) =>
+        return ParallelExecution.ForAsync(0, seq, parallelOptions, (i, _) =>
         {
             AttentionRow(q, k, v, attnOut, i, headDim, qStride, kvStride, heads, scale);
             return ValueTask.CompletedTask;

@@ -27,7 +27,7 @@ internal static class Ops
     /// <param name="x">Input activations, length <c>seq * inDim</c>.</param>
     /// <param name="w">Weight matrix, length <c>outDim * inDim</c>, row-major <c>[outDim, inDim]</c>.</param>
     /// <param name="y">Output buffer, length <c>seq * outDim</c>.</param>
-    public static Task LinearAsync(float[] x, float[] w, float[] y, int seq, int inDim, int outDim, CancellationToken ct = default)
+    public static Task LinearAsync(float[] x, float[] w, float[] y, int seq, int inDim, int outDim, ParallelOptions parallelOptions)
     {
         if (outDim < ParallelThreshold)
         {
@@ -37,7 +37,7 @@ internal static class Ops
             }
             return Task.CompletedTask;
         }
-        return ParallelExecution.ForAsync(0, outDim, ct, (o, _) =>
+        return ParallelExecution.ForAsync(0, outDim, parallelOptions, (o, _) =>
         {
             LinearColumn(x, w, y, seq, inDim, outDim, o);
             return ValueTask.CompletedTask;
