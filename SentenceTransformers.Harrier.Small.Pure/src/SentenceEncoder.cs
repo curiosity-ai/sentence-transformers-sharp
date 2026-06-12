@@ -116,26 +116,41 @@ namespace SentenceTransformers.Harrier.Small.Pure
             Tokenizer = tokenizer;
         }
 
+        /// <summary>Name of the tokenizer copied next to the app. Prefixed with the model name so it
+        /// never collides with another encoder package's <c>Resources/tokenizer.json</c> in a shared
+        /// output directory.</summary>
+        private const string TokenizerFileName = "harrier-small.tokenizer.json";
+
         private static HarrierSmallPureTokenizer LoadTokenizer(string tokenizerJsonPath, int maxTokens)
         {
+            // 1. An explicit caller-provided path always wins.
             if (!string.IsNullOrWhiteSpace(tokenizerJsonPath) && File.Exists(tokenizerJsonPath))
             {
                 return HarrierSmallPureTokenizer.FromFile(tokenizerJsonPath, maxTokens);
             }
 
-            // Prefer Resources/tokenizer.json next to the app; fall back to the embedded copy.
-            var resourcesPath = Path.Combine(AppContext.BaseDirectory, "Resources", "tokenizer.json");
+            // 2. Prefer the tokenizer embedded in this assembly. It ships with the package and is
+            //    guaranteed to be the correct Gemma tokenizer, so it can never be shadowed by another
+            //    model's generic Resources/tokenizer.json that happens to share the output directory
+            //    (which happens when several encoder packages are referenced from the same app).
+            var stream = typeof(SentenceEncoder).Assembly.GetManifestResourceStream("tokenizer.json");
+            if (stream is not null)
+            {
+                using (stream)
+                {
+                    return HarrierSmallPureTokenizer.FromStream(stream, maxTokens);
+                }
+            }
+
+            // 3. Fall back to the model-name-prefixed copy next to the app (only reached if the embedded
+            //    resource is somehow missing).
+            var resourcesPath = Path.Combine(AppContext.BaseDirectory, "Resources", TokenizerFileName);
             if (File.Exists(resourcesPath))
             {
                 return HarrierSmallPureTokenizer.FromFile(resourcesPath, maxTokens);
             }
 
-            var stream = typeof(SentenceEncoder).Assembly.GetManifestResourceStream("tokenizer.json")
-                ?? throw new FileNotFoundException("tokenizer.json was not found on disk or embedded in the assembly.");
-            using (stream)
-            {
-                return HarrierSmallPureTokenizer.FromStream(stream, maxTokens);
-            }
+            throw new FileNotFoundException($"tokenizer.json was not found embedded in the assembly or at Resources/{TokenizerFileName}.");
         }
 
         public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default) => 
