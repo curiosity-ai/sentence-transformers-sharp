@@ -40,9 +40,8 @@ internal readonly record struct BpeToken(int Id, string Source, int Start, int L
 /// </summary>
 internal sealed class GemmaBpe
 {
-    private readonly Dictionary<string, int> _vocab;
-    private readonly Dictionary<string, int>.AlternateLookup<ReadOnlySpan<char>> _vocabSpan;
-    private readonly Dictionary<(string, string), int> _mergeRanks;
+    private readonly Dictionary<UID128, int> _vocab;
+    private readonly Dictionary<(UID128, UID128), int> _mergeRanks;
     private readonly int[] _byteToId;            // 256 entries: id of "<0xNN>" or -1
     private readonly string[] _idToToken;        // reverse map (id -> surface form) for display
     private readonly AddedTokenTrie _added;
@@ -66,7 +65,6 @@ internal sealed class GemmaBpe
         int padId)
     {
         _vocab = vocab;
-        _vocabSpan = vocab.GetAlternateLookup<ReadOnlySpan<char>>();
         _mergeRanks = mergeRanks;
         _byteToId = byteToId;
         _idToToken = idToToken;
@@ -86,13 +84,6 @@ internal sealed class GemmaBpe
     public string IdToToken(int id)
         => (uint)id < (uint)_idToToken.Length ? (_idToToken[id] ?? string.Empty) : string.Empty;
 
-    public bool TryGetId(ReadOnlySpan<char> token, out int id) => _vocabSpan.TryGetValue(token, out id);
-
-    /// <summary>Returns the surface string for a vocabulary id (the form used in <c>tokenizer.json</c>,
-    /// including the metaspace marker and any <c>&lt;0xNN&gt;</c> byte placeholders).</summary>
-    public string IdToToken(int id)
-        => (uint)id < (uint)_idToToken.Length ? (_idToToken[id] ?? string.Empty) : string.Empty;
-
     public static GemmaBpe FromJson(Stream tokenizerJson)
     {
         using var doc = JsonDocument.Parse(tokenizerJson);
@@ -101,12 +92,14 @@ internal sealed class GemmaBpe
 
         // --- vocab ---
         var vocabEl = model.GetProperty("vocab");
-        var vocab = new Dictionary<string, int>(vocabEl.GetRawText().Length / 8, StringComparer.Ordinal);
+        var vocab = new Dictionary<UID128, int>(vocabEl.GetRawText().Length / 8);
         int maxId = -1;
+        var vocabList = new List<(string Name, int Id)>(vocabEl.GetRawText().Length / 16);
         foreach (var prop in vocabEl.EnumerateObject())
         {
             int id = prop.Value.GetInt32();
-            vocab[prop.Name] = id;
+            vocab[prop.Name.Hash128()] = id;
+            vocabList.Add((prop.Name, id));
             if (id > maxId) maxId = id;
         }
 
@@ -158,9 +151,9 @@ internal sealed class GemmaBpe
         // Reverse map: id -> surface string. Filled from vocab first, then added tokens override
         // any ids that aren't in vocab (defensive; on Gemma's tokenizer.json they coincide).
         var idToToken = new string[maxId + 1];
-        foreach (var kv in vocab)
+        foreach (var (name, id) in vocabList)
         {
-            idToToken[kv.Value] = kv.Key;
+            idToToken[id] = name;
         }
         foreach (var (content, id) in addedList)
         {
@@ -217,8 +210,8 @@ internal sealed class GemmaBpe
     }
 
     /// <summary>Normalizes (space -> metaspace) and BPE-encodes <paramref name="segment"/>, which is a
-    /// slice of <paramref name="source"/> starting at <paramref name="charOffset"/>. Space -> metaspace
-    /// is a 1:1 char substitution so character offsets into <paramref name="source"/> are preserved.</summary>
+    /// slice of <paramref name="source"/> starting at <paramref name="charOffset"/>. The normalized
+    /// chars are written into a pooled buffer that backs the <see cref="BpeSymbol"/> slices.</summary>
     private void EncodeSegment(string source, ReadOnlySpan<char> segment, int charOffset, List<BpeToken> output)
     {
         int len = segment.Length;
@@ -227,15 +220,6 @@ internal sealed class GemmaBpe
             return;
         }
 
-        // Fast path: no spaces -> normalization is a no-op, BPE directly over the source slice.
-        if (segment.IndexOf(' ') < 0)
-        {
-            Bpe(source, segment, charOffset, output);
-            return;
-        }
-
-        // Otherwise rent a buffer for the normalized form. Pooling keeps repeated Encode calls
-        // allocation-light. The buffer is only read by Bpe (initial symbols copy 1-2 chars out).
         var rented = ArrayPool<char>.Shared.Rent(len);
         try
         {
@@ -244,7 +228,7 @@ internal sealed class GemmaBpe
                 char c = segment[i];
                 rented[i] = c == ' ' ? Metaspace : c;
             }
-            Bpe(source, rented.AsSpan(0, len), charOffset, output);
+            Bpe(source, rented, len, charOffset, output);
         }
         finally
         {
@@ -253,8 +237,11 @@ internal sealed class GemmaBpe
     }
 
     /// <summary>Runs byte-level BPE over a single normalized segment using a priority-queue merge.
-    /// Emitted tokens reference <paramref name="source"/> directly via <paramref name="charOffset"/>.</summary>
-    private void Bpe(string source, ReadOnlySpan<char> chars, int charOffset, List<BpeToken> output)
+    /// <paramref name="buffer"/> is the pooled char buffer for the segment (length <paramref name="bufferLen"/>);
+    /// every <see cref="BpeSymbol"/> the algorithm constructs is a slice into it, so no symbol string is
+    /// ever allocated. Emitted <see cref="BpeToken"/>s reference <paramref name="source"/> directly via
+    /// <paramref name="charOffset"/>.</summary>
+    private void Bpe(string source, char[] buffer, int bufferLen, int charOffset, List<BpeToken> output)
     {
         // Split the segment into Unicode-scalar symbols (so astral characters stay intact).
         // Each BpeSymbol is a (buffer, start, length) slice; merges just grow the left symbol's length.
@@ -262,10 +249,8 @@ internal sealed class GemmaBpe
         int idx = 0;
         while (idx < bufferLen)
         {
-            int cl = char.IsHighSurrogate(chars[idx]) && idx + 1 < len && char.IsLowSurrogate(chars[idx + 1]) ? 2 : 1;
-            sym.Add(chars.Slice(idx, cl).ToString());
-            symStart.Add(idx);
-            symLen.Add(cl);
+            int cl = char.IsHighSurrogate(buffer[idx]) && idx + 1 < bufferLen && char.IsLowSurrogate(buffer[idx + 1]) ? 2 : 1;
+            sym.Add(new BpeSymbol(buffer, idx, cl));
             idx += cl;
         }
 
@@ -352,38 +337,66 @@ internal sealed class GemmaBpe
         }
         finally
         {
-            if (!active[i])
-            {
-                continue;
-            }
-            string s = sym[i];
-            int sStart = charOffset + symStart[i];
-            int sLen = symLen[i];
-
-            if (_vocab.TryGetValue(s, out int id))
-            {
-                output.Add(new BpeToken(id, source, sStart, sLen));
-            }
-            else
-            {
-                EmitByteFallback(source, s, sStart, sLen, output);
-            }
+            ArrayPool<int>.Shared.Return(nextArray);
+            ArrayPool<int>.Shared.Return(prevArray);
+            ArrayPool<bool>.Shared.Return(activeArray);
         }
     }
 
-    private void EmitByteFallback(string source, string s, int start, int length, List<BpeToken> output)
+    private void TryEnqueue(
+        int left,
+        ReadOnlySpan<int> next,
+        List<BpeSymbol> sym,
+        PriorityQueue<PendingMerge, (int Rank, int Left)> heap)
+    {
+        if (left < 0)
+        {
+            return;
+        }
+        int right = next[left];
+        if (right < 0)
+        {
+            return;
+        }
+        var leftSym = sym[left];
+        var rightSym = sym[right];
+        if (_mergeRanks.TryGetValue((leftSym.AsSpan().Hash128(), rightSym.AsSpan().Hash128()), out int r))
+        {
+            heap.Enqueue(new PendingMerge(left, right, leftSym.Length, rightSym.Length), (r, left));
+        }
+    }
+
+    private void EmitByteFallback(string source, ReadOnlySpan<char> sChars, int start, int length, List<BpeToken> output)
     {
         // UTF-8 for a single BPE symbol is bounded (a symbol is normally 1-2 UTF-16 code units, so
         // at most 4 UTF-8 bytes). Use a small stack buffer; spill to the heap only for the unusual
         // case of a long unmappable run.
-        int maxBytes = Encoding.UTF8.GetMaxByteCount(s.Length);
+        int maxBytes = Encoding.UTF8.GetMaxByteCount(sChars.Length);
         Span<byte> buffer = maxBytes <= 256 ? stackalloc byte[256] : new byte[maxBytes];
-        int written = Encoding.UTF8.GetBytes(s, buffer);
+        int written = Encoding.UTF8.GetBytes(sChars, buffer);
         for (int i = 0; i < written; i++)
         {
             byte b = buffer[i];
             int id = _byteToId[b];
             output.Add(new BpeToken(id >= 0 ? id : _unkId, source, start, length));
+        }
+    }
+
+    /// <summary>A live BPE symbol: a slice <c>buffer[Start..Start+Length)</c> into the segment's
+    /// normalized char buffer. Acts as the "equivalent string" without owning one - <see cref="AsSpan"/>
+    /// reconstructs it allocation-free. Merging two adjacent symbols just produces a new
+    /// <see cref="BpeSymbol"/> with the same <see cref="Start"/> and a grown <see cref="Length"/>.</summary>
+    private readonly struct BpeSymbol
+    {
+        public readonly char[] Buffer;
+        public readonly int Start;
+        public readonly int Length;
+
+        public BpeSymbol(char[] buffer, int start, int length)
+        {
+            Buffer = buffer;
+            Start = start;
+            Length = length;
         }
 
         public ReadOnlySpan<char> AsSpan() => Buffer.AsSpan(Start, Length);
