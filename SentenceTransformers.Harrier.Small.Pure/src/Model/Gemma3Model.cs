@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Numerics;
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
 using SentenceTransformers;
@@ -310,6 +311,12 @@ internal sealed class Gemma3Model
         int heads    = _cfg.NumHeads;
         float scale  = _cfg.AttentionScale;
 
+        // The fused score/value kernels are specialized for this model's 4 query heads.
+        if (heads != 4)
+        {
+            throw new NotSupportedException($"Fused attention expects 4 query heads, got {heads}.");
+        }
+
         int numBlocks = (seq + QueryBlock - 1) / QueryBlock;
 
         return ParallelExecution.ForAsync(0, numBlocks, parallelOptions, (b, _) =>
@@ -322,11 +329,13 @@ internal sealed class Gemma3Model
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    /// <summary>Computes attention output for the query positions <c>[q0, q1)</c> across all heads.
-    /// Key/value vectors are loaded in the outer loop so each is reused across every query in the block
-    /// and every head (the single shared KV head), which keeps K/V cache-resident during reuse. The
-    /// per-(query, head) softmax and the j-ordered value accumulation are unchanged, so the output is
-    /// bit-identical to a naive per-row implementation.</summary>
+    /// <summary>Computes attention output for the query positions <c>[q0, q1)</c> across all 4 heads.
+    /// Key/value vectors are loaded in the outer loop so each is reused across every query in the block,
+    /// and the four GQA query heads are fused into a single SIMD pass per key/value (see
+    /// <see cref="ScoreHeads4"/>/<see cref="AxpyHeads4"/>), keeping K/V cache-resident during reuse and
+    /// cutting the dot/axpy call count ~4x. The per-(query, head) softmax and the j-ordered value
+    /// accumulation are preserved; only the in-dot lane reassociation differs from a scalar dot, so the
+    /// output matches the reference to float tolerance.</summary>
     private static void AttentionBlock(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
     {
         int blk     = q1 - q0;
@@ -334,21 +343,23 @@ internal sealed class Gemma3Model
         int perQ    = heads * nKeys;      // scores stride per query in the block
         float[] scores = ArrayPool<float>.Shared.Rent(blk * perQ);
 
-        // --- scores: scale * (q_head . k_j), key-outer so k_j is read once and reused blk*heads times ---
+        // --- scores: scale * (q_head . k_j). Key-outer so k_j is read once and reused across the whole
+        //     block; the 4 GQA query heads are dotted against the shared k_j in a single SIMD pass
+        //     (4 accumulators), so k_j is streamed once per (key, query) instead of once per head. ---
         for (int j = 0; j < nKeys; j++)
         {
-            var kSpan = new ReadOnlySpan<float>(k, j * kvStride, headDim);
+            int kBase = j * kvStride;
             for (int local = 0; local < blk; local++)
             {
                 int qi = q0 + local;
                 if (j > qi) continue;     // causal mask
                 int qBase  = qi * qStride;
                 int sBase  = local * perQ;
-                for (int head = 0; head < heads; head++)
-                {
-                    var qSpan = new ReadOnlySpan<float>(q, qBase + head * headDim, headDim);
-                    scores[sBase + head * nKeys + j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
-                }
+                ScoreHeads4(q, qBase, k, kBase, headDim, scale, out var s0, out var s1, out var s2, out var s3);
+                scores[sBase + 0 * nKeys + j] = s0;
+                scores[sBase + 1 * nKeys + j] = s1;
+                scores[sBase + 2 * nKeys + j] = s2;
+                scores[sBase + 3 * nKeys + j] = s3;
             }
         }
 
@@ -376,23 +387,99 @@ internal sealed class Gemma3Model
 
         for (int j = 0; j < nKeys; j++)
         {
-            var vSpan = new ReadOnlySpan<float>(v, j * kvStride, headDim);
+            int vBase = j * kvStride;
             for (int local = 0; local < blk; local++)
             {
                 int qi = q0 + local;
                 if (j > qi) continue;
                 int qBase = qi * qStride;
                 int sBase = local * perQ;
-                for (int head = 0; head < heads; head++)
-                {
-                    float w = scores[sBase + head * nKeys + j];
-                    var outSpan = new Span<float>(attnOut, qBase + head * headDim, headDim);
-                    TensorPrimitives.MultiplyAdd(vSpan, w, outSpan, outSpan);
-                }
+                AxpyHeads4(
+                    scores[sBase + 0 * nKeys + j],
+                    scores[sBase + 1 * nKeys + j],
+                    scores[sBase + 2 * nKeys + j],
+                    scores[sBase + 3 * nKeys + j],
+                    v, vBase, attnOut, qBase, headDim);
             }
         }
 
         ArrayPool<float>.Shared.Return(scores);
+    }
+
+    /// <summary>Dots the four GQA query heads at <paramref name="qBase"/> against the single shared key
+    /// vector at <paramref name="kBase"/> in one pass over <paramref name="headDim"/>, using
+    /// platform-width <see cref="Vector{T}"/> (256-bit on AVX2, 128-bit on NEON/SSE) so the key is read
+    /// once for all four heads. Reassociates the sum across SIMD lanes vs a scalar dot, so results match
+    /// the reference to float tolerance rather than bit-exactly.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void ScoreHeads4(float[] q, int qBase, float[] k, int kBase, int headDim, float scale, out float s0, out float s1, out float s2, out float s3)
+    {
+        int w = Vector<float>.Count;
+        ref float qr = ref q[qBase];
+        ref float kr = ref k[kBase];
+
+        var a0 = Vector<float>.Zero;
+        var a1 = Vector<float>.Zero;
+        var a2 = Vector<float>.Zero;
+        var a3 = Vector<float>.Zero;
+
+        int d = 0;
+        for (; d + w <= headDim; d += w)
+        {
+            var kv = Vector.LoadUnsafe(ref kr, (nuint)d);
+            a0 += Vector.LoadUnsafe(ref qr, (nuint)d) * kv;
+            a1 += Vector.LoadUnsafe(ref qr, (nuint)(headDim + d)) * kv;
+            a2 += Vector.LoadUnsafe(ref qr, (nuint)(2 * headDim + d)) * kv;
+            a3 += Vector.LoadUnsafe(ref qr, (nuint)(3 * headDim + d)) * kv;
+        }
+
+        float r0 = Vector.Sum(a0), r1 = Vector.Sum(a1), r2 = Vector.Sum(a2), r3 = Vector.Sum(a3);
+        for (; d < headDim; d++) // tail (headDim is a multiple of the vector width here, so usually empty)
+        {
+            float kd = Unsafe.Add(ref kr, d);
+            r0 += Unsafe.Add(ref qr, d) * kd;
+            r1 += Unsafe.Add(ref qr, headDim + d) * kd;
+            r2 += Unsafe.Add(ref qr, 2 * headDim + d) * kd;
+            r3 += Unsafe.Add(ref qr, 3 * headDim + d) * kd;
+        }
+
+        s0 = r0 * scale;
+        s1 = r1 * scale;
+        s2 = r2 * scale;
+        s3 = r3 * scale;
+    }
+
+    /// <summary>Accumulates <c>out_head += weight_head * v_j</c> for all four GQA heads in one pass over
+    /// <paramref name="headDim"/>, reading the shared value vector once for all four heads.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void AxpyHeads4(float s0, float s1, float s2, float s3, float[] v, int vBase, float[] outArr, int outBase, int headDim)
+    {
+        int w = Vector<float>.Count;
+        ref float vr = ref v[vBase];
+        ref float orf = ref outArr[outBase];
+
+        var vs0 = new Vector<float>(s0);
+        var vs1 = new Vector<float>(s1);
+        var vs2 = new Vector<float>(s2);
+        var vs3 = new Vector<float>(s3);
+
+        int d = 0;
+        for (; d + w <= headDim; d += w)
+        {
+            var vv = Vector.LoadUnsafe(ref vr, (nuint)d);
+            (Vector.LoadUnsafe(ref orf, (nuint)d)                 + vv * vs0).StoreUnsafe(ref orf, (nuint)d);
+            (Vector.LoadUnsafe(ref orf, (nuint)(headDim + d))     + vv * vs1).StoreUnsafe(ref orf, (nuint)(headDim + d));
+            (Vector.LoadUnsafe(ref orf, (nuint)(2 * headDim + d)) + vv * vs2).StoreUnsafe(ref orf, (nuint)(2 * headDim + d));
+            (Vector.LoadUnsafe(ref orf, (nuint)(3 * headDim + d)) + vv * vs3).StoreUnsafe(ref orf, (nuint)(3 * headDim + d));
+        }
+        for (; d < headDim; d++)
+        {
+            float vd = Unsafe.Add(ref vr, d);
+            Unsafe.Add(ref orf, d)                 += s0 * vd;
+            Unsafe.Add(ref orf, headDim + d)       += s1 * vd;
+            Unsafe.Add(ref orf, 2 * headDim + d)   += s2 * vd;
+            Unsafe.Add(ref orf, 3 * headDim + d)   += s3 * vd;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
