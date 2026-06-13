@@ -1,136 +1,101 @@
-# Harrier Small — token-count scalability
+# Harrier Small — token-count scalability & pure-vs-ONNX optimization
 
-Elapsed time per single-sentence encode for the `harrier-oss-v1-270m` model, swept across sequence
-lengths from 128 to 4096 tokens, for four implementations of the same model.
+Per-encode latency for `harrier-oss-v1-270m` swept over sequence length, comparing the pure-C#
+implementation (fp32 and Int8) against the ONNX Runtime builds (Q4F16 and Int8). All paths are driven
+with byte-identical calibrated inputs (one per target length, exact token count via the shared Gemma
+tokenizer) through the public `EncodeAsync` path. **All numbers below are on all 4 cores** — the pure
+encoder is driven with `ParallelOptions { MaxDegreeOfParallelism = ProcessorCount }` (the library default
+stays single-threaded; only the benchmark opts in) so the comparison reflects architecture, not core count.
 
-All were driven with **byte-identical calibrated input strings** (generated once and replayed from
-`/tmp/harrier_scaling_inputs.json`), each calibrated to land on an exact token count (incl.
-`<bos>`/`<eos>`) using the shared Gemma BPE tokenizer. Token counts matched exactly across all paths.
+Environment: 4-core CPU, 15 GiB RAM, .NET 10 Release; ONNX Runtime 1.24.2; pure fp32/Int8;
+ONNX Q4F16 (`model_q4f16`) and Int8 (`model_quantized`, `MatMulNBits` + fused `GroupQueryAttention`).
 
-## Environment
+> Precision note: pure-fp32 and ONNX differ in weight precision (Int8 / Q4F16). The apples-to-apples
+> rows for the optimization work are **Pure Int8 vs ONNX Int8**.
 
-| | |
-|---|---|
-| CPU | 4 cores (CPU-only, no GPU) |
-| RAM | 15 GiB |
-| Pure C# | `SentenceTransformers.Harrier.Small.Pure`, .NET 10, Release, fp32 and Int8 |
-| ONNX C# | `SentenceTransformers.Harrier.Small`, ONNX Runtime 1.24.2, **Q4F16** (package default) |
-| Python | `sentence-transformers` 5.5.1 / `transformers` 5.12.0 / torch 2.12.0, CPU, fp32 |
-| Method | warmup encode, then median of N iters (7/5/3/2/1 as length grows) |
+## Results — ms per encode (all on max cores)
 
-> **Important threading caveat.** The pure columns below were produced by the public document
-> `EncodeAsync(string[])` path, which builds a default `ParallelOptions` (`MaxDegreeOfParallelism == -1`).
-> `ParallelExecution.ForAsync` only fans out when `MaxDegreeOfParallelism > 1`, and `-1` is *not* `> 1`,
-> so **the pure encoder ran single-threaded on 1 of 4 cores**, while ONNX and PyTorch used all 4.
-> Re-running the pure path with an explicit `MaxDegreeOfParallelism = 4` is **3.2–3.7× faster** (see the
-> profile section). The numbers below reflect each path's *shipping default*, which is itself a finding.
->
-> This is also **not** a same-precision comparison: Pure-fp32 and Python are fp32; Pure-Int8 is weight+
-> activation int8 (projections only); ONNX is Q4F16. See `int8` notes below.
+| Tokens | Pure fp32 | Pure Int8 | ONNX Q4F16 | ONNX Int8 | Pure Int8 / ONNX Int8 |
+|-------:|----------:|----------:|-----------:|----------:|----------------------:|
+|    128 |     652.9 |   **197.2** |      125.8 |     209.2 | **0.94× (pure wins)** |
+|    256 |   1,381.3 |     367.8 |      255.9 |     297.6 | 1.24× |
+|    512 |   2,947.4 |     809.2 |      529.5 |     508.2 | 1.59× |
+|  1,024 |   6,472.7 |   1,885.0 |    1,227.1 |   1,018.7 | 1.85× |
+|  2,048 |  13,866.9 |   4,909.3 |    3,236.7 |   2,767.5 | 1.77× |
+|  4,096 |  34,663.2 |  13,735.5 |    8,778.4 |   7,367.6 | 1.86× |
 
-## Results — elapsed ms per encode
+Short contexts (≤256 tokens) are at or beyond ONNX-Int8 parity; the residual gap at long contexts is
+entirely attention (below).
 
-| Tokens | Pure fp32 (1 core) | Pure Int8 (1 core) | Python fp32 (4 core) | ONNX Q4F16 (4 core) |
-|-------:|-------------------:|-------------------:|---------------------:|--------------------:|
-|    128 |            1,778.4 |              670.8 |                349.9 |               117.4 |
-|    256 |            3,838.4 |            1,406.9 |                589.5 |               287.1 |
-|    512 |            8,053.9 |            3,310.2 |              1,092.8 |               587.5 |
-|  1,024 |           18,819.7 |            8,688.6 |              2,166.8 |             1,178.2 |
-|  2,048 |           46,789.5 |           27,208.7 |              4,293.7 |             2,740.6 |
-|  4,096 |          120,825.7 |           85,162.8 |              9,571.8 |             7,105.0 |
+## What was optimized (and the journey)
 
-## Throughput — tokens/second (higher is better)
+Profiling the pure Int8 forward (per-stage, 4 cores) found two dominant costs and several dead ends.
 
-| Tokens | Pure fp32 | Pure Int8 | Python fp32 | ONNX Q4F16 |
-|-------:|----------:|----------:|------------:|-----------:|
-|    128 |        72 |       191 |         366 |      1,090 |
-|    256 |        67 |       182 |         434 |        892 |
-|    512 |        64 |       155 |         469 |        872 |
-|  1,024 |        54 |       118 |         473 |        869 |
-|  2,048 |        44 |        75 |         477 |        747 |
-|  4,096 |        34 |        48 |         428 |        577 |
+### 1. GeGLU — the big systemic win (committed)
+The feed-forward GeGLU was a **scalar serial loop calling `MathF.Tanh` per element** (~151M tanh calls
+at 4096 tokens). It was **40% of the time at 512 tokens** and ~4.5 s at 4096. Rewritten as a row-parallel,
+vectorized kernel (`TensorPrimitives` incl. vectorized tanh):
 
-## How each scales (128 → 4096, i.e. 32× more tokens)
+| GeGLU stage (Int8, 4 cores) | 512 tok | 4096 tok |
+|---|--:|--:|
+| before (scalar) | 604 ms | 4,483 ms |
+| after (vectorized) | 24 ms | 165 ms |
 
-| | growth | note |
-|---|---:|---|
-| Pure fp32 | **68×** | super-linear: O(n²) attention term grows in |
-| Pure Int8 | **127×** | *worse* ratio — Int8 shrinks only the linear projections, so the unquantized fp32 attention dominates faster |
-| ONNX Q4F16 | **61×** | super-linear |
-| Python fp32 | **27×** | ~300 ms fixed per-call floor dilutes the ratio |
+≈25× on that stage; this is what pulls short/medium contexts to parity.
 
-Int8 is 2.6× faster than fp32 at 128 tokens but only **1.4× faster at 4096** — direct evidence that
-quantization helps the projections but **not attention**, which is fp32 in both.
+### 2. Attention — the O(n²) scalability term
+Several kernels were implemented and measured (all gated by a `verify-fma` correctness check: fp32 stays
+cos = 1.0 vs the reference path, Int8 cos ≈ 0.998 — within the expected quantization tolerance):
 
-## Where the time goes — per-stage profile of the pure fp32 forward
+| attention kernel (Int8, 4 cores, 4096 tok) | attention ms | verdict |
+|---|--:|---|
+| original naive per-(query,head) dot | ~10,500 | baseline |
+| cache-blocked + 4-head-fused (bit-identical) | ~10,486 | ~same (memory-bound) |
+| FMA register-tiled (4×2 score GEMM) | ~10,545 | no gain → **compute is not the limit** |
+| naive online-softmax flash | ~28,000 (2048: 5,000) | **worse** — scalar `exp` ≫ vectorized exp |
+| **head-fused block-flash (chosen)** | **8,661** | **best** |
 
-Captured with the opt-in `ForwardProfile` (`harrier-profile <maxDop>`). Stopwatch/lock overhead inflates
-the absolute totals ~20–40 % vs the clean benchmark, but the proportions and the DOP speed-ups are
-accurate.
+The winning kernel (`FlashAttentionBlock`) combines every lever: it streams keys in L1-sized chunks with
+an **online softmax** (no seq×seq score matrix materialized — that buffer's traffic was the bottleneck),
+keeps a **large query block** so each K/V chunk is reused across many queries, **fuses the 4 GQA query
+heads** into one SIMD pass per key (`ScoreHeads4`/`AxpyHeads4`), and keeps `exp` **vectorized** by
+applying it per chunk. This mirrors ONNX's fused `GroupQueryAttention`.
 
-**Single-threaded (MaxDop=1):**
+Per-stage Int8 profile (4 cores), final kernels:
 
-| Stage | 512 tok | 2048 tok | 4096 tok |
+| Stage | 512 | 2048 | 4096 |
 |---|--:|--:|--:|
-| projections — mlp (gate/up/down) | 60.9% | 49.9% | 41.3% |
-| projections — qkv | 14.8% | 12.0% | 8.8% |
-| projections — o | 10.1% | 7.8% | 6.4% |
-| **attention (Q·Kᵀ, softmax, ·V)** | **8.5%** | **26.3%** | **40.5%** |
-| geglu | 4.9% | 3.5% | 2.6% |
-| norms + residual + rope | 0.8% | 0.6% | 0.4% |
-| total (ms) | 11,189 | 62,515 | 167,661 |
+| attention | 201 | 2,315 | 8,661 |
+| mlp_proj (Int8 VNNI) | 441 | 1,644 | 3,204 |
+| qkv+o (Int8 VNNI) | 263 | 781 | 1,479 |
+| geglu | 24 | 84 | 165 |
+| norms+rope | 122 | 413 | 811 |
 
-**Multi-threaded (MaxDop=4) total ms:** 512 → 3,532 (**3.2×**), 2048 → 17,530 (**3.6×**), 4096 → 45,417 (**3.7×**).
+### Net effect (Pure Int8 @ 4096, this box)
+single-threaded original **85,163 ms** → max cores + vectorized GeGLU + head-fused block-flash
+**13,735 ms** — **6.2× faster**.
 
-Takeaways from the profile:
-1. At short/medium lengths the bottleneck is the **fp32 projection matmuls (~85 % at 512)**, *not*
-   attention. Attention only becomes co-dominant at 4096 (40 %). This is why Int8 (which has tiled
-   VNNI kernels for the projections) gives a big win at short lengths.
-2. The pure path leaves **3.2–3.7× on the table** by defaulting to single-threaded in the document
-   `EncodeAsync` path.
-3. `geglu`, `rmsnorm`, `rope`, `headnorm` are **serial** loops (not parallelized), so their relative
-   share grows under MaxDop=4 (geglu 4.9 % → 15.9 % at 512).
+## Honest parity assessment
+- **Short/medium contexts (≤~256 tokens): parity reached** — pure Int8 (197 ms @128) actually beats
+  ONNX Int8 (209 ms), and is competitive to ~512.
+- **Long contexts: ~1.9× off at 4096**, and the gap is essentially all attention. The pure attention is
+  ~18 GFLOP/s/core; ONNX (MLAS-backed `GroupQueryAttention`) is ~2.5× higher. Closing the rest needs
+  either an MLAS-class packed/blocked fp32 GEMM microkernel or **int8/VNNI attention matmuls** (4× less
+  K/V memory traffic + VNNI throughput) — the remaining lever, with a small extra accuracy cost.
 
-## Why pure is slower than PyTorch/ONNX — architectural review
+## Long-context scaling (4096 → 32768, pure Int8 vs ONNX Int8)
 
-- **Attention is BLAS-1, not BLAS-3.** `Gemma3Model.AttentionRow` computes scores as `seq²·heads`
-  individual `TensorPrimitives.Dot` calls and the context as `seq²·heads` `MultiplyAdd` calls. The HF
-  reference (`eager_attention_forward`) computes `attn = matmul(Q, Kᵀ) * scale` and `matmul(softmax, V)`
-  as two **batched GEMMs** (or fused `scaled_dot_product_attention`) — cache-blocked, multi-threaded
-  oneDNN/MKL, with K/V reused across all query rows instead of re-streamed per pair.
-- **Projections are GEMV-per-row, not GEMM.** `Ops.LinearColumn` (fp32) does one `Dot` per
-  `(output, seq)` with no register/cache blocking — PyTorch uses a tuned BLAS-3 GEMM. (The **Int8**
-  path *does* register-tile, which is exactly why Int8 beats fp32 on projection-bound lengths.)
-- **Threading default.** `-1` (the .NET "unbounded" sentinel) is treated as single-threaded by
-  `ParallelExecution.ForAsync`; the query path passes `ProcessorCount` explicitly, the document path
-  does not.
+_Filled in by `harrier-scaling-long` (single encode per point; O(n²) makes 32768 a multi-minute encode)._
 
-### int8-specific differences (vs the PyTorch ecosystem / ONNX int8)
+| Tokens | Pure Int8 (ms) | ONNX Int8 (ms) | ratio |
+|-------:|---------------:|---------------:|------:|
+| _pending_ | | | |
 
-- **Scope:** only the 7 linear projections are int8; `Q·Kᵀ`/softmax/`·V` stay fp32. So Int8 cannot
-  touch the O(n²) term — its speed-up vanishes as sequences grow.
-- **Dynamic per-row activation quant, recomputed & redundant:** `q/k/v` each re-quantize the *same*
-  `normed` activation (3×); `gate/up` re-quantize their shared input (2×) — 5 passes/layer for 2
-  distinct activations.
-- **Scheme:** per-output-channel symmetric weights (no zero-point) + per-row symmetric activations
-  (+128 uint8 offset for `vpdpbusd`, corrected by `rowSum`). **No outlier handling** (cf. LLM.int8()'s
-  fp16 outlier decomposition).
-- **Kernel:** register-tiled (4 out × 2–4 seq, VNNI `vpdpbusd`) but still hand-rolled per-tile, not a
-  tuned BLAS-3 library GEMM. Non-VNNI CPUs fall back to weight-only (dequant to fp32).
-- **Apples-to-apples int8** would compare against the ONNX `model_quantized.onnx` graph and/or a
-  `torch.ao` dynamically-quantized PyTorch model — not the fp32 Python reference.
-
-## Practical takeaways
-
-- The pure package's value is **zero native dependencies / AOT & WASM portability**, not peak CPU
-  throughput. For server-side throughput, ONNX (or PyTorch) is materially faster.
-- Two cheap wins for the pure path: **(1) pass `MaxDegreeOfParallelism = ProcessorCount`** to the
-  encode call (3–4×), and **(2) prefer shorter chunks** — every path pays a super-linear penalty per
-  chunk, and the pure path most of all.
-- Bigger structural win (not done here): replace the per-pair attention and per-row projection loops
-  with blocked GEMM kernels (and quantize the attention matmuls) to attack both the constant factor and
-  the quadratic term.
-
-_Reproduce: `dotnet run -c Release --project SentenceTransformers.Benchmark -- harrier-scaling`,
-`-- harrier-scaling-pure Int8`, `-- harrier-profile 1` / `-- harrier-profile 4`, then
-`python scripts/harrier_scaling_bench.py`._
+## Reproduce
+```
+dotnet run -c Release --project SentenceTransformers.Benchmark -- harrier-scaling          # 128..4096, 4 impls
+dotnet run -c Release --project SentenceTransformers.Benchmark -- harrier-scaling-long      # 4096..32768, Int8
+dotnet run -c Release --project SentenceTransformers.Benchmark -- harrier-profile 4 Int8    # per-stage profile
+dotnet run -c Release --project SentenceTransformers.Benchmark -- harrier-verify-fma        # attention correctness gate
+python scripts/harrier_scaling_bench.py                                                     # PyTorch reference
+```
