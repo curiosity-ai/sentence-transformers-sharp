@@ -128,7 +128,10 @@ foreach (var model in models)
 
 PrintTable(rows);
 
-var outPath = "/tmp/harrier_model_sweep.json";
+// Unique per-filter path so a per-model driver (each model in its own process, to isolate OS OOM-kills
+// of the 0.6B models at long contexts) does not overwrite other models' results.
+var slug = filter is null ? "all" : new string(filter.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+var outPath = $"/tmp/sweep_{slug}.json";
 await File.WriteAllTextAsync(outPath, JsonSerializer.Serialize(rows, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine();
 Console.WriteLine($"Wrote {outPath}");
