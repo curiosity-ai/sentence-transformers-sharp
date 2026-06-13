@@ -572,11 +572,7 @@ internal sealed class Gemma3Model
                 }
 
                 // Head-fused value: each value row is read once and accumulated into all 4 heads.
-                for (int jj = 0; jj < cnt; jj++)
-                {
-                    AxpyHeads4(sbuf[0 * KeyChunk + jj], sbuf[1 * KeyChunk + jj], sbuf[2 * KeyChunk + jj], sbuf[3 * KeyChunk + jj],
-                               v, (kb + jj) * kvStride, acc, accLocal, headDim);
-                }
+                AxpyHeads4Chunk(sbuf, cnt, kb, v, kvStride, acc, accLocal, headDim);
             }
         }
 
@@ -699,11 +695,7 @@ internal sealed class Gemma3Model
                     mState[st] = mNew;
                 }
 
-                for (int jj = 0; jj < cnt; jj++)
-                {
-                    AxpyHeads4(sbuf[0 * KeyChunk + jj], sbuf[1 * KeyChunk + jj], sbuf[2 * KeyChunk + jj], sbuf[3 * KeyChunk + jj],
-                               v, (kb + jj) * kvStride, acc, accLocal, headDim);
-                }
+                AxpyHeads4Chunk(sbuf, cnt, kb, v, kvStride, acc, accLocal, headDim);
             }
         }
 
@@ -873,6 +865,67 @@ internal sealed class Gemma3Model
             Unsafe.Add(ref orf, headDim + d)       += s1 * vd;
             Unsafe.Add(ref orf, 2 * headDim + d)   += s2 * vd;
             Unsafe.Add(ref orf, 3 * headDim + d)   += s3 * vd;
+        }
+    }
+
+    /// <summary>
+    /// Register-blocked value matmul for a whole key chunk: accumulates <c>O[head] += Σ_jj P[head,jj]·V[jj]</c>
+    /// for all four heads over the chunk's keys. On AVX-512 it keeps a 4-head × 64-column output tile in 16
+    /// zmm accumulators across the chunk so each head accumulator is written to memory once per tile instead
+    /// of once per key (the rank-1 <see cref="AxpyHeads4"/> path re-read/wrote acc every key). <paramref name="acc"/>
+    /// must already be rescaled by the online-softmax correction. Falls back to per-key <see cref="AxpyHeads4"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void AxpyHeads4Chunk(ReadOnlySpan<float> sbuf, int cnt, int kb, float[] v, int kvStride, float[] acc, int accLocal, int headDim)
+    {
+        if (!Avx512F.IsSupported || (headDim & 63) != 0)
+        {
+            for (int jj = 0; jj < cnt; jj++)
+            {
+                AxpyHeads4(sbuf[0 * KeyChunk + jj], sbuf[1 * KeyChunk + jj], sbuf[2 * KeyChunk + jj], sbuf[3 * KeyChunk + jj],
+                           v, (kb + jj) * kvStride, acc, accLocal, headDim);
+            }
+            return;
+        }
+
+        ref float vr = ref v[0];
+        ref float ar = ref acc[0];
+        int h0 = accLocal, h1 = accLocal + headDim, h2 = accLocal + 2 * headDim, h3 = accLocal + 3 * headDim;
+
+        for (int nt = 0; nt < headDim; nt += 64) // 4-column-vector output tile (64 floats)
+        {
+            var a00 = Vector512.LoadUnsafe(ref ar, (nuint)(h0 + nt));      var a01 = Vector512.LoadUnsafe(ref ar, (nuint)(h0 + nt + 16));
+            var a02 = Vector512.LoadUnsafe(ref ar, (nuint)(h0 + nt + 32)); var a03 = Vector512.LoadUnsafe(ref ar, (nuint)(h0 + nt + 48));
+            var a10 = Vector512.LoadUnsafe(ref ar, (nuint)(h1 + nt));      var a11 = Vector512.LoadUnsafe(ref ar, (nuint)(h1 + nt + 16));
+            var a12 = Vector512.LoadUnsafe(ref ar, (nuint)(h1 + nt + 32)); var a13 = Vector512.LoadUnsafe(ref ar, (nuint)(h1 + nt + 48));
+            var a20 = Vector512.LoadUnsafe(ref ar, (nuint)(h2 + nt));      var a21 = Vector512.LoadUnsafe(ref ar, (nuint)(h2 + nt + 16));
+            var a22 = Vector512.LoadUnsafe(ref ar, (nuint)(h2 + nt + 32)); var a23 = Vector512.LoadUnsafe(ref ar, (nuint)(h2 + nt + 48));
+            var a30 = Vector512.LoadUnsafe(ref ar, (nuint)(h3 + nt));      var a31 = Vector512.LoadUnsafe(ref ar, (nuint)(h3 + nt + 16));
+            var a32 = Vector512.LoadUnsafe(ref ar, (nuint)(h3 + nt + 32)); var a33 = Vector512.LoadUnsafe(ref ar, (nuint)(h3 + nt + 48));
+
+            for (int jj = 0; jj < cnt; jj++)
+            {
+                int vb = (kb + jj) * kvStride + nt;
+                var v0 = Vector512.LoadUnsafe(ref vr, (nuint)vb);      var v1 = Vector512.LoadUnsafe(ref vr, (nuint)(vb + 16));
+                var v2 = Vector512.LoadUnsafe(ref vr, (nuint)(vb + 32)); var v3 = Vector512.LoadUnsafe(ref vr, (nuint)(vb + 48));
+                var b0 = Vector512.Create(sbuf[0 * KeyChunk + jj]);
+                var b1 = Vector512.Create(sbuf[1 * KeyChunk + jj]);
+                var b2 = Vector512.Create(sbuf[2 * KeyChunk + jj]);
+                var b3 = Vector512.Create(sbuf[3 * KeyChunk + jj]);
+                a00 = Avx512F.FusedMultiplyAdd(b0, v0, a00); a01 = Avx512F.FusedMultiplyAdd(b0, v1, a01); a02 = Avx512F.FusedMultiplyAdd(b0, v2, a02); a03 = Avx512F.FusedMultiplyAdd(b0, v3, a03);
+                a10 = Avx512F.FusedMultiplyAdd(b1, v0, a10); a11 = Avx512F.FusedMultiplyAdd(b1, v1, a11); a12 = Avx512F.FusedMultiplyAdd(b1, v2, a12); a13 = Avx512F.FusedMultiplyAdd(b1, v3, a13);
+                a20 = Avx512F.FusedMultiplyAdd(b2, v0, a20); a21 = Avx512F.FusedMultiplyAdd(b2, v1, a21); a22 = Avx512F.FusedMultiplyAdd(b2, v2, a22); a23 = Avx512F.FusedMultiplyAdd(b2, v3, a23);
+                a30 = Avx512F.FusedMultiplyAdd(b3, v0, a30); a31 = Avx512F.FusedMultiplyAdd(b3, v1, a31); a32 = Avx512F.FusedMultiplyAdd(b3, v2, a32); a33 = Avx512F.FusedMultiplyAdd(b3, v3, a33);
+            }
+
+            a00.StoreUnsafe(ref ar, (nuint)(h0 + nt));      a01.StoreUnsafe(ref ar, (nuint)(h0 + nt + 16));
+            a02.StoreUnsafe(ref ar, (nuint)(h0 + nt + 32)); a03.StoreUnsafe(ref ar, (nuint)(h0 + nt + 48));
+            a10.StoreUnsafe(ref ar, (nuint)(h1 + nt));      a11.StoreUnsafe(ref ar, (nuint)(h1 + nt + 16));
+            a12.StoreUnsafe(ref ar, (nuint)(h1 + nt + 32)); a13.StoreUnsafe(ref ar, (nuint)(h1 + nt + 48));
+            a20.StoreUnsafe(ref ar, (nuint)(h2 + nt));      a21.StoreUnsafe(ref ar, (nuint)(h2 + nt + 16));
+            a22.StoreUnsafe(ref ar, (nuint)(h2 + nt + 32)); a23.StoreUnsafe(ref ar, (nuint)(h2 + nt + 48));
+            a30.StoreUnsafe(ref ar, (nuint)(h3 + nt));      a31.StoreUnsafe(ref ar, (nuint)(h3 + nt + 16));
+            a32.StoreUnsafe(ref ar, (nuint)(h3 + nt + 32)); a33.StoreUnsafe(ref ar, (nuint)(h3 + nt + 48));
         }
     }
 
