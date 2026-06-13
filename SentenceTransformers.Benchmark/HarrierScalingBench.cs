@@ -18,6 +18,10 @@ public static class HarrierScalingBench
 {
     private static readonly int[] Targets = { 128, 256, 512, 1024, 2048, 4096 };
 
+    /// <summary>Drives the pure encoder on all cores (without changing the library's single-threaded
+    /// default) so its numbers are comparable to ONNX Runtime / PyTorch, which use every core.</summary>
+    private static ParallelOptions MaxCores => new() { MaxDegreeOfParallelism = Environment.ProcessorCount };
+
     // Deterministic, content-agnostic word pool. The model's cost depends on sequence length, not on
     // which tokens appear, so a repeated pool is fine and keeps the input reproducible.
     private static readonly string[] Pool =
@@ -60,45 +64,36 @@ public static class HarrierScalingBench
         Console.WriteLine($"Wrote calibrated inputs -> {inputsPath}");
         Console.WriteLine();
 
-        // ---- 2. Time the pure encoder at each token count. ----
-        var pureMs = new double[inputs.Count];
-        Console.WriteLine("=== Harrier.Small.Pure (fp32) ===");
-        for (int i = 0; i < inputs.Count; i++)
-        {
-            pureMs[i] = await TimeEncodeAsync(s => pure.EncodeAsync(s), inputs[i].Text, inputs[i].Tokens);
-        }
-        Console.WriteLine();
+        var texts = inputs.Select(i => i.Text).ToArray();
+        var tokenCounts = inputs.Select(i => i.Tokens).ToArray();
 
-        // ---- 3. Time the ONNX encoder (default Q4F16) at each token count. ----
-        var onnxMs = new double[inputs.Count];
-        bool onnxOk = true;
-        try
+        // ---- 2. Pure encoder (fp32 + Int8), run on all cores for a fair architectural comparison. ----
+        var pureFp32 = await TimeColumnAsync("Harrier.Small.Pure (fp32)",
+            s => pure.EncodeAsync(s, MaxCores), texts, tokenCounts);
+
+        Console.WriteLine("Loading Harrier.Small.Pure (Int8) ...");
+        double[] pureInt8;
+        using (var pureQ = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(
+                   quantization: SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8))
         {
-            Console.WriteLine("Loading Harrier.Small (ONNX Q4F16) ...");
-            using var onnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(
-                reportProgress: Progress("onnx-weights"));
-            Console.WriteLine();
-            Console.WriteLine("=== Harrier.Small (ONNX Q4F16) ===");
-            for (int i = 0; i < inputs.Count; i++)
-            {
-                onnxMs[i] = await TimeEncodeAsync(s => onnx.EncodeAsync(s), inputs[i].Text, inputs[i].Tokens);
-            }
+            pureInt8 = await TimeColumnAsync("Harrier.Small.Pure (Int8)",
+                s => pureQ.EncodeAsync(s, MaxCores), texts, tokenCounts);
         }
-        catch (Exception ex)
-        {
-            onnxOk = false;
-            Console.WriteLine($"ONNX run failed: {ex.Message}");
-        }
-        Console.WriteLine();
+
+        // ---- 3. ONNX encoder (Q4F16 default + Int8 'quantized' variant). ----
+        var onnxQ4 = await TimeOnnxAsync("Harrier.Small (ONNX Q4F16)", texts, tokenCounts,
+            modelUrl: null, dataUrl: null);
+        var onnxInt8 = await TimeOnnxAsync("Harrier.Small (ONNX Int8)", texts, tokenCounts,
+            modelUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelUrl,
+            dataUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelDataUrl);
 
         // ---- 4. Summary table + machine-readable results for merging with Python. ----
-        Console.WriteLine("=== Scalability: elapsed ms per encode vs token count ===");
-        Console.WriteLine($"{"Tokens",8} | {"Pure fp32 (ms)",16} | {"ONNX Q4F16 (ms)",16}");
-        Console.WriteLine(new string('-', 50));
+        Console.WriteLine("=== Scalability: elapsed ms per encode vs token count (all on max cores) ===");
+        Console.WriteLine($"{"Tokens",8} | {"Pure fp32",12} | {"Pure Int8",12} | {"ONNX Q4F16",12} | {"ONNX Int8",12}");
+        Console.WriteLine(new string('-', 70));
         for (int i = 0; i < inputs.Count; i++)
         {
-            var onnxCell = onnxOk ? onnxMs[i].ToString("n1") : "n/a";
-            Console.WriteLine($"{inputs[i].Tokens,8} | {pureMs[i],16:n1} | {onnxCell,16}");
+            Console.WriteLine($"{tokenCounts[i],8} | {pureFp32[i],12:n1} | {pureInt8[i],12:n1} | {Cell(onnxQ4, i),12} | {Cell(onnxInt8, i),12}");
         }
 
         var resultsPath = "/tmp/harrier_scaling_csharp.json";
@@ -107,12 +102,53 @@ public static class HarrierScalingBench
             {
                 target = inp.Target,
                 tokens = inp.Tokens,
-                pure_ms = pureMs[i],
-                onnx_ms = onnxOk ? (double?)onnxMs[i] : null,
+                pure_fp32_ms = pureFp32[i],
+                pure_int8_ms = pureInt8[i],
+                onnx_q4f16_ms = onnxQ4?[i],
+                onnx_int8_ms = onnxInt8?[i],
             }),
             new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine();
         Console.WriteLine($"Wrote C# results -> {resultsPath}");
+
+        static string Cell(double[] col, int i) => col is null ? "n/a" : col[i].ToString("n1");
+    }
+
+    private static async Task<double[]> TimeColumnAsync(string label, Func<string[], Task<float[][]>> encode, string[] texts, int[] tokens)
+    {
+        Console.WriteLine($"=== {label} ===");
+        var ms = new double[texts.Length];
+        for (int i = 0; i < texts.Length; i++)
+        {
+            ms[i] = await TimeEncodeAsync(encode, texts[i], tokens[i]);
+        }
+        Console.WriteLine();
+        return ms;
+    }
+
+    /// <summary>Downloads (if needed) and times an ONNX variant; returns null if it cannot be loaded.
+    /// ONNX Runtime uses every core by default, so no ParallelOptions plumbing is needed here.</summary>
+    private static async Task<double[]> TimeOnnxAsync(string label, string[] texts, int[] tokens, string modelUrl, string dataUrl)
+    {
+        try
+        {
+            Console.WriteLine($"Loading {label} ...");
+            using var onnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(
+                modelUrl: modelUrl,
+                modelDataUrl: dataUrl,
+                downloadToPath: modelUrl is null
+                    ? null
+                    : Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Int8", "model.onnx"),
+                reportProgress: Progress("onnx-weights"));
+            Console.WriteLine();
+            return await TimeColumnAsync(label, s => onnx.EncodeAsync(s), texts, tokens);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"{label} failed: {ex.Message}");
+            Console.WriteLine();
+            return null;
+        }
     }
 
     /// <summary>
@@ -144,7 +180,7 @@ public static class HarrierScalingBench
         Console.WriteLine($"=== Harrier.Small.Pure ({quant}) ===");
         for (int i = 0; i < inputs.Count; i++)
         {
-            ms[i] = await TimeEncodeAsync(s => pure.EncodeAsync(s), inputs[i].Text, inputs[i].Tokens);
+            ms[i] = await TimeEncodeAsync(s => pure.EncodeAsync(s, MaxCores), inputs[i].Text, inputs[i].Tokens);
         }
 
         var resultsPath = $"/tmp/harrier_scaling_pure_{quant}.json";
@@ -154,6 +190,68 @@ public static class HarrierScalingBench
         Console.WriteLine();
         Console.WriteLine($"Wrote results -> {resultsPath}");
     }
+
+    /// <summary>
+    /// Correctness gate: encodes the 5 multilingual reference sentences with the pure encoder (fp32 and
+    /// Int8) and compares each embedding to the PyTorch golden reference via cosine similarity. Also
+    /// writes the pure embeddings to <c>/tmp/harrier_verify_{quant}_{tag}.json</c> so a before/after run
+    /// can confirm an optimization did not move the output beyond float-reassociation noise.
+    /// </summary>
+    public static async Task RunVerifyAsync(string tag)
+    {
+        // The golden reference lives in the test project's Resources.
+        string[] candidates =
+        {
+            Path.Combine(AppContext.BaseDirectory, "harrier-small-reference.json"),
+            "/home/user/sentence-transformers-sharp/SentenceTransformers.Test/Resources/harrier-small-reference.json",
+        };
+        var refPath = candidates.FirstOrDefault(File.Exists);
+        if (refPath is null)
+        {
+            Console.WriteLine($"Reference JSON not found (looked in: {string.Join(", ", candidates)}).");
+            return;
+        }
+
+        using var refDoc = JsonDocument.Parse(await File.ReadAllTextAsync(refPath));
+        var sentences = refDoc.RootElement.GetProperty("sentences").EnumerateArray().Select(e => e.GetString()!).ToArray();
+        var golden = refDoc.RootElement.GetProperty("embeddings").EnumerateArray()
+            .Select(row => row.EnumerateArray().Select(x => x.GetSingle()).ToArray()).ToArray();
+
+        foreach (var quant in new[]
+        {
+            SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None,
+            SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8,
+        })
+        {
+            using var enc = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(quantization: quant);
+            var emb = await enc.EncodeAsync(sentences, MaxCores);
+
+            Console.WriteLine($"=== verify {quant} ({tag}) vs PyTorch golden ===");
+            double minCos = 1.0, sumCos = 0;
+            for (int i = 0; i < sentences.Length; i++)
+            {
+                double cos = Cosine(emb[i], golden[i]);
+                minCos = Math.Min(minCos, cos);
+                sumCos += cos;
+                Console.WriteLine($"  sent[{i}] cos(golden) = {cos:F6}  | {Trim(sentences[i])}");
+            }
+            Console.WriteLine($"  min={minCos:F6} avg={sumCos / sentences.Length:F6}");
+            Console.WriteLine();
+
+            var outPath = $"/tmp/harrier_verify_{quant}_{tag}.json";
+            await File.WriteAllTextAsync(outPath, JsonSerializer.Serialize(
+                emb.Select(v => v.Select(x => (double)x).ToArray()).ToArray()));
+        }
+    }
+
+    private static double Cosine(float[] a, float[] b)
+    {
+        double dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < a.Length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+        return dot / (Math.Sqrt(na) * Math.Sqrt(nb) + 1e-12);
+    }
+
+    private static string Trim(string s) => s.Length <= 28 ? s : s.Substring(0, 28) + "…";
 
     /// <summary>
     /// Per-stage profile of the pure fp32 forward pass at a few sequence lengths, at a chosen degree of

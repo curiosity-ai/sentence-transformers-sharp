@@ -290,10 +290,19 @@ internal sealed class Gemma3Model
         }
     }
 
+    /// <summary>Query positions processed together per attention block. The shared single KV head's
+    /// key/value vectors are loaded once per key and reused across all <see cref="QueryBlock"/> queries
+    /// × all query heads, so each cache line of K/V services <c>QueryBlock * NumHeads</c> dot products
+    /// instead of one. Keeps the per-block score scratch (<c>QueryBlock * heads * seq</c> floats) and the
+    /// queries it sweeps comfortably cache-resident.</summary>
+    private const int QueryBlock = 8;
+
     /// <summary>Causal grouped-query attention. The single KV head is shared by all query heads.
-    /// Parallelizes over query positions via <see cref="ParallelExecution.ForAsync"/>: per-index
-    /// <c>Parallel.ForAsync</c> dispatch gives dynamic load balancing for the triangular causal work
-    /// when <see cref="ParallelExecution.Enabled"/>, and runs single-threaded otherwise.</summary>
+    /// Parallelizes over <see cref="QueryBlock"/>-sized blocks of query positions via
+    /// <see cref="ParallelExecution.ForAsync"/> (dynamic load balancing for the triangular causal work
+    /// when the caller requests parallelism, single-threaded otherwise). The math is identical to a
+    /// per-(query, head) loop - the keys/values are merely streamed in an order that reuses each K/V
+    /// vector across the whole block, which is the dominant cost of the quadratic attention term.</summary>
     private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, ParallelOptions parallelOptions)
     {
         int qStride  = _cfg.NumHeads * headDim;
@@ -301,38 +310,85 @@ internal sealed class Gemma3Model
         int heads    = _cfg.NumHeads;
         float scale  = _cfg.AttentionScale;
 
-        return ParallelExecution.ForAsync(0, seq, parallelOptions, (i, _) =>
+        int numBlocks = (seq + QueryBlock - 1) / QueryBlock;
+
+        return ParallelExecution.ForAsync(0, numBlocks, parallelOptions, (b, _) =>
         {
-            AttentionRow(q, k, v, attnOut, i, headDim, qStride, kvStride, heads, scale);
+            int q0 = b * QueryBlock;
+            int q1 = Math.Min(q0 + QueryBlock, seq);
+            AttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
             return ValueTask.CompletedTask;
         });
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
-    /// <summary>Computes attention output for one query position across all heads. Synchronous so the
-    /// pooled score buffer and spans stay out of an async body. Score buffers come from a pool (no
-    /// per-call allocations); the value accumulation is a vectorized scalar*vector add.</summary>
-    private static void AttentionRow(float[] q, float[] k, float[] v, float[] attnOut, int i, int headDim, int qStride, int kvStride, int heads, float scale)
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    /// <summary>Computes attention output for the query positions <c>[q0, q1)</c> across all heads.
+    /// Key/value vectors are loaded in the outer loop so each is reused across every query in the block
+    /// and every head (the single shared KV head), which keeps K/V cache-resident during reuse. The
+    /// per-(query, head) softmax and the j-ordered value accumulation are unchanged, so the output is
+    /// bit-identical to a naive per-row implementation.</summary>
+    private static void AttentionBlock(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
     {
-        float[] scores = ArrayPool<float>.Shared.Rent(i + 1);
+        int blk     = q1 - q0;
+        int nKeys   = q1;                 // keys 0..q1-1 are the most any query in this block attends to
+        int perQ    = heads * nKeys;      // scores stride per query in the block
+        float[] scores = ArrayPool<float>.Shared.Rent(blk * perQ);
 
-        for (int head = 0; head < heads; head++)
+        // --- scores: scale * (q_head . k_j), key-outer so k_j is read once and reused blk*heads times ---
+        for (int j = 0; j < nKeys; j++)
         {
-            var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
-
-            for (int j = 0; j <= i; j++)
+            var kSpan = new ReadOnlySpan<float>(k, j * kvStride, headDim);
+            for (int local = 0; local < blk; local++)
             {
-                scores[j] = TensorPrimitives.Dot(qSpan, new ReadOnlySpan<float>(k, j * kvStride, headDim)) * scale;
+                int qi = q0 + local;
+                if (j > qi) continue;     // causal mask
+                int qBase  = qi * qStride;
+                int sBase  = local * perQ;
+                for (int head = 0; head < heads; head++)
+                {
+                    var qSpan = new ReadOnlySpan<float>(q, qBase + head * headDim, headDim);
+                    scores[sBase + head * nKeys + j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                }
             }
+        }
 
-            Ops.SoftmaxInPlace(scores, i + 1);
-
-            var outSpan = new Span<float>(attnOut, i * qStride + head * headDim, headDim);
-            outSpan.Clear();
-            for (int j = 0; j <= i; j++)
+        // --- per-(query, head) softmax over its causal prefix ---
+        for (int local = 0; local < blk; local++)
+        {
+            int qi = q0 + local;
+            int sBase = local * perQ;
+            for (int head = 0; head < heads; head++)
             {
-                // outSpan += scores[j] * v[j]
-                TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, j * kvStride, headDim), scores[j], outSpan, outSpan);
+                Ops.SoftmaxInPlace(scores.AsSpan(sBase + head * nKeys, qi + 1), qi + 1);
+            }
+        }
+
+        // --- value accumulation: out += scores[j] * v_j, key-outer so v_j is reused blk*heads times.
+        //     For each (query, head) the j sum runs 0..qi in order, identical to the per-row path. ---
+        for (int local = 0; local < blk; local++)
+        {
+            int qi = q0 + local;
+            for (int head = 0; head < heads; head++)
+            {
+                new Span<float>(attnOut, qi * qStride + head * headDim, headDim).Clear();
+            }
+        }
+
+        for (int j = 0; j < nKeys; j++)
+        {
+            var vSpan = new ReadOnlySpan<float>(v, j * kvStride, headDim);
+            for (int local = 0; local < blk; local++)
+            {
+                int qi = q0 + local;
+                if (j > qi) continue;
+                int qBase = qi * qStride;
+                int sBase = local * perQ;
+                for (int head = 0; head < heads; head++)
+                {
+                    float w = scores[sBase + head * nKeys + j];
+                    var outSpan = new Span<float>(attnOut, qBase + head * headDim, headDim);
+                    TensorPrimitives.MultiplyAdd(vSpan, w, outSpan, outSpan);
+                }
             }
         }
 

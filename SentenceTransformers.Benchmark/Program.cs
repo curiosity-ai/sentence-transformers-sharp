@@ -31,6 +31,13 @@ if (args.Length > 0 && args[0] == "harrier-scaling")
     return;
 }
 
+if (args.Length > 0 && args[0] == "harrier-verify")
+{
+    var tag = args.Length > 1 ? args[1] : "run";
+    await HarrierScalingBench.RunVerifyAsync(tag);
+    return;
+}
+
 if (args.Length > 0 && args[0] == "harrier-profile")
 {
     int maxDop = args.Length > 1 ? int.Parse(args[1]) : 1;
