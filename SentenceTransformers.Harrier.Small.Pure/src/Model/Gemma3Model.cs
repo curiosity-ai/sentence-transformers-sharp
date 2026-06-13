@@ -292,21 +292,26 @@ internal sealed class Gemma3Model
         }
     }
 
-    /// <summary>Query positions processed together per attention block. The shared single KV head's
-    /// key/value vectors are loaded once per key and reused across all <see cref="QueryBlock"/> queries
-    /// × all query heads, so each cache line of K/V services <c>QueryBlock * NumHeads</c> dot products
-    /// instead of one. Keeps the per-block score scratch (<c>QueryBlock * heads * seq</c> floats) and the
-    /// queries it sweeps comfortably cache-resident.</summary>
+    /// <summary>Query positions processed together per attention block.</summary>
     private const int QueryBlock = 16;
 
+    /// <summary>Key chunk for the block-flash kernel: keys are processed in <see cref="KeyChunk"/>-sized
+    /// tiles so the per-query score scratch (one chunk) stays in L1 and <c>exp</c> stays vectorized,
+    /// while the K/V chunk is reused across all <see cref="FlashQueryBlock"/> queries of the block.</summary>
+    private const int KeyChunk = 256;
+
+    /// <summary>Query block for the block-flash kernel. Larger than <see cref="QueryBlock"/> because the
+    /// flash path's scratch no longer scales with it (only the per-query running state does), so each
+    /// loaded K/V chunk is reused across more queries - cutting K/V memory traffic, the bottleneck of the
+    /// quadratic term.</summary>
+    private const int FlashQueryBlock = 64;
+
     /// <summary>Causal grouped-query attention. The single KV head is shared by all query heads.
-    /// Parallelizes over <see cref="QueryBlock"/>-sized blocks of query positions via
-    /// <see cref="ParallelExecution.ForAsync"/> (dynamic load balancing for the triangular causal work).
-    /// Each block computes scores tile-by-tile, applies a vectorized softmax, then the value sum, reusing
-    /// each key/value vector across the whole block (the dominant cost of the quadratic attention term).
-    /// A streaming online-softmax (flash) variant was measured slower here: on CPU the per-element scalar
-    /// <c>exp</c> it requires loses badly to the materialized path's vectorized <c>TensorPrimitives.Exp</c>
-    /// over whole score rows.</summary>
+    /// On x64 each query block runs <see cref="FlashAttentionBlock"/> - a block-wise flash attention that
+    /// streams keys in L1-sized chunks with an online softmax (vectorized <c>exp</c> per chunk) and never
+    /// materializes the seq×seq score matrix, which is the memory bottleneck of the quadratic term. Other
+    /// hosts use the portable head-fused materialized path <see cref="AttentionBlock"/>. (A non-chunked
+    /// online softmax was measured slower: its per-element scalar <c>exp</c> loses to vectorized exp.)</summary>
     private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, ParallelOptions parallelOptions)
     {
         int qStride  = _cfg.NumHeads * headDim;
@@ -314,13 +319,22 @@ internal sealed class Gemma3Model
         int heads    = _cfg.NumHeads;
         float scale  = _cfg.AttentionScale;
 
-        int numBlocks = (seq + QueryBlock - 1) / QueryBlock;
+        bool useFlash = !ForwardProfile.ForcePortableAttention && Fma.IsSupported && (headDim & 7) == 0;
+        int block     = useFlash ? FlashQueryBlock : QueryBlock;
+        int numBlocks = (seq + block - 1) / block;
 
         return ParallelExecution.ForAsync(0, numBlocks, parallelOptions, (b, _) =>
         {
-            int q0 = b * QueryBlock;
-            int q1 = Math.Min(q0 + QueryBlock, seq);
-            AttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
+            int q0 = b * block;
+            int q1 = Math.Min(q0 + block, seq);
+            if (useFlash)
+            {
+                FlashAttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
+            }
+            else
+            {
+                AttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
+            }
             return ValueTask.CompletedTask;
         });
     }
@@ -399,6 +413,135 @@ internal sealed class Gemma3Model
         }
 
         ArrayPool<float>.Shared.Return(scores);
+    }
+
+    /// <summary>
+    /// Block-wise flash attention for the query positions <c>[q0, q1)</c> on x64. Keys are streamed in
+    /// <see cref="KeyChunk"/>-sized tiles; for each (query, chunk) the chunk's scores are computed into an
+    /// L1 buffer, exponentiated with a <b>vectorized</b> <c>exp</c>, and folded into a per-query
+    /// online-softmax running max / denominator / value accumulator. The seq×seq score matrix is never
+    /// materialized (its memory traffic was the quadratic term's bottleneck), and each K/V chunk is reused
+    /// across all queries in the (large) block. Float results match the reference to tolerance
+    /// (online-softmax + FMA/lane reassociation only).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void FlashAttentionBlock(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
+    {
+        int blk = q1 - q0;
+        float[] acc = ArrayPool<float>.Shared.Rent(blk * headDim);
+        Span<float> mState = stackalloc float[FlashQueryBlock];
+        Span<float> lState = stackalloc float[FlashQueryBlock];
+        Span<float> sbuf = stackalloc float[KeyChunk];
+
+        ref float qr = ref q[0];
+        ref float kr = ref k[0];
+        ref float vr = ref v[0];
+
+        for (int head = 0; head < heads; head++)
+        {
+            int headOff = head * headDim;
+            Array.Clear(acc, 0, blk * headDim);
+            mState.Slice(0, blk).Fill(float.NegativeInfinity);
+            lState.Slice(0, blk).Clear();
+
+            for (int kb = 0; kb < q1; kb += KeyChunk)
+            {
+                int kEnd = Math.Min(kb + KeyChunk, q1);
+                for (int local = 0; local < blk; local++)
+                {
+                    int qi = q0 + local;
+                    if (kb > qi) continue;                 // whole chunk is causally masked for this query
+                    int jHi = Math.Min(kEnd, qi + 1);
+                    int cnt = jHi - kb;
+                    int qb = qi * qStride + headOff;
+
+                    for (int jj = 0; jj < cnt; jj++)
+                    {
+                        sbuf[jj] = DotFma(ref qr, qb, ref kr, (kb + jj) * kvStride, headDim) * scale;
+                    }
+
+                    var s = sbuf.Slice(0, cnt);
+                    float bmax = TensorPrimitives.Max(s);
+                    float mPrev = mState[local];
+                    float mNew = MathF.Max(mPrev, bmax);
+
+                    TensorPrimitives.Subtract(s, mNew, s);  // s -= mNew
+                    TensorPrimitives.Exp(s, s);             // s = exp(s - mNew)  (vectorized)
+                    float psum = TensorPrimitives.Sum(s);
+                    float corr = float.IsNegativeInfinity(mPrev) ? 0f : MathF.Exp(mPrev - mNew);
+
+                    lState[local] = lState[local] * corr + psum;
+                    int accBase = local * headDim;
+                    if (corr != 1f)
+                    {
+                        ScaleInPlaceFma(acc, accBase, corr, headDim);   // rescale prior contributions to new max
+                    }
+                    for (int jj = 0; jj < cnt; jj++)
+                    {
+                        AxpyFma(acc, accBase, ref vr, (kb + jj) * kvStride, s[jj], headDim); // acc += p_jj * V_j
+                    }
+                    mState[local] = mNew;
+                }
+            }
+
+            for (int local = 0; local < blk; local++)
+            {
+                float inv = lState[local] > 0f ? 1f / lState[local] : 0f;
+                ScaleTo(acc, local * headDim, attnOut, (q0 + local) * qStride + headOff, inv, headDim);
+            }
+        }
+
+        ArrayPool<float>.Shared.Return(acc);
+    }
+
+    /// <summary>256-bit FMA dot product over <paramref name="dim"/> (a multiple of 8).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float DotFma(ref float a, int aOff, ref float b, int bOff, int dim)
+    {
+        var acc = Vector256<float>.Zero;
+        for (int d = 0; d < dim; d += 8)
+        {
+            acc = Fma.MultiplyAdd(Vector256.LoadUnsafe(ref a, (nuint)(aOff + d)), Vector256.LoadUnsafe(ref b, (nuint)(bOff + d)), acc);
+        }
+        return Vector256.Sum(acc);
+    }
+
+    /// <summary><c>acc += p * v</c> over <paramref name="dim"/> (FMA).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AxpyFma(float[] acc, int accBase, ref float v, int vOff, float p, int dim)
+    {
+        ref float ar = ref acc[0];
+        var pv = Vector256.Create(p);
+        for (int d = 0; d < dim; d += 8)
+        {
+            Fma.MultiplyAdd(pv, Vector256.LoadUnsafe(ref v, (nuint)(vOff + d)), Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)))
+               .StoreUnsafe(ref ar, (nuint)(accBase + d));
+        }
+    }
+
+    /// <summary><c>acc *= corr</c> over <paramref name="dim"/> (online-softmax rescale).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ScaleInPlaceFma(float[] acc, int accBase, float corr, int dim)
+    {
+        ref float ar = ref acc[0];
+        var cv = Vector256.Create(corr);
+        for (int d = 0; d < dim; d += 8)
+        {
+            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * cv).StoreUnsafe(ref ar, (nuint)(accBase + d));
+        }
+    }
+
+    /// <summary><c>out = acc * inv</c> over <paramref name="dim"/> (final softmax normalization).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ScaleTo(float[] acc, int accBase, float[] outArr, int outBase, float inv, int dim)
+    {
+        ref float ar = ref acc[0];
+        ref float orf = ref outArr[0];
+        var iv = Vector256.Create(inv);
+        for (int d = 0; d < dim; d += 8)
+        {
+            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * iv).StoreUnsafe(ref orf, (nuint)(outBase + d));
+        }
     }
 
     /// <summary>Dots the four GQA query heads at <paramref name="qBase"/> against the single shared key
