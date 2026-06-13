@@ -1,6 +1,9 @@
 using System.Buffers;
+using System.Numerics;
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using SentenceTransformers;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
 
@@ -36,6 +39,12 @@ internal sealed class Gemma3Model
     private readonly Layer[] _layers;
     private readonly float[] _finalNorm;
 
+    /// <summary>When true (quantized weight modes on a VNNI host), attention scores are computed with an
+    /// int8 VNNI dot: Q/K are dynamically quantized per row so the score matmul reads K at 1 byte/element
+    /// (4x less memory than fp32 - attention is memory-bound) and uses <c>vpdpbusd</c>. The value matmul
+    /// stays fp32 (per-row V scales do not fold into an int dot).</summary>
+    private readonly bool _int8Attention;
+
     private sealed class Layer
     {
         public required float[] InputLayerNorm;
@@ -53,12 +62,13 @@ internal sealed class Gemma3Model
         public required IWeightMatrix DownProj;
     }
 
-    private Gemma3Model(Gemma3Config cfg, ushort[] embedTokens, Layer[] layers, float[] finalNorm)
+    private Gemma3Model(Gemma3Config cfg, ushort[] embedTokens, Layer[] layers, float[] finalNorm, bool int8Attention)
     {
         _cfg = cfg;
         _embedTokens = embedTokens;
         _layers = layers;
         _finalNorm = finalNorm;
+        _int8Attention = int8Attention;
         // The reference scales embeddings by sqrt(hidden_size) rounded to the embedding's bfloat16
         // dtype; reproduce that rounding so our activations track the reference exactly.
         _embedScale = FloatConversions.RoundToBFloat16(MathF.Sqrt(cfg.HiddenSize));
@@ -110,7 +120,7 @@ internal sealed class Gemma3Model
 
         var finalNorm = st.ReadFloat(prefix + "norm.weight");
 
-        return new Gemma3Model(cfg, embed, layers, finalNorm);
+        return new Gemma3Model(cfg, embed, layers, finalNorm, int8Attention: quantization != Quantization.None);
     }
 
     internal static ArrayPool<float> _pooledArray = ArrayPool<float>.Create(512000, 24);
@@ -167,34 +177,62 @@ internal sealed class Gemma3Model
             {
                 parallelOptions.CancellationToken.ThrowIfCancellationRequested();
 
+                long ts;
                 // ---- self attention ----
+                ts = ForwardProfile.Start();
                 Ops.RmsNorm(hidden, layer.InputLayerNorm, normed, seq, h, _cfg.RmsNormEps);
+                ForwardProfile.Stop("norm+resid", ts);
+
+                ts = ForwardProfile.Start();
                 await layer.QProj.MultiplyAsync(normed, q, seq, parallelOptions).ConfigureAwait(false);
                 await layer.KProj.MultiplyAsync(normed, k, seq, parallelOptions).ConfigureAwait(false);
                 await layer.VProj.MultiplyAsync(normed, v, seq, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("qkv_proj", ts);
 
+                ts = ForwardProfile.Start();
                 ApplyHeadNorm(q, layer.QNorm, seq, _cfg.NumHeads, headDim);
                 ApplyHeadNorm(k, layer.KNorm, seq, _cfg.NumKvHeads, headDim);
 
                 ApplyRope(q, cos, sin, seq, _cfg.NumHeads, headDim);
                 ApplyRope(k, cos, sin, seq, _cfg.NumKvHeads, headDim);
+                ForwardProfile.Stop("headnorm+rope", ts);
 
+                ts = ForwardProfile.Start();
                 await AttentionAsync(q, k, v, attnOut, seq, headDim, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("attention", ts);
 
+                ts = ForwardProfile.Start();
                 await layer.OProj.MultiplyAsync(attnOut, attnProj, seq, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("o_proj", ts);
+
                 // post-attention norm then residual add
+                ts = ForwardProfile.Start();
                 Ops.RmsNorm(attnProj, layer.PostAttentionLayerNorm, attnProj, seq, h, _cfg.RmsNormEps);
                 TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), attnProj.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
+                ForwardProfile.Stop("norm+resid", ts);
 
                 // ---- feed forward ----
+                ts = ForwardProfile.Start();
                 Ops.RmsNorm(hidden, layer.PreFeedforwardLayerNorm, normed, seq, h, _cfg.RmsNormEps);
+                ForwardProfile.Stop("norm+resid", ts);
+
+                ts = ForwardProfile.Start();
                 await layer.GateProj.MultiplyAsync(normed, gate, seq, parallelOptions).ConfigureAwait(false);
                 await layer.UpProj.MultiplyAsync(normed, up, seq, parallelOptions).ConfigureAwait(false);
-                int ffLen = seq * _cfg.IntermediateSize;
-                Ops.GeGluInPlace(gate.AsSpan(0, ffLen), up.AsSpan(0, ffLen));
+                ForwardProfile.Stop("mlp_proj", ts);
+
+                ts = ForwardProfile.Start();
+                await Ops.GeGluAsync(gate, up, seq, _cfg.IntermediateSize, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("geglu", ts);
+
+                ts = ForwardProfile.Start();
                 await layer.DownProj.MultiplyAsync(gate, down, seq, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("mlp_proj", ts);
+
+                ts = ForwardProfile.Start();
                 Ops.RmsNorm(down, layer.PostFeedforwardLayerNorm, down, seq, h, _cfg.RmsNormEps);
                 TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), down.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
+                ForwardProfile.Stop("norm+resid", ts);
             }
 
             // ---- final norm + last-token pooling ----
@@ -261,53 +299,634 @@ internal sealed class Gemma3Model
         }
     }
 
+    /// <summary>Query positions processed together per attention block.</summary>
+    private const int QueryBlock = 16;
+
+    /// <summary>Key chunk for the block-flash kernel: keys are processed in <see cref="KeyChunk"/>-sized
+    /// tiles so the per-query score scratch (one chunk) stays in L1 and <c>exp</c> stays vectorized,
+    /// while the K/V chunk is reused across all <see cref="FlashQueryBlock"/> queries of the block.</summary>
+    private const int KeyChunk = 256;
+
+    /// <summary>Query block for the block-flash kernel. Larger than <see cref="QueryBlock"/> because the
+    /// flash path's scratch no longer scales with it (only the per-query running state does), so each
+    /// loaded K/V chunk is reused across more queries - cutting K/V memory traffic, the bottleneck of the
+    /// quadratic term.</summary>
+    private const int FlashQueryBlock = 32;
+
     /// <summary>Causal grouped-query attention. The single KV head is shared by all query heads.
-    /// Parallelizes over query positions via <see cref="ParallelExecution.ForAsync"/>: per-index
-    /// <c>Parallel.ForAsync</c> dispatch gives dynamic load balancing for the triangular causal work
-    /// when <see cref="ParallelExecution.Enabled"/>, and runs single-threaded otherwise.</summary>
-    private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, ParallelOptions parallelOptions)
+    /// On x64 each query block runs <see cref="FlashAttentionBlock"/> - a block-wise flash attention that
+    /// streams keys in L1-sized chunks with an online softmax (vectorized <c>exp</c> per chunk) and never
+    /// materializes the seq×seq score matrix, which is the memory bottleneck of the quadratic term. Other
+    /// hosts use the portable head-fused materialized path <see cref="AttentionBlock"/>. (A non-chunked
+    /// online softmax was measured slower: its per-element scalar <c>exp</c> loses to vectorized exp.)</summary>
+    private async Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, ParallelOptions parallelOptions)
     {
         int qStride  = _cfg.NumHeads * headDim;
         int kvStride = _cfg.NumKvHeads * headDim; // == headDim (1 KV head)
         int heads    = _cfg.NumHeads;
         float scale  = _cfg.AttentionScale;
 
-        return ParallelExecution.ForAsync(0, seq, parallelOptions, (i, _) =>
+        bool force   = ForwardProfile.ForcePortableAttention;
+        bool useInt8 = !force && _int8Attention && Vnni.IsSupported && (headDim % 32 == 0);
+        bool useFlash = !force && Fma.IsSupported && (headDim & 7) == 0;
+
+        if (useInt8)
         {
-            AttentionRow(q, k, v, attnOut, i, headDim, qStride, kvStride, heads, scale);
+            // Dynamically quantize Q (uint8, +128) and K (int8) per row once, then run the flash kernel
+            // with VNNI int8 scores. Q/K quantization is O(seq*headDim) and parallelizes over positions.
+            var qu  = ArrayPool<byte>.Shared.Rent(seq * qStride);
+            var sQ  = ArrayPool<float>.Shared.Rent(seq * heads);
+            var kq  = ArrayPool<sbyte>.Shared.Rent(seq * kvStride);
+            var sK  = ArrayPool<float>.Shared.Rent(seq);
+            var rsK = ArrayPool<int>.Shared.Rent(seq);
+            try
+            {
+                await ParallelExecution.ForAsync(0, seq, parallelOptions, (i, _) =>
+                {
+                    QuantizeQRow(q, qu, sQ, i * qStride, i * heads, heads, headDim);
+                    QuantizeKRow(k, kq, sK, rsK, i, kvStride, headDim);
+                    return ValueTask.CompletedTask;
+                }).ConfigureAwait(false);
+
+                int nb = (seq + FlashQueryBlock - 1) / FlashQueryBlock;
+                await ParallelExecution.ForAsync(0, nb, parallelOptions, (b, _) =>
+                {
+                    int q0 = b * FlashQueryBlock;
+                    int q1 = Math.Min(q0 + FlashQueryBlock, seq);
+                    FlashAttentionBlockInt8(qu, sQ, kq, sK, rsK, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
+                    return ValueTask.CompletedTask;
+                }).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(qu);
+                ArrayPool<float>.Shared.Return(sQ);
+                ArrayPool<sbyte>.Shared.Return(kq);
+                ArrayPool<float>.Shared.Return(sK);
+                ArrayPool<int>.Shared.Return(rsK);
+            }
+            return;
+        }
+
+        int block     = useFlash ? FlashQueryBlock : QueryBlock;
+        int numBlocks = (seq + block - 1) / block;
+
+        await ParallelExecution.ForAsync(0, numBlocks, parallelOptions, (b, _) =>
+        {
+            int q0 = b * block;
+            int q1 = Math.Min(q0 + block, seq);
+            if (useFlash)
+            {
+                FlashAttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
+            }
+            else
+            {
+                AttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
+            }
             return ValueTask.CompletedTask;
-        });
+        }).ConfigureAwait(false);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
-    /// <summary>Computes attention output for one query position across all heads. Synchronous so the
-    /// pooled score buffer and spans stay out of an async body. Score buffers come from a pool (no
-    /// per-call allocations); the value accumulation is a vectorized scalar*vector add.</summary>
-    private static void AttentionRow(float[] q, float[] k, float[] v, float[] attnOut, int i, int headDim, int qStride, int kvStride, int heads, float scale)
+    /// <summary>Quantizes the <paramref name="heads"/> head-rows of query position <paramref name="qBase"/>
+    /// to symmetric int8 stored offset by +128 into a uint8 (the operand <c>vpdpbusd</c> expects), with a
+    /// per-(position, head) scale.</summary>
+    private static void QuantizeQRow(float[] q, byte[] qu, float[] sQ, int qBase, int sBase, int heads, int headDim)
     {
-        float[] scores = ArrayPool<float>.Shared.Rent(i + 1);
-
-        for (int head = 0; head < heads; head++)
+        for (int h = 0; h < heads; h++)
         {
-            var qSpan = new ReadOnlySpan<float>(q, i * qStride + head * headDim, headDim);
-
-            for (int j = 0; j <= i; j++)
+            int b = qBase + h * headDim;
+            float amax = 0f;
+            for (int d = 0; d < headDim; d++) amax = MathF.Max(amax, MathF.Abs(q[b + d]));
+            float sc = amax > 0 ? amax / 127f : 1f;
+            float inv = 1f / sc;
+            sQ[sBase + h] = sc;
+            for (int d = 0; d < headDim; d++)
             {
-                scores[j] = TensorPrimitives.Dot(qSpan, new ReadOnlySpan<float>(k, j * kvStride, headDim)) * scale;
+                int v = Math.Clamp((int)MathF.Round(q[b + d] * inv), -127, 127);
+                qu[b + d] = (byte)(v + 128);
             }
+        }
+    }
 
-            Ops.SoftmaxInPlace(scores, i + 1);
+    /// <summary>Quantizes key row <paramref name="i"/> to symmetric int8 with a per-row scale and the
+    /// per-row sum (used to correct the +128 offset of the uint8 query operand).</summary>
+    private static void QuantizeKRow(float[] k, sbyte[] kq, float[] sK, int[] rsK, int i, int kvStride, int headDim)
+    {
+        int b = i * kvStride;
+        float amax = 0f;
+        for (int d = 0; d < headDim; d++) amax = MathF.Max(amax, MathF.Abs(k[b + d]));
+        float sc = amax > 0 ? amax / 127f : 1f;
+        float inv = 1f / sc;
+        sK[i] = sc;
+        int sum = 0;
+        for (int d = 0; d < headDim; d++)
+        {
+            int v = Math.Clamp((int)MathF.Round(k[b + d] * inv), -127, 127);
+            kq[b + d] = (sbyte)v;
+            sum += v;
+        }
+        rsK[i] = sum;
+    }
 
-            var outSpan = new Span<float>(attnOut, i * qStride + head * headDim, headDim);
-            outSpan.Clear();
-            for (int j = 0; j <= i; j++)
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    /// <summary>Portable (no-intrinsics-required) attention for the query positions <c>[q0, q1)</c>:
+    /// materializes per-query causal scores, softmaxes them, then accumulates the value sum. Keys/values
+    /// are streamed key-outer so each is reused across the block, and the four GQA query heads are fused
+    /// into one SIMD pass per key/value via <see cref="ScoreHeads4"/>/<see cref="AxpyHeads4"/>. Used as
+    /// the fallback when the x64 flash kernel is unavailable.</summary>
+    private static void AttentionBlock(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
+    {
+        int blk     = q1 - q0;
+        int nKeys   = q1;                 // keys 0..q1-1 are the most any query in this block attends to
+        int perQ    = heads * nKeys;      // scores stride per query in the block
+        float[] scores = ArrayPool<float>.Shared.Rent(blk * perQ);
+
+        // --- scores: scale * (q_head . k_j). Key-outer so k_j is read once and reused across the whole
+        //     block; the 4 GQA query heads are dotted against the shared k_j in a single SIMD pass
+        //     (4 accumulators), so k_j is streamed once per (key, query) instead of once per head. ---
+        for (int j = 0; j < nKeys; j++)
+        {
+            int kBase = j * kvStride;
+            for (int local = 0; local < blk; local++)
             {
-                // outSpan += scores[j] * v[j]
-                TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(v, j * kvStride, headDim), scores[j], outSpan, outSpan);
+                int qi = q0 + local;
+                if (j > qi) continue;     // causal mask
+                int qBase  = qi * qStride;
+                int sBase  = local * perQ;
+                ScoreHeads4(q, qBase, k, kBase, headDim, scale, out var s0, out var s1, out var s2, out var s3);
+                scores[sBase + 0 * nKeys + j] = s0;
+                scores[sBase + 1 * nKeys + j] = s1;
+                scores[sBase + 2 * nKeys + j] = s2;
+                scores[sBase + 3 * nKeys + j] = s3;
+            }
+        }
+
+        // --- per-(query, head) softmax over its causal prefix ---
+        for (int local = 0; local < blk; local++)
+        {
+            int qi = q0 + local;
+            int sBase = local * perQ;
+            for (int head = 0; head < heads; head++)
+            {
+                Ops.SoftmaxInPlace(scores.AsSpan(sBase + head * nKeys, qi + 1), qi + 1);
+            }
+        }
+
+        // --- value accumulation: out += scores[j] * v_j, key-outer so v_j is reused blk*heads times.
+        //     For each (query, head) the j sum runs 0..qi in order, identical to the per-row path. ---
+        for (int local = 0; local < blk; local++)
+        {
+            int qi = q0 + local;
+            for (int head = 0; head < heads; head++)
+            {
+                new Span<float>(attnOut, qi * qStride + head * headDim, headDim).Clear();
+            }
+        }
+
+        for (int j = 0; j < nKeys; j++)
+        {
+            int vBase = j * kvStride;
+            for (int local = 0; local < blk; local++)
+            {
+                int qi = q0 + local;
+                if (j > qi) continue;
+                int qBase = qi * qStride;
+                int sBase = local * perQ;
+                AxpyHeads4(
+                    scores[sBase + 0 * nKeys + j],
+                    scores[sBase + 1 * nKeys + j],
+                    scores[sBase + 2 * nKeys + j],
+                    scores[sBase + 3 * nKeys + j],
+                    v, vBase, attnOut, qBase, headDim);
             }
         }
 
         ArrayPool<float>.Shared.Return(scores);
+    }
+
+    /// <summary>
+    /// Block-wise flash attention for the query positions <c>[q0, q1)</c> on x64. Keys are streamed in
+    /// <see cref="KeyChunk"/>-sized tiles; for each (query, chunk) the chunk's scores are computed into an
+    /// L1 buffer, exponentiated with a <b>vectorized</b> <c>exp</c>, and folded into a per-query
+    /// online-softmax running max / denominator / value accumulator. The seq×seq score matrix is never
+    /// materialized (its memory traffic was the quadratic term's bottleneck), and each K/V chunk is reused
+    /// across all queries in the (large) block. Float results match the reference to tolerance
+    /// (online-softmax + FMA/lane reassociation only).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void FlashAttentionBlock(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
+    {
+        // acc layout: per local query, the `heads` heads are contiguous (head h at local*heads*headDim +
+        // h*headDim), matching the qStride layout so AxpyHeads4 can write all heads of a query at once.
+        int blk = q1 - q0;
+        float[] acc = ArrayPool<float>.Shared.Rent(blk * heads * headDim);
+        Array.Clear(acc, 0, blk * heads * headDim);
+        Span<float> mState = stackalloc float[FlashQueryBlock * 4];
+        Span<float> lState = stackalloc float[FlashQueryBlock * 4];
+        Span<float> sbuf = stackalloc float[4 * KeyChunk]; // one KeyChunk score row per head
+        mState.Slice(0, blk * heads).Fill(float.NegativeInfinity);
+        lState.Slice(0, blk * heads).Clear();
+
+        for (int kb = 0; kb < q1; kb += KeyChunk)
+        {
+            int kEnd = Math.Min(kb + KeyChunk, q1);
+            for (int local = 0; local < blk; local++)
+            {
+                int qi = q0 + local;
+                if (kb > qi) continue;                  // whole chunk is causally masked for this query
+                int jHi = Math.Min(kEnd, qi + 1);
+                int cnt = jHi - kb;
+                int qb = qi * qStride;                  // head h of this query is at qb + h*headDim
+                int accLocal = local * heads * headDim;
+
+                // Head-fused scores: each key is dotted against all 4 query heads in one pass (k read once).
+                for (int jj = 0; jj < cnt; jj++)
+                {
+                    ScoreHeads4(q, qb, k, (kb + jj) * kvStride, headDim, scale, out float s0, out float s1, out float s2, out float s3);
+                    sbuf[0 * KeyChunk + jj] = s0;
+                    sbuf[1 * KeyChunk + jj] = s1;
+                    sbuf[2 * KeyChunk + jj] = s2;
+                    sbuf[3 * KeyChunk + jj] = s3;
+                }
+
+                // Per head: vectorized exp over the chunk + online-softmax bookkeeping, rescaling acc.
+                for (int head = 0; head < heads; head++)
+                {
+                    var s = sbuf.Slice(head * KeyChunk, cnt);
+                    float bmax = TensorPrimitives.Max(s);
+                    int st = local * heads + head;
+                    float mPrev = mState[st];
+                    float mNew = MathF.Max(mPrev, bmax);
+
+                    TensorPrimitives.Subtract(s, mNew, s);
+                    TensorPrimitives.Exp(s, s);             // s = exp(s - mNew), vectorized
+                    float psum = TensorPrimitives.Sum(s);
+                    float corr = float.IsNegativeInfinity(mPrev) ? 0f : MathF.Exp(mPrev - mNew);
+
+                    lState[st] = lState[st] * corr + psum;
+                    if (corr != 1f)
+                    {
+                        ScaleInPlaceFma(acc, accLocal + head * headDim, corr, headDim);
+                    }
+                    mState[st] = mNew;
+                }
+
+                // Head-fused value: each value row is read once and accumulated into all 4 heads.
+                AxpyHeads4Chunk(sbuf, cnt, kb, v, kvStride, acc, accLocal, headDim);
+            }
+        }
+
+        for (int local = 0; local < blk; local++)
+        {
+            for (int head = 0; head < heads; head++)
+            {
+                int st = local * heads + head;
+                float inv = lState[st] > 0f ? 1f / lState[st] : 0f;
+                ScaleTo(acc, st * headDim, attnOut, (q0 + local) * qStride + head * headDim, inv, headDim);
+            }
+        }
+
+        ArrayPool<float>.Shared.Return(acc);
+    }
+
+    /// <summary><c>acc *= corr</c> over <paramref name="dim"/> (online-softmax rescale).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ScaleInPlaceFma(float[] acc, int accBase, float corr, int dim)
+    {
+        ref float ar = ref acc[0];
+        int d = 0;
+        if (Avx512F.IsSupported)
+        {
+            var cv = Vector512.Create(corr);
+            for (; d + 16 <= dim; d += 16)
+            {
+                (Vector512.LoadUnsafe(ref ar, (nuint)(accBase + d)) * cv).StoreUnsafe(ref ar, (nuint)(accBase + d));
+            }
+        }
+        var cv2 = Vector256.Create(corr);
+        for (; d < dim; d += 8)
+        {
+            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * cv2).StoreUnsafe(ref ar, (nuint)(accBase + d));
+        }
+    }
+
+    /// <summary><c>out = acc * inv</c> over <paramref name="dim"/> (final softmax normalization).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ScaleTo(float[] acc, int accBase, float[] outArr, int outBase, float inv, int dim)
+    {
+        ref float ar = ref acc[0];
+        ref float orf = ref outArr[0];
+        int d = 0;
+        if (Avx512F.IsSupported)
+        {
+            var iv = Vector512.Create(inv);
+            for (; d + 16 <= dim; d += 16)
+            {
+                (Vector512.LoadUnsafe(ref ar, (nuint)(accBase + d)) * iv).StoreUnsafe(ref orf, (nuint)(outBase + d));
+            }
+        }
+        var iv2 = Vector256.Create(inv);
+        for (; d < dim; d += 8)
+        {
+            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * iv2).StoreUnsafe(ref orf, (nuint)(outBase + d));
+        }
+    }
+
+    /// <summary>
+    /// Int8 variant of <see cref="FlashAttentionBlock"/>: identical block-flash structure (chunked online
+    /// softmax, no materialized scores) but the score dot is an <b>int8 VNNI</b> product over the
+    /// pre-quantized Q (uint8) and K (int8), so K is read at one byte per element (4x less memory than
+    /// fp32, and attention is memory-bound). Softmax and the value matmul stay fp32.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void FlashAttentionBlockInt8(byte[] qu, float[] sQ, sbyte[] kq, float[] sK, int[] rsK, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
+    {
+        int blk = q1 - q0;
+        float[] acc = ArrayPool<float>.Shared.Rent(blk * heads * headDim);
+        Array.Clear(acc, 0, blk * heads * headDim);
+        Span<float> mState = stackalloc float[FlashQueryBlock * 4];
+        Span<float> lState = stackalloc float[FlashQueryBlock * 4];
+        Span<float> sbuf = stackalloc float[4 * KeyChunk];
+        mState.Slice(0, blk * heads).Fill(float.NegativeInfinity);
+        lState.Slice(0, blk * heads).Clear();
+
+        for (int kb = 0; kb < q1; kb += KeyChunk)
+        {
+            int kEnd = Math.Min(kb + KeyChunk, q1);
+            for (int local = 0; local < blk; local++)
+            {
+                int qi = q0 + local;
+                if (kb > qi) continue;
+                int jHi = Math.Min(kEnd, qi + 1);
+                int cnt = jHi - kb;
+                int qB = qi * qStride;
+                int sqB = qi * heads;
+                int accLocal = local * heads * headDim;
+
+                for (int jj = 0; jj < cnt; jj++)
+                {
+                    int key = kb + jj;
+                    ScoreHeads4Int8(qu, qB, sQ, sqB, kq, key * kvStride, sK[key], rsK[key], headDim, scale,
+                                    out float s0, out float s1, out float s2, out float s3);
+                    sbuf[0 * KeyChunk + jj] = s0;
+                    sbuf[1 * KeyChunk + jj] = s1;
+                    sbuf[2 * KeyChunk + jj] = s2;
+                    sbuf[3 * KeyChunk + jj] = s3;
+                }
+
+                for (int head = 0; head < heads; head++)
+                {
+                    var s = sbuf.Slice(head * KeyChunk, cnt);
+                    float bmax = TensorPrimitives.Max(s);
+                    int st = local * heads + head;
+                    float mPrev = mState[st];
+                    float mNew = MathF.Max(mPrev, bmax);
+
+                    TensorPrimitives.Subtract(s, mNew, s);
+                    TensorPrimitives.Exp(s, s);
+                    float psum = TensorPrimitives.Sum(s);
+                    float corr = float.IsNegativeInfinity(mPrev) ? 0f : MathF.Exp(mPrev - mNew);
+
+                    lState[st] = lState[st] * corr + psum;
+                    if (corr != 1f)
+                    {
+                        ScaleInPlaceFma(acc, accLocal + head * headDim, corr, headDim);
+                    }
+                    mState[st] = mNew;
+                }
+
+                AxpyHeads4Chunk(sbuf, cnt, kb, v, kvStride, acc, accLocal, headDim);
+            }
+        }
+
+        for (int local = 0; local < blk; local++)
+        {
+            for (int head = 0; head < heads; head++)
+            {
+                int st = local * heads + head;
+                float inv = lState[st] > 0f ? 1f / lState[st] : 0f;
+                ScaleTo(acc, st * headDim, attnOut, (q0 + local) * qStride + head * headDim, inv, headDim);
+            }
+        }
+
+        ArrayPool<float>.Shared.Return(acc);
+    }
+
+    /// <summary>Int8 VNNI scores for the four GQA query heads against one shared key: <c>vpdpbusd</c> of the
+    /// uint8 query rows and the int8 key row, with the +128 offset corrected by the key's row sum, then
+    /// scaled by <c>scaleQ_head * scaleK * attnScale</c>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ScoreHeads4Int8(byte[] qu, int qBase, float[] sQ, int sqBase, sbyte[] kq, int kBase, float scaleK, int rowSumK, int headDim, float scale,
+                                        out float s0, out float s1, out float s2, out float s3)
+    {
+        ref byte qr = ref qu[0];
+        ref sbyte kr = ref kq[0];
+        int i0, i1, i2, i3;
+
+        if (Vnni.Use512 && (headDim & 63) == 0)
+        {
+            // 512-bit int8 VNNI: 64 int8 MACs per accumulate (vpdpbusd on zmm), ~2x the 256-bit path.
+            var b0 = Vector512<int>.Zero;
+            var b1 = Vector512<int>.Zero;
+            var b2 = Vector512<int>.Zero;
+            var b3 = Vector512<int>.Zero;
+            for (int d = 0; d < headDim; d += 64)
+            {
+                var kv = Vector512.LoadUnsafe(ref kr, (nuint)(kBase + d));
+                b0 = Vnni.DotAccumulate512(b0, Vector512.LoadUnsafe(ref qr, (nuint)(qBase + d)), kv);
+                b1 = Vnni.DotAccumulate512(b1, Vector512.LoadUnsafe(ref qr, (nuint)(qBase + headDim + d)), kv);
+                b2 = Vnni.DotAccumulate512(b2, Vector512.LoadUnsafe(ref qr, (nuint)(qBase + 2 * headDim + d)), kv);
+                b3 = Vnni.DotAccumulate512(b3, Vector512.LoadUnsafe(ref qr, (nuint)(qBase + 3 * headDim + d)), kv);
+            }
+            i0 = Vector512.Sum(b0); i1 = Vector512.Sum(b1); i2 = Vector512.Sum(b2); i3 = Vector512.Sum(b3);
+        }
+        else
+        {
+            var a0 = Vector256<int>.Zero;
+            var a1 = Vector256<int>.Zero;
+            var a2 = Vector256<int>.Zero;
+            var a3 = Vector256<int>.Zero;
+            for (int d = 0; d < headDim; d += 32)
+            {
+                var kv = Vector256.LoadUnsafe(ref kr, (nuint)(kBase + d));
+                a0 = Vnni.DotAccumulate(a0, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + d)), kv);
+                a1 = Vnni.DotAccumulate(a1, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + headDim + d)), kv);
+                a2 = Vnni.DotAccumulate(a2, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + 2 * headDim + d)), kv);
+                a3 = Vnni.DotAccumulate(a3, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + 3 * headDim + d)), kv);
+            }
+            i0 = Vector256.Sum(a0); i1 = Vector256.Sum(a1); i2 = Vector256.Sum(a2); i3 = Vector256.Sum(a3);
+        }
+
+        int off = Vnni.ZeroPoint * rowSumK;
+        float kScaled = scale * scaleK;
+        s0 = kScaled * sQ[sqBase + 0] * (i0 - off);
+        s1 = kScaled * sQ[sqBase + 1] * (i1 - off);
+        s2 = kScaled * sQ[sqBase + 2] * (i2 - off);
+        s3 = kScaled * sQ[sqBase + 3] * (i3 - off);
+    }
+
+    /// <summary>Dots the four GQA query heads at <paramref name="qBase"/> against the single shared key
+    /// vector at <paramref name="kBase"/> in one pass over <paramref name="headDim"/>, using
+    /// platform-width <see cref="Vector{T}"/> (256-bit on AVX2, 128-bit on NEON/SSE) so the key is read
+    /// once for all four heads. Reassociates the sum across SIMD lanes vs a scalar dot, so results match
+    /// the reference to float tolerance rather than bit-exactly.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void ScoreHeads4(float[] q, int qBase, float[] k, int kBase, int headDim, float scale, out float s0, out float s1, out float s2, out float s3)
+    {
+        int w = Vector<float>.Count;
+        ref float qr = ref q[qBase];
+        ref float kr = ref k[kBase];
+
+        var a0 = Vector<float>.Zero;
+        var a1 = Vector<float>.Zero;
+        var a2 = Vector<float>.Zero;
+        var a3 = Vector<float>.Zero;
+
+        int d = 0;
+        for (; d + w <= headDim; d += w)
+        {
+            var kv = Vector.LoadUnsafe(ref kr, (nuint)d);
+            a0 += Vector.LoadUnsafe(ref qr, (nuint)d) * kv;
+            a1 += Vector.LoadUnsafe(ref qr, (nuint)(headDim + d)) * kv;
+            a2 += Vector.LoadUnsafe(ref qr, (nuint)(2 * headDim + d)) * kv;
+            a3 += Vector.LoadUnsafe(ref qr, (nuint)(3 * headDim + d)) * kv;
+        }
+
+        float r0 = Vector.Sum(a0), r1 = Vector.Sum(a1), r2 = Vector.Sum(a2), r3 = Vector.Sum(a3);
+        for (; d < headDim; d++) // tail (headDim is a multiple of the vector width here, so usually empty)
+        {
+            float kd = Unsafe.Add(ref kr, d);
+            r0 += Unsafe.Add(ref qr, d) * kd;
+            r1 += Unsafe.Add(ref qr, headDim + d) * kd;
+            r2 += Unsafe.Add(ref qr, 2 * headDim + d) * kd;
+            r3 += Unsafe.Add(ref qr, 3 * headDim + d) * kd;
+        }
+
+        s0 = r0 * scale;
+        s1 = r1 * scale;
+        s2 = r2 * scale;
+        s3 = r3 * scale;
+    }
+
+    /// <summary>Accumulates <c>out_head += weight_head * v_j</c> for all four GQA heads in one pass over
+    /// <paramref name="headDim"/>, reading the shared value vector once for all four heads.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void AxpyHeads4(float s0, float s1, float s2, float s3, float[] v, int vBase, float[] outArr, int outBase, int headDim)
+    {
+        ref float vr = ref v[vBase];
+        ref float orf = ref outArr[outBase];
+        int d = 0;
+
+        if (Avx512F.IsSupported)
+        {
+            // 512-bit FMA: 16 floats/lane, fused multiply-add into the four head accumulators.
+            var p0 = Vector512.Create(s0); var p1 = Vector512.Create(s1);
+            var p2 = Vector512.Create(s2); var p3 = Vector512.Create(s3);
+            for (; d + 16 <= headDim; d += 16)
+            {
+                var vv = Vector512.LoadUnsafe(ref vr, (nuint)d);
+                Avx512F.FusedMultiplyAdd(p0, vv, Vector512.LoadUnsafe(ref orf, (nuint)d)).StoreUnsafe(ref orf, (nuint)d);
+                Avx512F.FusedMultiplyAdd(p1, vv, Vector512.LoadUnsafe(ref orf, (nuint)(headDim + d))).StoreUnsafe(ref orf, (nuint)(headDim + d));
+                Avx512F.FusedMultiplyAdd(p2, vv, Vector512.LoadUnsafe(ref orf, (nuint)(2 * headDim + d))).StoreUnsafe(ref orf, (nuint)(2 * headDim + d));
+                Avx512F.FusedMultiplyAdd(p3, vv, Vector512.LoadUnsafe(ref orf, (nuint)(3 * headDim + d))).StoreUnsafe(ref orf, (nuint)(3 * headDim + d));
+            }
+        }
+        else if (Fma.IsSupported)
+        {
+            var p0 = Vector256.Create(s0); var p1 = Vector256.Create(s1);
+            var p2 = Vector256.Create(s2); var p3 = Vector256.Create(s3);
+            for (; d + 8 <= headDim; d += 8)
+            {
+                var vv = Vector256.LoadUnsafe(ref vr, (nuint)d);
+                Fma.MultiplyAdd(p0, vv, Vector256.LoadUnsafe(ref orf, (nuint)d)).StoreUnsafe(ref orf, (nuint)d);
+                Fma.MultiplyAdd(p1, vv, Vector256.LoadUnsafe(ref orf, (nuint)(headDim + d))).StoreUnsafe(ref orf, (nuint)(headDim + d));
+                Fma.MultiplyAdd(p2, vv, Vector256.LoadUnsafe(ref orf, (nuint)(2 * headDim + d))).StoreUnsafe(ref orf, (nuint)(2 * headDim + d));
+                Fma.MultiplyAdd(p3, vv, Vector256.LoadUnsafe(ref orf, (nuint)(3 * headDim + d))).StoreUnsafe(ref orf, (nuint)(3 * headDim + d));
+            }
+        }
+        else
+        {
+            int w = Vector<float>.Count;
+            var vs0 = new Vector<float>(s0); var vs1 = new Vector<float>(s1);
+            var vs2 = new Vector<float>(s2); var vs3 = new Vector<float>(s3);
+            for (; d + w <= headDim; d += w)
+            {
+                var vv = Vector.LoadUnsafe(ref vr, (nuint)d);
+                (Vector.LoadUnsafe(ref orf, (nuint)d)                 + vv * vs0).StoreUnsafe(ref orf, (nuint)d);
+                (Vector.LoadUnsafe(ref orf, (nuint)(headDim + d))     + vv * vs1).StoreUnsafe(ref orf, (nuint)(headDim + d));
+                (Vector.LoadUnsafe(ref orf, (nuint)(2 * headDim + d)) + vv * vs2).StoreUnsafe(ref orf, (nuint)(2 * headDim + d));
+                (Vector.LoadUnsafe(ref orf, (nuint)(3 * headDim + d)) + vv * vs3).StoreUnsafe(ref orf, (nuint)(3 * headDim + d));
+            }
+        }
+        for (; d < headDim; d++)
+        {
+            float vd = Unsafe.Add(ref vr, d);
+            Unsafe.Add(ref orf, d)                 += s0 * vd;
+            Unsafe.Add(ref orf, headDim + d)       += s1 * vd;
+            Unsafe.Add(ref orf, 2 * headDim + d)   += s2 * vd;
+            Unsafe.Add(ref orf, 3 * headDim + d)   += s3 * vd;
+        }
+    }
+
+    /// <summary>
+    /// Register-blocked value matmul for a whole key chunk: accumulates <c>O[head] += Σ_jj P[head,jj]·V[jj]</c>
+    /// for all four heads over the chunk's keys. On AVX-512 it keeps a 4-head × 64-column output tile in 16
+    /// zmm accumulators across the chunk so each head accumulator is written to memory once per tile instead
+    /// of once per key (the rank-1 <see cref="AxpyHeads4"/> path re-read/wrote acc every key). <paramref name="acc"/>
+    /// must already be rescaled by the online-softmax correction. Falls back to per-key <see cref="AxpyHeads4"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void AxpyHeads4Chunk(ReadOnlySpan<float> sbuf, int cnt, int kb, float[] v, int kvStride, float[] acc, int accLocal, int headDim)
+    {
+        if (!Avx512F.IsSupported || (headDim & 63) != 0)
+        {
+            for (int jj = 0; jj < cnt; jj++)
+            {
+                AxpyHeads4(sbuf[0 * KeyChunk + jj], sbuf[1 * KeyChunk + jj], sbuf[2 * KeyChunk + jj], sbuf[3 * KeyChunk + jj],
+                           v, (kb + jj) * kvStride, acc, accLocal, headDim);
+            }
+            return;
+        }
+
+        ref float vr = ref v[0];
+        ref float ar = ref acc[0];
+        int h0 = accLocal, h1 = accLocal + headDim, h2 = accLocal + 2 * headDim, h3 = accLocal + 3 * headDim;
+
+        for (int nt = 0; nt < headDim; nt += 64) // 4-column-vector output tile (64 floats)
+        {
+            var a00 = Vector512.LoadUnsafe(ref ar, (nuint)(h0 + nt));      var a01 = Vector512.LoadUnsafe(ref ar, (nuint)(h0 + nt + 16));
+            var a02 = Vector512.LoadUnsafe(ref ar, (nuint)(h0 + nt + 32)); var a03 = Vector512.LoadUnsafe(ref ar, (nuint)(h0 + nt + 48));
+            var a10 = Vector512.LoadUnsafe(ref ar, (nuint)(h1 + nt));      var a11 = Vector512.LoadUnsafe(ref ar, (nuint)(h1 + nt + 16));
+            var a12 = Vector512.LoadUnsafe(ref ar, (nuint)(h1 + nt + 32)); var a13 = Vector512.LoadUnsafe(ref ar, (nuint)(h1 + nt + 48));
+            var a20 = Vector512.LoadUnsafe(ref ar, (nuint)(h2 + nt));      var a21 = Vector512.LoadUnsafe(ref ar, (nuint)(h2 + nt + 16));
+            var a22 = Vector512.LoadUnsafe(ref ar, (nuint)(h2 + nt + 32)); var a23 = Vector512.LoadUnsafe(ref ar, (nuint)(h2 + nt + 48));
+            var a30 = Vector512.LoadUnsafe(ref ar, (nuint)(h3 + nt));      var a31 = Vector512.LoadUnsafe(ref ar, (nuint)(h3 + nt + 16));
+            var a32 = Vector512.LoadUnsafe(ref ar, (nuint)(h3 + nt + 32)); var a33 = Vector512.LoadUnsafe(ref ar, (nuint)(h3 + nt + 48));
+
+            for (int jj = 0; jj < cnt; jj++)
+            {
+                int vb = (kb + jj) * kvStride + nt;
+                var v0 = Vector512.LoadUnsafe(ref vr, (nuint)vb);      var v1 = Vector512.LoadUnsafe(ref vr, (nuint)(vb + 16));
+                var v2 = Vector512.LoadUnsafe(ref vr, (nuint)(vb + 32)); var v3 = Vector512.LoadUnsafe(ref vr, (nuint)(vb + 48));
+                var b0 = Vector512.Create(sbuf[0 * KeyChunk + jj]);
+                var b1 = Vector512.Create(sbuf[1 * KeyChunk + jj]);
+                var b2 = Vector512.Create(sbuf[2 * KeyChunk + jj]);
+                var b3 = Vector512.Create(sbuf[3 * KeyChunk + jj]);
+                a00 = Avx512F.FusedMultiplyAdd(b0, v0, a00); a01 = Avx512F.FusedMultiplyAdd(b0, v1, a01); a02 = Avx512F.FusedMultiplyAdd(b0, v2, a02); a03 = Avx512F.FusedMultiplyAdd(b0, v3, a03);
+                a10 = Avx512F.FusedMultiplyAdd(b1, v0, a10); a11 = Avx512F.FusedMultiplyAdd(b1, v1, a11); a12 = Avx512F.FusedMultiplyAdd(b1, v2, a12); a13 = Avx512F.FusedMultiplyAdd(b1, v3, a13);
+                a20 = Avx512F.FusedMultiplyAdd(b2, v0, a20); a21 = Avx512F.FusedMultiplyAdd(b2, v1, a21); a22 = Avx512F.FusedMultiplyAdd(b2, v2, a22); a23 = Avx512F.FusedMultiplyAdd(b2, v3, a23);
+                a30 = Avx512F.FusedMultiplyAdd(b3, v0, a30); a31 = Avx512F.FusedMultiplyAdd(b3, v1, a31); a32 = Avx512F.FusedMultiplyAdd(b3, v2, a32); a33 = Avx512F.FusedMultiplyAdd(b3, v3, a33);
+            }
+
+            a00.StoreUnsafe(ref ar, (nuint)(h0 + nt));      a01.StoreUnsafe(ref ar, (nuint)(h0 + nt + 16));
+            a02.StoreUnsafe(ref ar, (nuint)(h0 + nt + 32)); a03.StoreUnsafe(ref ar, (nuint)(h0 + nt + 48));
+            a10.StoreUnsafe(ref ar, (nuint)(h1 + nt));      a11.StoreUnsafe(ref ar, (nuint)(h1 + nt + 16));
+            a12.StoreUnsafe(ref ar, (nuint)(h1 + nt + 32)); a13.StoreUnsafe(ref ar, (nuint)(h1 + nt + 48));
+            a20.StoreUnsafe(ref ar, (nuint)(h2 + nt));      a21.StoreUnsafe(ref ar, (nuint)(h2 + nt + 16));
+            a22.StoreUnsafe(ref ar, (nuint)(h2 + nt + 32)); a23.StoreUnsafe(ref ar, (nuint)(h2 + nt + 48));
+            a30.StoreUnsafe(ref ar, (nuint)(h3 + nt));      a31.StoreUnsafe(ref ar, (nuint)(h3 + nt + 16));
+            a32.StoreUnsafe(ref ar, (nuint)(h3 + nt + 32)); a33.StoreUnsafe(ref ar, (nuint)(h3 + nt + 48));
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]

@@ -37,6 +37,12 @@ namespace SentenceTransformers.Harrier.Small.Pure
 
         private readonly Gemma3Model _model;
 
+        /// <summary>Parallelism used by the parameterless <see cref="EncodeAsync(string[], CancellationToken)"/>
+        /// document path. Defaults to single-threaded (1) when the caller did not supply a
+        /// <c>parallelOptions</c> at construction; pass one to <see cref="CreateAsync"/> / <see cref="LoadAsync"/>
+        /// (e.g. <c>MaxDegreeOfParallelism = Environment.ProcessorCount</c>) to fan encoding across cores.</summary>
+        private readonly ParallelOptions _defaultParallelOptions;
+
         public TokenizerBase Tokenizer { get; }
         private readonly HarrierSmallPureTokenizer _tokenizer;
 
@@ -63,6 +69,10 @@ namespace SentenceTransformers.Harrier.Small.Pure
         /// (float32) is the default and exactly matches the reference; <see cref="Quantization.Int8"/> and
         /// <see cref="Quantization.Int4"/> shrink the in-memory footprint ~4x / ~8x respectively.</param>
         /// <param name="reportProgress">Optional download progress callback (~2 Hz).</param>
+        /// <param name="parallelOptions">Concurrency for loading/quantization <b>and</b> the default used by
+        /// the <see cref="EncodeAsync(string[], CancellationToken)"/> document path. When <c>null</c>, loading
+        /// uses half the cores and encoding runs single-threaded (<c>MaxDegreeOfParallelism = 1</c>); pass
+        /// <c>new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }</c> to encode on all cores.</param>
         public static async Task<SentenceEncoder> CreateAsync(
             string weightsUrl = null,
             string downloadToPath = null,
@@ -70,16 +80,10 @@ namespace SentenceTransformers.Harrier.Small.Pure
             Action<DownloadProgress> reportProgress = null,
             ParallelOptions parallelOptions = null)
         {
-
-            parallelOptions ??= new ParallelOptions()
-            {
-                MaxDegreeOfParallelism = Environment.ProcessorCount / 2
-            };
-
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Pure", "harrier-small.safetensors");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-            await DownloadFileAsync(weightsUrl ?? DefaultWeightsUrl, path, reportProgress, parallelOptions.CancellationToken).ConfigureAwait(false);
+            await DownloadFileAsync(weightsUrl ?? DefaultWeightsUrl, path, reportProgress, parallelOptions?.CancellationToken ?? default).ConfigureAwait(false);
             return await LoadAsync(path, quantization: quantization, parallelOptions: parallelOptions).ConfigureAwait(false);
         }
 
@@ -94,26 +98,27 @@ namespace SentenceTransformers.Harrier.Small.Pure
             Quantization quantization = Quantization.None,
             ParallelOptions parallelOptions = null)
         {
-            parallelOptions ??= new ParallelOptions()
-            {
-                MaxDegreeOfParallelism = Environment.ProcessorCount / 2
-            };
-
             if (string.IsNullOrWhiteSpace(safetensorsPath))
             {
                 throw new ArgumentException("Weights path is required.", nameof(safetensorsPath));
             }
 
-            var model = await Gemma3Model.LoadAsync(safetensorsPath, new Gemma3Config(), quantization, parallelOptions).ConfigureAwait(false);
+            // Loading/quantization concurrency: use the caller's options, else half the cores (unchanged).
+            var loadOptions = parallelOptions ?? new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount / 2 };
+            // Encode-time default: the caller's options when supplied, otherwise single-threaded.
+            var encodeDefault = parallelOptions ?? new ParallelOptions { MaxDegreeOfParallelism = 1 };
+
+            var model = await Gemma3Model.LoadAsync(safetensorsPath, new Gemma3Config(), quantization, loadOptions).ConfigureAwait(false);
             var tokenizer = LoadTokenizer(tokenizerJsonPath, GetMaxChunkLength());
-            return new SentenceEncoder(model, tokenizer);
+            return new SentenceEncoder(model, tokenizer, encodeDefault);
         }
 
-        private SentenceEncoder(Gemma3Model model, HarrierSmallPureTokenizer tokenizer)
+        private SentenceEncoder(Gemma3Model model, HarrierSmallPureTokenizer tokenizer, ParallelOptions defaultParallelOptions)
         {
             _model = model;
             _tokenizer = tokenizer;
             Tokenizer = tokenizer;
+            _defaultParallelOptions = defaultParallelOptions ?? new ParallelOptions { MaxDegreeOfParallelism = 1 };
         }
 
         /// <summary>Name of the tokenizer copied next to the app. Prefixed with the model name so it
@@ -153,8 +158,12 @@ namespace SentenceTransformers.Harrier.Small.Pure
             throw new FileNotFoundException($"tokenizer.json was not found embedded in the assembly or at Resources/{TokenizerFileName}.");
         }
 
-        public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default) => 
-            EncodeAsync(sentences, new ParallelOptions() { CancellationToken = cancellationToken });
+        public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default) =>
+            EncodeAsync(sentences, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = _defaultParallelOptions.MaxDegreeOfParallelism,
+                CancellationToken      = cancellationToken,
+            });
 
         /// <summary>Encodes a batch of texts into embeddings. Each input must fit in
         /// <see cref="MaxChunkLength"/> tokens; for longer text use the <c>ChunkAndEncode*</c> helpers.</summary>

@@ -25,6 +25,50 @@ if (args.Length > 0 && args[0] == "harrier-diag")
     return;
 }
 
+if (args.Length > 0 && args[0] == "harrier-scaling")
+{
+    await HarrierScalingBench.RunAsync();
+    return;
+}
+
+if (args.Length > 0 && args[0] == "harrier-verify")
+{
+    var tag = args.Length > 1 ? args[1] : "run";
+    await HarrierScalingBench.RunVerifyAsync(tag);
+    return;
+}
+
+if (args.Length > 0 && args[0] == "harrier-scaling-long")
+{
+    await HarrierScalingBench.RunLongAsync();
+    return;
+}
+
+if (args.Length > 0 && args[0] == "harrier-verify-fma")
+{
+    await HarrierScalingBench.RunVerifyFmaAsync();
+    return;
+}
+
+if (args.Length > 0 && args[0] == "harrier-profile")
+{
+    int maxDop = args.Length > 1 ? int.Parse(args[1]) : 1;
+    var pquant = args.Length > 2
+        ? Enum.Parse<SentenceTransformers.Harrier.Small.Pure.Model.Quantization>(args[2], ignoreCase: true)
+        : SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None;
+    await HarrierScalingBench.RunProfileAsync(maxDop, pquant);
+    return;
+}
+
+if (args.Length > 0 && args[0] == "harrier-scaling-pure")
+{
+    var quant = args.Length > 1
+        ? Enum.Parse<SentenceTransformers.Harrier.Small.Pure.Model.Quantization>(args[1], ignoreCase: true)
+        : SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8;
+    await HarrierScalingBench.RunPureQuantAsync(quant);
+    return;
+}
+
 // ---- Build a few-paragraph input dataset ----
 var texts = new[]
 {
