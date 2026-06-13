@@ -302,9 +302,11 @@ internal sealed class Gemma3Model
     /// <summary>Causal grouped-query attention. The single KV head is shared by all query heads.
     /// Parallelizes over <see cref="QueryBlock"/>-sized blocks of query positions via
     /// <see cref="ParallelExecution.ForAsync"/> (dynamic load balancing for the triangular causal work).
-    /// On x64 each block runs the fused flash-attention kernel (<see cref="FlashAttentionBlock"/>) - a
-    /// single streaming pass over the keys with an online softmax that never materializes the
-    /// seq×seq score matrix; other hosts use the portable head-fused path.</summary>
+    /// Each block computes scores tile-by-tile, applies a vectorized softmax, then the value sum, reusing
+    /// each key/value vector across the whole block (the dominant cost of the quadratic attention term).
+    /// A streaming online-softmax (flash) variant was measured slower here: on CPU the per-element scalar
+    /// <c>exp</c> it requires loses badly to the materialized path's vectorized <c>TensorPrimitives.Exp</c>
+    /// over whole score rows.</summary>
     private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, ParallelOptions parallelOptions)
     {
         int qStride  = _cfg.NumHeads * headDim;
@@ -312,21 +314,13 @@ internal sealed class Gemma3Model
         int heads    = _cfg.NumHeads;
         float scale  = _cfg.AttentionScale;
 
-        bool useFlash = !ForwardProfile.ForcePortableAttention && Fma.IsSupported && (headDim & 7) == 0;
         int numBlocks = (seq + QueryBlock - 1) / QueryBlock;
 
         return ParallelExecution.ForAsync(0, numBlocks, parallelOptions, (b, _) =>
         {
             int q0 = b * QueryBlock;
             int q1 = Math.Min(q0 + QueryBlock, seq);
-            if (useFlash)
-            {
-                FlashAttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
-            }
-            else
-            {
-                AttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
-            }
+            AttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
             return ValueTask.CompletedTask;
         });
     }
@@ -405,125 +399,6 @@ internal sealed class Gemma3Model
         }
 
         ArrayPool<float>.Shared.Return(scores);
-    }
-
-    /// <summary>
-    /// Flash-attention kernel for the query positions <c>[q0, q1)</c> across all heads, used on x64.
-    /// Streams the keys/values exactly once per block while maintaining, per (query, head), an
-    /// online-softmax running max, denominator and value accumulator - so the seq×seq score matrix is
-    /// never materialized (the old path wrote it then re-read it twice) and K/V are read far fewer times.
-    /// Each dot/axpy uses 256-bit FMA. Float results match the reference to tolerance (online-softmax and
-    /// FMA reassociation only).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static void FlashAttentionBlock(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
-    {
-        int blk    = q1 - q0;
-        int nState = blk * heads;
-        float[] acc   = ArrayPool<float>.Shared.Rent(nState * headDim);
-        float[] mlBuf = ArrayPool<float>.Shared.Rent(nState * 2);
-        Array.Clear(acc, 0, nState * headDim);
-        Span<float> m = mlBuf.AsSpan(0, nState);
-        Span<float> l = mlBuf.AsSpan(nState, nState);
-        m.Fill(float.NegativeInfinity);
-        l.Clear();
-
-        ref float qr = ref q[0];
-        ref float kr = ref k[0];
-        ref float vr = ref v[0];
-
-        for (int head = 0; head < heads; head++)
-        {
-            int headOff = head * headDim;
-            for (int j = 0; j < q1; j++)
-            {
-                int kb = j * kvStride;
-                int localStart = j > q0 ? j - q0 : 0; // only queries qi = q0+local >= j attend to key j
-                for (int local = localStart; local < blk; local++)
-                {
-                    int qb = (q0 + local) * qStride + headOff;
-                    float s = DotFma(ref qr, qb, ref kr, kb, headDim) * scale;
-
-                    int st = local * heads + head;
-                    int accBase = st * headDim;
-                    float mPrev = m[st];
-                    if (s <= mPrev)
-                    {
-                        float p = MathF.Exp(s - mPrev);
-                        l[st] += p;
-                        AxpyFma(acc, accBase, ref vr, kb, p, headDim);          // acc += p * v_j
-                    }
-                    else
-                    {
-                        float corr = float.IsNegativeInfinity(mPrev) ? 0f : MathF.Exp(mPrev - s);
-                        ScaleAxpyFma(acc, accBase, corr, ref vr, kb, headDim);  // acc = acc*corr + v_j (p == 1)
-                        l[st] = l[st] * corr + 1f;
-                        m[st] = s;
-                    }
-                }
-            }
-
-            for (int local = 0; local < blk; local++)
-            {
-                int st = local * heads + head;
-                float inv = l[st] > 0f ? 1f / l[st] : 0f;
-                ScaleTo(acc, st * headDim, attnOut, (q0 + local) * qStride + headOff, inv, headDim);
-            }
-        }
-
-        ArrayPool<float>.Shared.Return(acc);
-        ArrayPool<float>.Shared.Return(mlBuf);
-    }
-
-    /// <summary>256-bit FMA dot product over <paramref name="dim"/> (a multiple of 8).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float DotFma(ref float a, int aOff, ref float b, int bOff, int dim)
-    {
-        var acc = Vector256<float>.Zero;
-        for (int d = 0; d < dim; d += 8)
-        {
-            acc = Fma.MultiplyAdd(Vector256.LoadUnsafe(ref a, (nuint)(aOff + d)), Vector256.LoadUnsafe(ref b, (nuint)(bOff + d)), acc);
-        }
-        return Vector256.Sum(acc);
-    }
-
-    /// <summary><c>acc += p * v</c> over <paramref name="dim"/> (FMA).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void AxpyFma(float[] acc, int accBase, ref float v, int vOff, float p, int dim)
-    {
-        ref float ar = ref acc[0];
-        var pv = Vector256.Create(p);
-        for (int d = 0; d < dim; d += 8)
-        {
-            Fma.MultiplyAdd(pv, Vector256.LoadUnsafe(ref v, (nuint)(vOff + d)), Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)))
-               .StoreUnsafe(ref ar, (nuint)(accBase + d));
-        }
-    }
-
-    /// <summary><c>acc = acc * corr + v</c> over <paramref name="dim"/> (FMA, online-softmax rescale).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ScaleAxpyFma(float[] acc, int accBase, float corr, ref float v, int vOff, int dim)
-    {
-        ref float ar = ref acc[0];
-        var cv = Vector256.Create(corr);
-        for (int d = 0; d < dim; d += 8)
-        {
-            Fma.MultiplyAdd(Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)), cv, Vector256.LoadUnsafe(ref v, (nuint)(vOff + d)))
-               .StoreUnsafe(ref ar, (nuint)(accBase + d));
-        }
-    }
-
-    /// <summary><c>out = acc * inv</c> over <paramref name="dim"/> (final softmax normalization).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ScaleTo(float[] acc, int accBase, float[] outArr, int outBase, float inv, int dim)
-    {
-        ref float ar = ref acc[0];
-        ref float orf = ref outArr[0];
-        var iv = Vector256.Create(inv);
-        for (int d = 0; d < dim; d += 8)
-        {
-            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * iv).StoreUnsafe(ref orf, (nuint)(outBase + d));
-        }
     }
 
     /// <summary>Dots the four GQA query heads at <paramref name="qBase"/> against the single shared key
