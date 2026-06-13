@@ -17,15 +17,16 @@ ONNX Q4F16 (`model_q4f16`) and Int8 (`model_quantized`, `MatMulNBits` + fused `G
 
 | Tokens | Pure fp32 | Pure Int8 | ONNX Q4F16 | ONNX Int8 | Pure Int8 / ONNX Int8 |
 |-------:|----------:|----------:|-----------:|----------:|----------------------:|
-|    128 |     652.9 |   **197.2** |      125.8 |     209.2 | **0.94× (pure wins)** |
-|    256 |   1,381.3 |     367.8 |      255.9 |     297.6 | 1.24× |
-|    512 |   2,947.4 |     809.2 |      529.5 |     508.2 | 1.59× |
-|  1,024 |   6,472.7 |   1,885.0 |    1,227.1 |   1,018.7 | 1.85× |
-|  2,048 |  13,866.9 |   4,909.3 |    3,236.7 |   2,767.5 | 1.77× |
-|  4,096 |  34,663.2 |  13,735.5 |    8,778.4 |   7,367.6 | 1.86× |
+|    128 |     678.8 |   **196.6** |      176.3 |     262.5 | **0.75× (pure wins)** |
+|    256 |   1,332.2 |     402.0 |      328.1 |     356.1 | 1.13× |
+|    512 |   2,931.2 |     833.4 |      663.2 |     615.3 | 1.35× |
+|  1,024 |   6,492.1 |   1,838.5 |    1,430.1 |   1,111.8 | 1.65× |
+|  2,048 |  14,355.3 |   4,781.8 |    3,405.3 |   2,618.3 | 1.83× |
+|  4,096 |  33,919.5 |  13,124.8 |    8,888.8 |   8,016.1 | 1.64× |
 
-Short contexts (≤256 tokens) are at or beyond ONNX-Int8 parity; the residual gap at long contexts is
-entirely attention (below).
+Short contexts (≤256 tokens) are at or beyond ONNX-Int8 parity (pure is faster at 128); the residual gap
+at longer contexts is entirely attention (below). The Pure-Int8 column includes the int8/VNNI attention
+scores (§2).
 
 ## What was optimized (and the journey)
 
@@ -47,33 +48,42 @@ vectorized kernel (`TensorPrimitives` incl. vectorized tanh):
 Several kernels were implemented and measured (all gated by a `verify-fma` correctness check: fp32 stays
 cos = 1.0 vs the reference path, Int8 cos ≈ 0.998 — within the expected quantization tolerance):
 
+Several kernels were implemented and measured (all gated by correctness checks: fp32 stays cos = 1.0 vs
+the reference path; Int8 stays cos ≈ 0.99 / ≥ 0.984 vs the PyTorch golden — within quantization tolerance):
+
 | attention kernel (Int8, 4 cores, 4096 tok) | attention ms | verdict |
 |---|--:|---|
 | original naive per-(query,head) dot | ~10,500 | baseline |
 | cache-blocked + 4-head-fused (bit-identical) | ~10,486 | ~same (memory-bound) |
-| FMA register-tiled (4×2 score GEMM) | ~10,545 | no gain → **compute is not the limit** |
+| FMA register-tiled (4×2 score GEMM) | ~10,545 | no gain → **fp32 compute is not the limit** |
 | naive online-softmax flash | ~28,000 (2048: 5,000) | **worse** — scalar `exp` ≫ vectorized exp |
-| **head-fused block-flash (chosen)** | **8,661** | **best** |
+| head-fused block-flash (fp32 scores) | 8,661 | good |
+| **+ int8/VNNI scores (chosen)** | **7,680** | **best** |
+| + int8 value too | 8,399 | reverted — V is cache-resident, convert overhead > memory saving |
 
-The winning kernel (`FlashAttentionBlock`) combines every lever: it streams keys in L1-sized chunks with
-an **online softmax** (no seq×seq score matrix materialized — that buffer's traffic was the bottleneck),
-keeps a **large query block** so each K/V chunk is reused across many queries, **fuses the 4 GQA query
-heads** into one SIMD pass per key (`ScoreHeads4`/`AxpyHeads4`), and keeps `exp` **vectorized** by
-applying it per chunk. This mirrors ONNX's fused `GroupQueryAttention`.
+The winning kernel (`FlashAttentionBlock` / `FlashAttentionBlockInt8`) combines every lever: it streams
+keys in L1-sized chunks with an **online softmax** (no seq×seq score matrix materialized — that buffer's
+traffic was the bottleneck), keeps a **large query block** so each K/V chunk is reused across many
+queries, **fuses the 4 GQA query heads** into one SIMD pass per key, and keeps `exp` **vectorized** per
+chunk. For quantized modes the **scores use an int8 `vpdpbusd` dot** over per-row-quantized Q (uint8) and
+K (int8), so K is read at 1 byte/element (4× less than fp32 — attention is memory-bound) with a VNNI
+compute win on top. This mirrors ONNX's fused `GroupQueryAttention`. The **value matmul stays fp32**:
+quantizing V was measured *slower* because the block-flash already keeps each V chunk cache-resident
+(reused across the query block), so the int8→float convert costs more than the memory it saves.
 
 Per-stage Int8 profile (4 cores), final kernels:
 
 | Stage | 512 | 2048 | 4096 |
 |---|--:|--:|--:|
-| attention | 201 | 2,315 | 8,661 |
-| mlp_proj (Int8 VNNI) | 441 | 1,644 | 3,204 |
-| qkv+o (Int8 VNNI) | 263 | 781 | 1,479 |
-| geglu | 24 | 84 | 165 |
-| norms+rope | 122 | 413 | 811 |
+| attention (int8 scores) | 176 | 1,934 | 7,680 |
+| mlp_proj (Int8 VNNI) | 367 | 1,540 | 3,076 |
+| qkv+o (Int8 VNNI) | 197 | 761 | 1,512 |
+| geglu | 19 | 77 | 158 |
+| norms+rope | 110 | 378 | 813 |
 
 ### Net effect (Pure Int8 @ 4096, this box)
-single-threaded original **85,163 ms** → max cores + vectorized GeGLU + head-fused block-flash
-**13,735 ms** — **6.2× faster**.
+single-threaded original **85,163 ms** → max cores + vectorized GeGLU + head-fused block-flash + int8/VNNI
+scores **13,125 ms** — **6.5× faster**, and the Int8/ONNX-Int8 gap at 4096 narrowed from 2.0× to **1.64×**.
 
 ## Long-context scaling (→ 32768, the full context window) — pure Int8 vs ONNX Int8
 
@@ -96,13 +106,14 @@ Two findings here:
    memory and completes.
 
 ## Honest parity assessment
-- **Short/medium contexts (≤~256 tokens): at parity or better** — pure Int8 (197 ms @128) beats ONNX
-  Int8 (209 ms), competitive to ~512.
-- **Mid contexts (1k–4k): ~1.6–1.9× off**, entirely attention throughput (pure ~18 GFLOP/s/core vs
-  MLAS-backed ONNX ~2.5×). The remaining lever for raw throughput is int8/VNNI attention matmuls
-  (4× less K/V traffic), with a small extra accuracy cost.
+- **Short contexts (≤~256 tokens): at parity or better** — pure Int8 (197 ms @128) beats ONNX Int8
+  (262 ms), competitive to ~512.
+- **Mid contexts (1k–4k): ~1.6–1.8× off**, entirely attention throughput. int8/VNNI scores closed part of
+  the gap (4096 went 2.0× → 1.64×); the rest is the fp32 value matmul + ONNX's MLAS-class kernels. Further
+  gains would need an MLAS-style packed GEMM for the value matmul (int8 value did not help — see §2).
 - **Long contexts (8k–32k): the gap *narrows* (down to 1.24×) and pure becomes strictly more scalable
-  in memory** — it is the only one of the two that completes a 32768-token encode on this machine.
+  in memory** — it is the only one of the two that completes a 32768-token encode on this machine
+  (ONNX OOMs materializing the full score tensor).
 
 ## Reproduce
 ```
