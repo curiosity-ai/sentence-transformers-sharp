@@ -41,7 +41,10 @@ if (args.Length > 0 && args[0] == "harrier-verify")
 if (args.Length > 0 && args[0] == "harrier-profile")
 {
     int maxDop = args.Length > 1 ? int.Parse(args[1]) : 1;
-    await HarrierScalingBench.RunProfileAsync(maxDop);
+    var pquant = args.Length > 2
+        ? Enum.Parse<SentenceTransformers.Harrier.Small.Pure.Model.Quantization>(args[2], ignoreCase: true)
+        : SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None;
+    await HarrierScalingBench.RunProfileAsync(maxDop, pquant);
     return;
 }
 

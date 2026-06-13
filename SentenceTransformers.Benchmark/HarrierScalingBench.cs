@@ -257,7 +257,7 @@ public static class HarrierScalingBench
     /// Per-stage profile of the pure fp32 forward pass at a few sequence lengths, at a chosen degree of
     /// parallelism. Shows which stages scale linearly (projection matmuls) vs quadratically (attention).
     /// </summary>
-    public static async Task RunProfileAsync(int maxDop)
+    public static async Task RunProfileAsync(int maxDop, SentenceTransformers.Harrier.Small.Pure.Model.Quantization quant = SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None)
     {
         const string inputsPath = "/tmp/harrier_scaling_inputs.json";
         if (!File.Exists(inputsPath))
@@ -270,9 +270,8 @@ public static class HarrierScalingBench
         var byTokens = docp.RootElement.EnumerateArray()
             .ToDictionary(e => e.GetProperty("tokens").GetInt32(), e => e.GetProperty("text").GetString()!);
 
-        Console.WriteLine($"Loading Harrier.Small.Pure (fp32) for profiling (MaxDop={maxDop}) ...");
-        using var pure = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(
-            quantization: SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None);
+        Console.WriteLine($"Loading Harrier.Small.Pure ({quant}) for profiling (MaxDop={maxDop}) ...");
+        using var pure = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(quantization: quant);
         Console.WriteLine();
 
         var po = new ParallelOptions { MaxDegreeOfParallelism = maxDop };

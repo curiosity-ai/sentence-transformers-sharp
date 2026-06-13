@@ -212,9 +212,8 @@ internal sealed class Gemma3Model
                 await layer.UpProj.MultiplyAsync(normed, up, seq, parallelOptions).ConfigureAwait(false);
                 ForwardProfile.Stop("mlp_proj", ts);
 
-                int ffLen = seq * _cfg.IntermediateSize;
                 ts = ForwardProfile.Start();
-                Ops.GeGluInPlace(gate.AsSpan(0, ffLen), up.AsSpan(0, ffLen));
+                await Ops.GeGluAsync(gate, up, seq, _cfg.IntermediateSize, parallelOptions).ConfigureAwait(false);
                 ForwardProfile.Stop("geglu", ts);
 
                 ts = ForwardProfile.Start();

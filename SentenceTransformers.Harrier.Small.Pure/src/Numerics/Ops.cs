@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
 using SentenceTransformers;
@@ -87,7 +88,7 @@ internal static class Ops
     /// <summary>
     /// Gemma's GeGLU feed-forward combination: <c>out = gelu_tanh(gate) * up</c>, written into
     /// <paramref name="gate"/> in place. <paramref name="gate"/> and <paramref name="up"/> have the
-    /// same length.
+    /// same length. Scalar reference kept for tests; the hot path uses <see cref="GeGluAsync"/>.
     /// </summary>
     public static void GeGluInPlace(Span<float> gate, ReadOnlySpan<float> up)
     {
@@ -98,6 +99,49 @@ internal static class Ops
             float inner = c * (v + 0.044715f * v * v * v);
             float gelu = 0.5f * v * (1f + MathF.Tanh(inner));
             gate[i] = gelu * up[i];
+        }
+    }
+
+    /// <summary>
+    /// Vectorized, row-parallel GeGLU: identical math to <see cref="GeGluInPlace"/> but computed with
+    /// SIMD <see cref="TensorPrimitives"/> (including a vectorized tanh) over each row, parallelized over
+    /// the <paramref name="rows"/> sequence positions. The old scalar path spent most of the FF time in
+    /// per-element <see cref="MathF.Tanh"/>; this keeps the row (a few KB) cache-resident across the
+    /// elementwise passes. Results match the scalar form to float tolerance (tanh reassociation only).
+    /// </summary>
+    public static Task GeGluAsync(float[] gate, float[] up, int rows, int dim, ParallelOptions parallelOptions)
+    {
+        return ParallelExecution.ForAsync(0, rows, parallelOptions, (r, _) =>
+        {
+            GeGluRow(gate.AsSpan(r * dim, dim), up.AsSpan(r * dim, dim));
+            return ValueTask.CompletedTask;
+        });
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void GeGluRow(Span<float> gate, ReadOnlySpan<float> up)
+    {
+        const float c = 0.7978845608028654f; // sqrt(2/pi)
+        int dim = gate.Length;
+        float[] tmp = ArrayPool<float>.Shared.Rent(dim);
+        try
+        {
+            var t = tmp.AsSpan(0, dim);
+            // t = inner = c * x * (1 + 0.044715 x^2)   (== c*(x + 0.044715 x^3), same as the scalar form)
+            TensorPrimitives.Multiply(gate, gate, t);   // t = x^2
+            TensorPrimitives.Multiply(t, 0.044715f, t);  // t = 0.044715 x^2
+            TensorPrimitives.Add(t, 1f, t);              // t = 1 + 0.044715 x^2
+            TensorPrimitives.Multiply(t, gate, t);       // t = x (1 + 0.044715 x^2)
+            TensorPrimitives.Multiply(t, c, t);          // t = inner
+            TensorPrimitives.Tanh(t, t);                 // t = tanh(inner)
+            TensorPrimitives.Add(t, 1f, t);              // t = 1 + tanh
+            TensorPrimitives.Multiply(t, 0.5f, t);       // t = 0.5 (1 + tanh)
+            TensorPrimitives.Multiply(t, gate, t);       // t = gelu(x) = 0.5 x (1 + tanh(inner))
+            TensorPrimitives.Multiply(t, up, gate);      // gate = gelu(x) * up
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(tmp);
         }
     }
 
