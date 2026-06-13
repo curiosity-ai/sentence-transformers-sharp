@@ -115,6 +115,46 @@ public static class HarrierScalingBench
         Console.WriteLine($"Wrote C# results -> {resultsPath}");
     }
 
+    /// <summary>
+    /// Re-runs only the pure encoder at a chosen weight precision, replaying the byte-identical
+    /// calibrated inputs persisted by <see cref="RunAsync"/> (so it lines up with the existing
+    /// fp32 / ONNX / Python columns without recalibrating). Writes <c>/tmp/harrier_scaling_pure_{quant}.json</c>.
+    /// </summary>
+    public static async Task RunPureQuantAsync(SentenceTransformers.Harrier.Small.Pure.Model.Quantization quant)
+    {
+        const string inputsPath = "/tmp/harrier_scaling_inputs.json";
+        if (!File.Exists(inputsPath))
+        {
+            Console.WriteLine($"Calibrated inputs not found at {inputsPath}; run 'harrier-scaling' first.");
+            return;
+        }
+
+        using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(inputsPath));
+        var inputs = doc.RootElement.EnumerateArray()
+            .Select(e => (Tokens: e.GetProperty("tokens").GetInt32(), Text: e.GetProperty("text").GetString()!))
+            .ToList();
+
+        Console.WriteLine($"Loading Harrier.Small.Pure ({quant}) ... (ProcessorCount={Environment.ProcessorCount})");
+        using var pure = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(
+            quantization: quant,
+            reportProgress: Progress("pure-weights"));
+        Console.WriteLine();
+
+        var ms = new double[inputs.Count];
+        Console.WriteLine($"=== Harrier.Small.Pure ({quant}) ===");
+        for (int i = 0; i < inputs.Count; i++)
+        {
+            ms[i] = await TimeEncodeAsync(s => pure.EncodeAsync(s), inputs[i].Text, inputs[i].Tokens);
+        }
+
+        var resultsPath = $"/tmp/harrier_scaling_pure_{quant}.json";
+        await File.WriteAllTextAsync(resultsPath, JsonSerializer.Serialize(
+            inputs.Select((inp, i) => new { tokens = inp.Tokens, pure_ms = ms[i] }),
+            new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine();
+        Console.WriteLine($"Wrote results -> {resultsPath}");
+    }
+
     /// <summary>Warms up once, then times the median over an iteration count that shrinks as the
     /// sequence (and therefore the per-encode cost) grows, so the large-N points stay affordable.</summary>
     private static async Task<double> TimeEncodeAsync(Func<string[], Task<float[][]>> encode, string text, int tokens)

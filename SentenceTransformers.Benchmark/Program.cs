@@ -31,6 +31,15 @@ if (args.Length > 0 && args[0] == "harrier-scaling")
     return;
 }
 
+if (args.Length > 0 && args[0] == "harrier-scaling-pure")
+{
+    var quant = args.Length > 1
+        ? Enum.Parse<SentenceTransformers.Harrier.Small.Pure.Model.Quantization>(args[1], ignoreCase: true)
+        : SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8;
+    await HarrierScalingBench.RunPureQuantAsync(quant);
+    return;
+}
+
 // ---- Build a few-paragraph input dataset ----
 var texts = new[]
 {
