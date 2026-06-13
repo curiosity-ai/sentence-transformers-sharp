@@ -339,15 +339,12 @@ internal sealed class Gemma3Model
             var kq  = ArrayPool<sbyte>.Shared.Rent(seq * kvStride);
             var sK  = ArrayPool<float>.Shared.Rent(seq);
             var rsK = ArrayPool<int>.Shared.Rent(seq);
-            var vq  = ArrayPool<sbyte>.Shared.Rent(seq * kvStride);
-            var sV  = ArrayPool<float>.Shared.Rent(seq);
             try
             {
                 await ParallelExecution.ForAsync(0, seq, parallelOptions, (i, _) =>
                 {
                     QuantizeQRow(q, qu, sQ, i * qStride, i * heads, heads, headDim);
                     QuantizeKRow(k, kq, sK, rsK, i, kvStride, headDim);
-                    QuantizeVRow(v, vq, sV, i, kvStride, headDim);
                     return ValueTask.CompletedTask;
                 }).ConfigureAwait(false);
 
@@ -356,7 +353,7 @@ internal sealed class Gemma3Model
                 {
                     int q0 = b * FlashQueryBlock;
                     int q1 = Math.Min(q0 + FlashQueryBlock, seq);
-                    FlashAttentionBlockInt8(qu, sQ, kq, sK, rsK, vq, sV, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
+                    FlashAttentionBlockInt8(qu, sQ, kq, sK, rsK, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
                     return ValueTask.CompletedTask;
                 }).ConfigureAwait(false);
             }
@@ -367,8 +364,6 @@ internal sealed class Gemma3Model
                 ArrayPool<sbyte>.Shared.Return(kq);
                 ArrayPool<float>.Shared.Return(sK);
                 ArrayPool<int>.Shared.Return(rsK);
-                ArrayPool<sbyte>.Shared.Return(vq);
-                ArrayPool<float>.Shared.Return(sV);
             }
             return;
         }
@@ -431,22 +426,6 @@ internal sealed class Gemma3Model
             sum += v;
         }
         rsK[i] = sum;
-    }
-
-    /// <summary>Quantizes value row <paramref name="i"/> to symmetric int8 with a per-row scale, so the
-    /// value matmul reads V at one byte/element (4x less memory). The fp probability folds the scale in.</summary>
-    private static void QuantizeVRow(float[] v, sbyte[] vq, float[] sV, int i, int kvStride, int headDim)
-    {
-        int b = i * kvStride;
-        float amax = 0f;
-        for (int d = 0; d < headDim; d++) amax = MathF.Max(amax, MathF.Abs(v[b + d]));
-        float sc = amax > 0 ? amax / 127f : 1f;
-        float inv = 1f / sc;
-        sV[i] = sc;
-        for (int d = 0; d < headDim; d++)
-        {
-            vq[b + d] = (sbyte)Math.Clamp((int)MathF.Round(v[b + d] * inv), -127, 127);
-        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -646,7 +625,7 @@ internal sealed class Gemma3Model
     /// fp32, and attention is memory-bound). Softmax and the value matmul stay fp32.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static void FlashAttentionBlockInt8(byte[] qu, float[] sQ, sbyte[] kq, float[] sK, int[] rsK, sbyte[] vq, float[] sV, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
+    private static void FlashAttentionBlockInt8(byte[] qu, float[] sQ, sbyte[] kq, float[] sK, int[] rsK, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
     {
         int blk = q1 - q0;
         float[] acc = ArrayPool<float>.Shared.Rent(blk * heads * headDim);
@@ -704,10 +683,8 @@ internal sealed class Gemma3Model
 
                 for (int jj = 0; jj < cnt; jj++)
                 {
-                    int key = kb + jj;
-                    float sv = sV[key]; // per-row value scale folded into each head's probability
-                    AxpyHeads4Int8(sbuf[0 * KeyChunk + jj] * sv, sbuf[1 * KeyChunk + jj] * sv, sbuf[2 * KeyChunk + jj] * sv, sbuf[3 * KeyChunk + jj] * sv,
-                                   vq, key * kvStride, acc, accLocal, headDim);
+                    AxpyHeads4(sbuf[0 * KeyChunk + jj], sbuf[1 * KeyChunk + jj], sbuf[2 * KeyChunk + jj], sbuf[3 * KeyChunk + jj],
+                               v, (kb + jj) * kvStride, acc, accLocal, headDim);
                 }
             }
         }
@@ -723,32 +700,6 @@ internal sealed class Gemma3Model
         }
 
         ArrayPool<float>.Shared.Return(acc);
-    }
-
-    /// <summary>Value accumulation for all 4 heads from an int8 value row: widens 8 int8 values to float
-    /// and FMAs <c>weight_head * v</c> into each head's accumulator. V is read once (1 byte/element) for
-    /// all four heads.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void AxpyHeads4Int8(float w0, float w1, float w2, float w3, sbyte[] vq, int vBase, float[] acc, int accBase, int headDim)
-    {
-        ref sbyte vr = ref vq[0];
-        ref float ar = ref acc[0];
-        var p0 = Vector256.Create(w0);
-        var p1 = Vector256.Create(w1);
-        var p2 = Vector256.Create(w2);
-        var p3 = Vector256.Create(w3);
-        int o1 = accBase + headDim, o2 = accBase + 2 * headDim, o3 = accBase + 3 * headDim;
-        for (int d = 0; d < headDim; d += 8)
-        {
-            // Read exactly 8 int8 values (a long) and sign-extend to 8 int32 -> 8 float (no over-read).
-            long bits = Unsafe.ReadUnaligned<long>(ref Unsafe.As<sbyte, byte>(ref Unsafe.Add(ref vr, vBase + d)));
-            var vi = Avx2.ConvertToVector256Int32(Vector128.CreateScalarUnsafe(bits).AsSByte());
-            var vf = Vector256.ConvertToSingle(vi);
-            Fma.MultiplyAdd(p0, vf, Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d))).StoreUnsafe(ref ar, (nuint)(accBase + d));
-            Fma.MultiplyAdd(p1, vf, Vector256.LoadUnsafe(ref ar, (nuint)(o1 + d))).StoreUnsafe(ref ar, (nuint)(o1 + d));
-            Fma.MultiplyAdd(p2, vf, Vector256.LoadUnsafe(ref ar, (nuint)(o2 + d))).StoreUnsafe(ref ar, (nuint)(o2 + d));
-            Fma.MultiplyAdd(p3, vf, Vector256.LoadUnsafe(ref ar, (nuint)(o3 + d))).StoreUnsafe(ref ar, (nuint)(o3 + d));
-        }
     }
 
     /// <summary>Int8 VNNI scores for the four GQA query heads against one shared key: <c>vpdpbusd</c> of the
