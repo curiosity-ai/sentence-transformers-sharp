@@ -114,6 +114,82 @@ public static class HarrierScalingBench
         static string Cell(double[] col, int i) => col is null ? "n/a" : col[i].ToString("n1");
     }
 
+    /// <summary>
+    /// Long-context sweep (pure Int8 vs ONNX Int8) at large token counts up to the model's 32768 context
+    /// window, with big intervals. Inputs are generated to a target word count and the actual token count
+    /// (capped at the context window) is reported. Times a single encode per point (the O(n^2) attention
+    /// makes repeats impractical at 32768) on all cores.
+    /// </summary>
+    public static async Task RunLongAsync()
+    {
+        int[] targets = { 4096, 8192, 16384, 32768 };
+
+        Console.WriteLine($"Harrier Small long-context sweep (ProcessorCount={Environment.ProcessorCount})");
+        var texts = targets.Select(t => string.Join(' ', Enumerable.Range(0, (int)(t * 1.1)).Select(i => Pool[i % Pool.Length]))).ToArray();
+
+        Console.WriteLine("Loading Harrier.Small.Pure (Int8) ...");
+        using var pure = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(
+            quantization: SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8);
+        var tok = targets.Select((t, i) => Math.Min(pure.Tokenizer.Encode(new[] { texts[i] })[0].InputIds.Length, pure.MaxChunkLength)).ToArray();
+        Console.WriteLine($"Actual token counts: {string.Join(", ", tok)}");
+        Console.WriteLine();
+
+        var pureMs = new double[targets.Length];
+        Console.WriteLine("=== Harrier.Small.Pure (Int8) ===");
+        for (int i = 0; i < targets.Length; i++)
+        {
+            pureMs[i] = await TimeOnceAsync(s => pure.EncodeAsync(s, MaxCores), texts[i], tok[i], warmup: i == 0);
+        }
+        Console.WriteLine();
+
+        var onnxMs = new double[targets.Length];
+        try
+        {
+            Console.WriteLine("Loading Harrier.Small (ONNX Int8) ...");
+            using var onnx = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(
+                modelUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelUrl,
+                modelDataUrl: SentenceTransformers.Harrier.Small.SentenceEncoder.Quantizations.QuantizedModelDataUrl,
+                downloadToPath: Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Int8", "model.onnx"));
+            Console.WriteLine();
+            Console.WriteLine("=== Harrier.Small (ONNX Int8) ===");
+            for (int i = 0; i < targets.Length; i++)
+            {
+                onnxMs[i] = await TimeOnceAsync(s => onnx.EncodeAsync(s), texts[i], tok[i], warmup: i == 0);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ONNX Int8 failed: {ex.Message}");
+        }
+        Console.WriteLine();
+
+        Console.WriteLine("=== Long-context: ms per encode (max cores) ===");
+        Console.WriteLine($"{"Tokens",8} | {"Pure Int8",12} | {"ONNX Int8",12} | {"ratio",6}");
+        Console.WriteLine(new string('-', 46));
+        for (int i = 0; i < targets.Length; i++)
+        {
+            string ratio = onnxMs[i] > 0 ? (pureMs[i] / onnxMs[i]).ToString("n2") + "x" : "n/a";
+            Console.WriteLine($"{tok[i],8} | {pureMs[i],12:n1} | {onnxMs[i],12:n1} | {ratio,6}");
+        }
+
+        await File.WriteAllTextAsync("/tmp/harrier_scaling_long.json", JsonSerializer.Serialize(
+            targets.Select((t, i) => new { target = t, tokens = tok[i], pure_int8_ms = pureMs[i], onnx_int8_ms = onnxMs[i] }),
+            new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine();
+        Console.WriteLine("Wrote /tmp/harrier_scaling_long.json");
+    }
+
+    private static async Task<double> TimeOnceAsync(Func<string[], Task<float[][]>> encode, string text, int tokens, bool warmup)
+    {
+        var batch = new[] { text };
+        if (warmup) await encode(batch);
+        var sw = Stopwatch.StartNew();
+        await encode(batch);
+        sw.Stop();
+        Console.WriteLine($"  {tokens,6} tokens: {sw.Elapsed.TotalMilliseconds,12:n1} ms");
+        return sw.Elapsed.TotalMilliseconds;
+    }
+
     private static async Task<double[]> TimeColumnAsync(string label, Func<string[], Task<float[][]>> encode, string[] texts, int[] tokens)
     {
         Console.WriteLine($"=== {label} ===");

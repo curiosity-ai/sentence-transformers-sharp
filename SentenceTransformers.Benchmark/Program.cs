@@ -38,6 +38,12 @@ if (args.Length > 0 && args[0] == "harrier-verify")
     return;
 }
 
+if (args.Length > 0 && args[0] == "harrier-scaling-long")
+{
+    await HarrierScalingBench.RunLongAsync();
+    return;
+}
+
 if (args.Length > 0 && args[0] == "harrier-verify-fma")
 {
     await HarrierScalingBench.RunVerifyFmaAsync();
