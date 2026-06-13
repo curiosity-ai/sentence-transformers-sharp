@@ -17,16 +17,16 @@ ONNX Q4F16 (`model_q4f16`) and Int8 (`model_quantized`, `MatMulNBits` + fused `G
 
 | Tokens | Pure fp32 | Pure Int8 | ONNX Q4F16 | ONNX Int8 | Pure Int8 / ONNX Int8 |
 |-------:|----------:|----------:|-----------:|----------:|----------------------:|
-|    128 |     678.8 |   **196.6** |      176.3 |     262.5 | **0.75× (pure wins)** |
-|    256 |   1,332.2 |     402.0 |      328.1 |     356.1 | 1.13× |
-|    512 |   2,931.2 |     833.4 |      663.2 |     615.3 | 1.35× |
-|  1,024 |   6,492.1 |   1,838.5 |    1,430.1 |   1,111.8 | 1.65× |
-|  2,048 |  14,355.3 |   4,781.8 |    3,405.3 |   2,618.3 | 1.83× |
-|  4,096 |  33,919.5 |  13,124.8 |    8,888.8 |   8,016.1 | 1.64× |
+|    128 |     419.5 |   **107.8** |      106.0 |     141.7 | **0.76× (pure wins)** |
+|    256 |     742.5 |   **202.9** |      208.1 |     219.5 | **0.92× (pure wins)** |
+|    512 |   1,598.3 |     518.0 |      451.3 |     363.2 | 1.43× |
+|  1,024 |   4,043.1 |   1,160.6 |      996.2 |     794.7 | 1.46× |
+|  2,048 |   9,170.4 |   2,883.0 |    2,414.1 |   1,889.8 | 1.53× |
+|  4,096 |  21,248.6 |   7,925.6 |    6,872.4 |   5,194.8 | 1.53× |
 
-Short contexts (≤256 tokens) are at or beyond ONNX-Int8 parity (pure is faster at 128); the residual gap
-at longer contexts is entirely attention (below). The Pure-Int8 column includes the int8/VNNI attention
-scores (§2).
+Pure Int8 now beats ONNX Int8 up to 256 tokens and the long-context gap is ~1.5×. The Pure-Int8 column
+includes int8/VNNI attention scores (§2) and 512-bit AVX-512 kernels (§3). _(Absolute ms vary with this
+shared cloud box's load between runs; the controlled comparisons below toggle one variable at a time.)_
 
 ## What was optimized (and the journey)
 
@@ -81,9 +81,28 @@ Per-stage Int8 profile (4 cores), final kernels:
 | geglu | 19 | 77 | 158 |
 | norms+rope | 110 | 378 | 813 |
 
-### Net effect (Pure Int8 @ 4096, this box)
-single-threaded original **85,163 ms** → max cores + vectorized GeGLU + head-fused block-flash + int8/VNNI
-scores **13,125 ms** — **6.5× faster**, and the Int8/ONNX-Int8 gap at 4096 narrowed from 2.0× to **1.64×**.
+### 3. AVX-512 (512-bit) kernels
+The attention kernels were 256-bit (`Vector256` / `vpdpbusd` on ymm). On an AVX-512 host they now run
+512-bit, selected by `IsSupported` bool flags (JIT constants — the 256-bit body is dead-code-eliminated
+on non-AVX-512 CPUs, the standard .NET pattern): the **int8 scores** use a 512-bit VNNI dot
+(`Vnni.DotAccumulate512`, 64 int8 MACs/instr) and the **value / scale kernels** use 512-bit FMA
+(`Avx512F.FusedMultiplyAdd`, 16 floats/lane). The int8 projection GEMMs already had a 512-bit path.
+
+Controlled toggle (`DOTNET_EnableAVX512=0` vs default, same box, Int8, 4 cores), total ms per encode:
+
+| | 512 tok | 2048 tok | 4096 tok |
+|---|--:|--:|--:|
+| 256-bit | 650 | 3,558 | 8,836 |
+| **512-bit** | **597** | **2,591** | **7,053** |
+| speedup | 1.08× | 1.37× | 1.25× |
+
+(attention 4096: 4,568→3,990 ms; int8 projections 4096: 2,367→1,551 ms.) AVX-512 has a small fixed
+overhead/downclock that shows at very short sequences but wins clearly from ~1k tokens up.
+
+### Net effect (Pure Int8)
+single-threaded original → max cores + vectorized GeGLU + head-fused block-flash + int8/VNNI scores +
+AVX-512: roughly **6–8× faster** end-to-end (exact factor drifts with the shared box's load), and the
+Int8/ONNX-Int8 gap went from ~2.0× to **~1.5× at 4096, with pure faster at ≤256 tokens**.
 
 ## Long-context scaling (→ 32768, the full context window) — pure Int8 vs ONNX Int8
 
@@ -106,13 +125,12 @@ Two findings here:
    memory and completes.
 
 ## Honest parity assessment
-- **Short contexts (≤~256 tokens): at parity or better** — pure Int8 (197 ms @128) beats ONNX Int8
-  (262 ms), competitive to ~512.
-- **Mid contexts (1k–4k): ~1.6–1.8× off**, entirely attention throughput. int8/VNNI scores closed part of
-  the gap (4096 went 2.0× → 1.64×); the rest is the fp32 value matmul + ONNX's MLAS-class kernels. Further
-  gains would need an MLAS-style packed GEMM for the value matmul (int8 value did not help — see §2).
-- **Long contexts (8k–32k): the gap *narrows* (down to 1.24×) and pure becomes strictly more scalable
-  in memory** — it is the only one of the two that completes a 32768-token encode on this machine
+- **Short contexts (≤256 tokens): pure Int8 is now faster than ONNX Int8** (128: 0.76×, 256: 0.92×).
+- **Mid contexts (512–4k): ~1.4–1.5× off**, narrowed from ~2.0× by int8/VNNI scores + AVX-512. The
+  residual is the fp32 value matmul and ONNX's MLAS-class kernels. The next lever is an MLAS-style packed
+  GEMM for the value matmul (int8 value did not help — V is cache-resident, see §2).
+- **Long contexts (8k–32k): the gap *narrows* further (to ~1.24×) and pure is strictly more scalable in
+  memory** — it is the only one of the two that completes a 32768-token encode on this machine
   (ONNX OOMs materializing the full score tensor).
 
 ## Reproduce
