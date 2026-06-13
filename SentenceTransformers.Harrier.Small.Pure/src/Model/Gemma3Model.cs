@@ -304,7 +304,7 @@ internal sealed class Gemma3Model
     /// flash path's scratch no longer scales with it (only the per-query running state does), so each
     /// loaded K/V chunk is reused across more queries - cutting K/V memory traffic, the bottleneck of the
     /// quadratic term.</summary>
-    private const int FlashQueryBlock = 64;
+    private const int FlashQueryBlock = 32;
 
     /// <summary>Causal grouped-query attention. The single KV head is shared by all query heads.
     /// On x64 each query block runs <see cref="FlashAttentionBlock"/> - a block-wise flash attention that
@@ -427,96 +427,81 @@ internal sealed class Gemma3Model
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private static void FlashAttentionBlock(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
     {
+        // acc layout: per local query, the `heads` heads are contiguous (head h at local*heads*headDim +
+        // h*headDim), matching the qStride layout so AxpyHeads4 can write all heads of a query at once.
         int blk = q1 - q0;
-        float[] acc = ArrayPool<float>.Shared.Rent(blk * headDim);
-        Span<float> mState = stackalloc float[FlashQueryBlock];
-        Span<float> lState = stackalloc float[FlashQueryBlock];
-        Span<float> sbuf = stackalloc float[KeyChunk];
+        float[] acc = ArrayPool<float>.Shared.Rent(blk * heads * headDim);
+        Array.Clear(acc, 0, blk * heads * headDim);
+        Span<float> mState = stackalloc float[FlashQueryBlock * 4];
+        Span<float> lState = stackalloc float[FlashQueryBlock * 4];
+        Span<float> sbuf = stackalloc float[4 * KeyChunk]; // one KeyChunk score row per head
+        mState.Slice(0, blk * heads).Fill(float.NegativeInfinity);
+        lState.Slice(0, blk * heads).Clear();
 
-        ref float qr = ref q[0];
-        ref float kr = ref k[0];
-        ref float vr = ref v[0];
-
-        for (int head = 0; head < heads; head++)
+        for (int kb = 0; kb < q1; kb += KeyChunk)
         {
-            int headOff = head * headDim;
-            Array.Clear(acc, 0, blk * headDim);
-            mState.Slice(0, blk).Fill(float.NegativeInfinity);
-            lState.Slice(0, blk).Clear();
-
-            for (int kb = 0; kb < q1; kb += KeyChunk)
+            int kEnd = Math.Min(kb + KeyChunk, q1);
+            for (int local = 0; local < blk; local++)
             {
-                int kEnd = Math.Min(kb + KeyChunk, q1);
-                for (int local = 0; local < blk; local++)
+                int qi = q0 + local;
+                if (kb > qi) continue;                  // whole chunk is causally masked for this query
+                int jHi = Math.Min(kEnd, qi + 1);
+                int cnt = jHi - kb;
+                int qb = qi * qStride;                  // head h of this query is at qb + h*headDim
+                int accLocal = local * heads * headDim;
+
+                // Head-fused scores: each key is dotted against all 4 query heads in one pass (k read once).
+                for (int jj = 0; jj < cnt; jj++)
                 {
-                    int qi = q0 + local;
-                    if (kb > qi) continue;                 // whole chunk is causally masked for this query
-                    int jHi = Math.Min(kEnd, qi + 1);
-                    int cnt = jHi - kb;
-                    int qb = qi * qStride + headOff;
+                    ScoreHeads4(q, qb, k, (kb + jj) * kvStride, headDim, scale, out float s0, out float s1, out float s2, out float s3);
+                    sbuf[0 * KeyChunk + jj] = s0;
+                    sbuf[1 * KeyChunk + jj] = s1;
+                    sbuf[2 * KeyChunk + jj] = s2;
+                    sbuf[3 * KeyChunk + jj] = s3;
+                }
 
-                    for (int jj = 0; jj < cnt; jj++)
-                    {
-                        sbuf[jj] = DotFma(ref qr, qb, ref kr, (kb + jj) * kvStride, headDim) * scale;
-                    }
-
-                    var s = sbuf.Slice(0, cnt);
+                // Per head: vectorized exp over the chunk + online-softmax bookkeeping, rescaling acc.
+                for (int head = 0; head < heads; head++)
+                {
+                    var s = sbuf.Slice(head * KeyChunk, cnt);
                     float bmax = TensorPrimitives.Max(s);
-                    float mPrev = mState[local];
+                    int st = local * heads + head;
+                    float mPrev = mState[st];
                     float mNew = MathF.Max(mPrev, bmax);
 
-                    TensorPrimitives.Subtract(s, mNew, s);  // s -= mNew
-                    TensorPrimitives.Exp(s, s);             // s = exp(s - mNew)  (vectorized)
+                    TensorPrimitives.Subtract(s, mNew, s);
+                    TensorPrimitives.Exp(s, s);             // s = exp(s - mNew), vectorized
                     float psum = TensorPrimitives.Sum(s);
                     float corr = float.IsNegativeInfinity(mPrev) ? 0f : MathF.Exp(mPrev - mNew);
 
-                    lState[local] = lState[local] * corr + psum;
-                    int accBase = local * headDim;
+                    lState[st] = lState[st] * corr + psum;
                     if (corr != 1f)
                     {
-                        ScaleInPlaceFma(acc, accBase, corr, headDim);   // rescale prior contributions to new max
+                        ScaleInPlaceFma(acc, accLocal + head * headDim, corr, headDim);
                     }
-                    for (int jj = 0; jj < cnt; jj++)
-                    {
-                        AxpyFma(acc, accBase, ref vr, (kb + jj) * kvStride, s[jj], headDim); // acc += p_jj * V_j
-                    }
-                    mState[local] = mNew;
+                    mState[st] = mNew;
+                }
+
+                // Head-fused value: each value row is read once and accumulated into all 4 heads.
+                for (int jj = 0; jj < cnt; jj++)
+                {
+                    AxpyHeads4(sbuf[0 * KeyChunk + jj], sbuf[1 * KeyChunk + jj], sbuf[2 * KeyChunk + jj], sbuf[3 * KeyChunk + jj],
+                               v, (kb + jj) * kvStride, acc, accLocal, headDim);
                 }
             }
+        }
 
-            for (int local = 0; local < blk; local++)
+        for (int local = 0; local < blk; local++)
+        {
+            for (int head = 0; head < heads; head++)
             {
-                float inv = lState[local] > 0f ? 1f / lState[local] : 0f;
-                ScaleTo(acc, local * headDim, attnOut, (q0 + local) * qStride + headOff, inv, headDim);
+                int st = local * heads + head;
+                float inv = lState[st] > 0f ? 1f / lState[st] : 0f;
+                ScaleTo(acc, st * headDim, attnOut, (q0 + local) * qStride + head * headDim, inv, headDim);
             }
         }
 
         ArrayPool<float>.Shared.Return(acc);
-    }
-
-    /// <summary>256-bit FMA dot product over <paramref name="dim"/> (a multiple of 8).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float DotFma(ref float a, int aOff, ref float b, int bOff, int dim)
-    {
-        var acc = Vector256<float>.Zero;
-        for (int d = 0; d < dim; d += 8)
-        {
-            acc = Fma.MultiplyAdd(Vector256.LoadUnsafe(ref a, (nuint)(aOff + d)), Vector256.LoadUnsafe(ref b, (nuint)(bOff + d)), acc);
-        }
-        return Vector256.Sum(acc);
-    }
-
-    /// <summary><c>acc += p * v</c> over <paramref name="dim"/> (FMA).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void AxpyFma(float[] acc, int accBase, ref float v, int vOff, float p, int dim)
-    {
-        ref float ar = ref acc[0];
-        var pv = Vector256.Create(p);
-        for (int d = 0; d < dim; d += 8)
-        {
-            Fma.MultiplyAdd(pv, Vector256.LoadUnsafe(ref v, (nuint)(vOff + d)), Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)))
-               .StoreUnsafe(ref ar, (nuint)(accBase + d));
-        }
     }
 
     /// <summary><c>acc *= corr</c> over <paramref name="dim"/> (online-softmax rescale).</summary>
