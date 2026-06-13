@@ -39,6 +39,12 @@ internal sealed class Gemma3Model
     private readonly Layer[] _layers;
     private readonly float[] _finalNorm;
 
+    /// <summary>When true (quantized weight modes on a VNNI host), attention scores are computed with an
+    /// int8 VNNI dot: Q/K are dynamically quantized per row so the score matmul reads K at 1 byte/element
+    /// (4x less memory than fp32 - attention is memory-bound) and uses <c>vpdpbusd</c>. The value matmul
+    /// stays fp32 (per-row V scales do not fold into an int dot).</summary>
+    private readonly bool _int8Attention;
+
     private sealed class Layer
     {
         public required float[] InputLayerNorm;
@@ -56,12 +62,13 @@ internal sealed class Gemma3Model
         public required IWeightMatrix DownProj;
     }
 
-    private Gemma3Model(Gemma3Config cfg, ushort[] embedTokens, Layer[] layers, float[] finalNorm)
+    private Gemma3Model(Gemma3Config cfg, ushort[] embedTokens, Layer[] layers, float[] finalNorm, bool int8Attention)
     {
         _cfg = cfg;
         _embedTokens = embedTokens;
         _layers = layers;
         _finalNorm = finalNorm;
+        _int8Attention = int8Attention;
         // The reference scales embeddings by sqrt(hidden_size) rounded to the embedding's bfloat16
         // dtype; reproduce that rounding so our activations track the reference exactly.
         _embedScale = FloatConversions.RoundToBFloat16(MathF.Sqrt(cfg.HiddenSize));
@@ -113,7 +120,7 @@ internal sealed class Gemma3Model
 
         var finalNorm = st.ReadFloat(prefix + "norm.weight");
 
-        return new Gemma3Model(cfg, embed, layers, finalNorm);
+        return new Gemma3Model(cfg, embed, layers, finalNorm, int8Attention: quantization != Quantization.None);
     }
 
     internal static ArrayPool<float> _pooledArray = ArrayPool<float>.Create(512000, 24);
@@ -312,18 +319,59 @@ internal sealed class Gemma3Model
     /// materializes the seq×seq score matrix, which is the memory bottleneck of the quadratic term. Other
     /// hosts use the portable head-fused materialized path <see cref="AttentionBlock"/>. (A non-chunked
     /// online softmax was measured slower: its per-element scalar <c>exp</c> loses to vectorized exp.)</summary>
-    private Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, ParallelOptions parallelOptions)
+    private async Task AttentionAsync(float[] q, float[] k, float[] v, float[] attnOut, int seq, int headDim, ParallelOptions parallelOptions)
     {
         int qStride  = _cfg.NumHeads * headDim;
         int kvStride = _cfg.NumKvHeads * headDim; // == headDim (1 KV head)
         int heads    = _cfg.NumHeads;
         float scale  = _cfg.AttentionScale;
 
-        bool useFlash = !ForwardProfile.ForcePortableAttention && Fma.IsSupported && (headDim & 7) == 0;
+        bool force   = ForwardProfile.ForcePortableAttention;
+        bool useInt8 = !force && _int8Attention && Vnni.IsSupported && (headDim % 32 == 0);
+        bool useFlash = !force && Fma.IsSupported && (headDim & 7) == 0;
+
+        if (useInt8)
+        {
+            // Dynamically quantize Q (uint8, +128) and K (int8) per row once, then run the flash kernel
+            // with VNNI int8 scores. Q/K quantization is O(seq*headDim) and parallelizes over positions.
+            var qu  = ArrayPool<byte>.Shared.Rent(seq * qStride);
+            var sQ  = ArrayPool<float>.Shared.Rent(seq * heads);
+            var kq  = ArrayPool<sbyte>.Shared.Rent(seq * kvStride);
+            var sK  = ArrayPool<float>.Shared.Rent(seq);
+            var rsK = ArrayPool<int>.Shared.Rent(seq);
+            try
+            {
+                await ParallelExecution.ForAsync(0, seq, parallelOptions, (i, _) =>
+                {
+                    QuantizeQRow(q, qu, sQ, i * qStride, i * heads, heads, headDim);
+                    QuantizeKRow(k, kq, sK, rsK, i, kvStride, headDim);
+                    return ValueTask.CompletedTask;
+                }).ConfigureAwait(false);
+
+                int nb = (seq + FlashQueryBlock - 1) / FlashQueryBlock;
+                await ParallelExecution.ForAsync(0, nb, parallelOptions, (b, _) =>
+                {
+                    int q0 = b * FlashQueryBlock;
+                    int q1 = Math.Min(q0 + FlashQueryBlock, seq);
+                    FlashAttentionBlockInt8(qu, sQ, kq, sK, rsK, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
+                    return ValueTask.CompletedTask;
+                }).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(qu);
+                ArrayPool<float>.Shared.Return(sQ);
+                ArrayPool<sbyte>.Shared.Return(kq);
+                ArrayPool<float>.Shared.Return(sK);
+                ArrayPool<int>.Shared.Return(rsK);
+            }
+            return;
+        }
+
         int block     = useFlash ? FlashQueryBlock : QueryBlock;
         int numBlocks = (seq + block - 1) / block;
 
-        return ParallelExecution.ForAsync(0, numBlocks, parallelOptions, (b, _) =>
+        await ParallelExecution.ForAsync(0, numBlocks, parallelOptions, (b, _) =>
         {
             int q0 = b * block;
             int q1 = Math.Min(q0 + block, seq);
@@ -336,7 +384,48 @@ internal sealed class Gemma3Model
                 AttentionBlock(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, heads, scale);
             }
             return ValueTask.CompletedTask;
-        });
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>Quantizes the <paramref name="heads"/> head-rows of query position <paramref name="qBase"/>
+    /// to symmetric int8 stored offset by +128 into a uint8 (the operand <c>vpdpbusd</c> expects), with a
+    /// per-(position, head) scale.</summary>
+    private static void QuantizeQRow(float[] q, byte[] qu, float[] sQ, int qBase, int sBase, int heads, int headDim)
+    {
+        for (int h = 0; h < heads; h++)
+        {
+            int b = qBase + h * headDim;
+            float amax = 0f;
+            for (int d = 0; d < headDim; d++) amax = MathF.Max(amax, MathF.Abs(q[b + d]));
+            float sc = amax > 0 ? amax / 127f : 1f;
+            float inv = 1f / sc;
+            sQ[sBase + h] = sc;
+            for (int d = 0; d < headDim; d++)
+            {
+                int v = Math.Clamp((int)MathF.Round(q[b + d] * inv), -127, 127);
+                qu[b + d] = (byte)(v + 128);
+            }
+        }
+    }
+
+    /// <summary>Quantizes key row <paramref name="i"/> to symmetric int8 with a per-row scale and the
+    /// per-row sum (used to correct the +128 offset of the uint8 query operand).</summary>
+    private static void QuantizeKRow(float[] k, sbyte[] kq, float[] sK, int[] rsK, int i, int kvStride, int headDim)
+    {
+        int b = i * kvStride;
+        float amax = 0f;
+        for (int d = 0; d < headDim; d++) amax = MathF.Max(amax, MathF.Abs(k[b + d]));
+        float sc = amax > 0 ? amax / 127f : 1f;
+        float inv = 1f / sc;
+        sK[i] = sc;
+        int sum = 0;
+        for (int d = 0; d < headDim; d++)
+        {
+            int v = Math.Clamp((int)MathF.Round(k[b + d] * inv), -127, 127);
+            kq[b + d] = (sbyte)v;
+            sum += v;
+        }
+        rsK[i] = sum;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -527,6 +616,121 @@ internal sealed class Gemma3Model
         {
             (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * iv).StoreUnsafe(ref orf, (nuint)(outBase + d));
         }
+    }
+
+    /// <summary>
+    /// Int8 variant of <see cref="FlashAttentionBlock"/>: identical block-flash structure (chunked online
+    /// softmax, no materialized scores) but the score dot is an <b>int8 VNNI</b> product over the
+    /// pre-quantized Q (uint8) and K (int8), so K is read at one byte per element (4x less memory than
+    /// fp32, and attention is memory-bound). Softmax and the value matmul stay fp32.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void FlashAttentionBlockInt8(byte[] qu, float[] sQ, sbyte[] kq, float[] sK, int[] rsK, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
+    {
+        int blk = q1 - q0;
+        float[] acc = ArrayPool<float>.Shared.Rent(blk * heads * headDim);
+        Array.Clear(acc, 0, blk * heads * headDim);
+        Span<float> mState = stackalloc float[FlashQueryBlock * 4];
+        Span<float> lState = stackalloc float[FlashQueryBlock * 4];
+        Span<float> sbuf = stackalloc float[4 * KeyChunk];
+        mState.Slice(0, blk * heads).Fill(float.NegativeInfinity);
+        lState.Slice(0, blk * heads).Clear();
+
+        for (int kb = 0; kb < q1; kb += KeyChunk)
+        {
+            int kEnd = Math.Min(kb + KeyChunk, q1);
+            for (int local = 0; local < blk; local++)
+            {
+                int qi = q0 + local;
+                if (kb > qi) continue;
+                int jHi = Math.Min(kEnd, qi + 1);
+                int cnt = jHi - kb;
+                int qB = qi * qStride;
+                int sqB = qi * heads;
+                int accLocal = local * heads * headDim;
+
+                for (int jj = 0; jj < cnt; jj++)
+                {
+                    int key = kb + jj;
+                    ScoreHeads4Int8(qu, qB, sQ, sqB, kq, key * kvStride, sK[key], rsK[key], headDim, scale,
+                                    out float s0, out float s1, out float s2, out float s3);
+                    sbuf[0 * KeyChunk + jj] = s0;
+                    sbuf[1 * KeyChunk + jj] = s1;
+                    sbuf[2 * KeyChunk + jj] = s2;
+                    sbuf[3 * KeyChunk + jj] = s3;
+                }
+
+                for (int head = 0; head < heads; head++)
+                {
+                    var s = sbuf.Slice(head * KeyChunk, cnt);
+                    float bmax = TensorPrimitives.Max(s);
+                    int st = local * heads + head;
+                    float mPrev = mState[st];
+                    float mNew = MathF.Max(mPrev, bmax);
+
+                    TensorPrimitives.Subtract(s, mNew, s);
+                    TensorPrimitives.Exp(s, s);
+                    float psum = TensorPrimitives.Sum(s);
+                    float corr = float.IsNegativeInfinity(mPrev) ? 0f : MathF.Exp(mPrev - mNew);
+
+                    lState[st] = lState[st] * corr + psum;
+                    if (corr != 1f)
+                    {
+                        ScaleInPlaceFma(acc, accLocal + head * headDim, corr, headDim);
+                    }
+                    mState[st] = mNew;
+                }
+
+                for (int jj = 0; jj < cnt; jj++)
+                {
+                    AxpyHeads4(sbuf[0 * KeyChunk + jj], sbuf[1 * KeyChunk + jj], sbuf[2 * KeyChunk + jj], sbuf[3 * KeyChunk + jj],
+                               v, (kb + jj) * kvStride, acc, accLocal, headDim);
+                }
+            }
+        }
+
+        for (int local = 0; local < blk; local++)
+        {
+            for (int head = 0; head < heads; head++)
+            {
+                int st = local * heads + head;
+                float inv = lState[st] > 0f ? 1f / lState[st] : 0f;
+                ScaleTo(acc, st * headDim, attnOut, (q0 + local) * qStride + head * headDim, inv, headDim);
+            }
+        }
+
+        ArrayPool<float>.Shared.Return(acc);
+    }
+
+    /// <summary>Int8 VNNI scores for the four GQA query heads against one shared key: <c>vpdpbusd</c> of the
+    /// uint8 query rows and the int8 key row, with the +128 offset corrected by the key's row sum, then
+    /// scaled by <c>scaleQ_head * scaleK * attnScale</c>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ScoreHeads4Int8(byte[] qu, int qBase, float[] sQ, int sqBase, sbyte[] kq, int kBase, float scaleK, int rowSumK, int headDim, float scale,
+                                        out float s0, out float s1, out float s2, out float s3)
+    {
+        ref byte qr = ref qu[0];
+        ref sbyte kr = ref kq[0];
+        var a0 = Vector256<int>.Zero;
+        var a1 = Vector256<int>.Zero;
+        var a2 = Vector256<int>.Zero;
+        var a3 = Vector256<int>.Zero;
+
+        for (int d = 0; d < headDim; d += 32)
+        {
+            var kv = Vector256.LoadUnsafe(ref kr, (nuint)(kBase + d));
+            a0 = Vnni.DotAccumulate(a0, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + d)), kv);
+            a1 = Vnni.DotAccumulate(a1, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + headDim + d)), kv);
+            a2 = Vnni.DotAccumulate(a2, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + 2 * headDim + d)), kv);
+            a3 = Vnni.DotAccumulate(a3, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + 3 * headDim + d)), kv);
+        }
+
+        int off = Vnni.ZeroPoint * rowSumK;
+        float kScaled = scale * scaleK;
+        s0 = kScaled * sQ[sqBase + 0] * (Vector256.Sum(a0) - off);
+        s1 = kScaled * sQ[sqBase + 1] * (Vector256.Sum(a1) - off);
+        s2 = kScaled * sQ[sqBase + 2] * (Vector256.Sum(a2) - off);
+        s3 = kScaled * sQ[sqBase + 3] * (Vector256.Sum(a3) - off);
     }
 
     /// <summary>Dots the four GQA query heads at <paramref name="qBase"/> against the single shared key
