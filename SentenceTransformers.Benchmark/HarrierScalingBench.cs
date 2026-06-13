@@ -155,6 +155,49 @@ public static class HarrierScalingBench
         Console.WriteLine($"Wrote results -> {resultsPath}");
     }
 
+    /// <summary>
+    /// Per-stage profile of the pure fp32 forward pass at a few sequence lengths, at a chosen degree of
+    /// parallelism. Shows which stages scale linearly (projection matmuls) vs quadratically (attention).
+    /// </summary>
+    public static async Task RunProfileAsync(int maxDop)
+    {
+        const string inputsPath = "/tmp/harrier_scaling_inputs.json";
+        if (!File.Exists(inputsPath))
+        {
+            Console.WriteLine($"Calibrated inputs not found at {inputsPath}; run 'harrier-scaling' first.");
+            return;
+        }
+
+        using var docp = JsonDocument.Parse(await File.ReadAllTextAsync(inputsPath));
+        var byTokens = docp.RootElement.EnumerateArray()
+            .ToDictionary(e => e.GetProperty("tokens").GetInt32(), e => e.GetProperty("text").GetString()!);
+
+        Console.WriteLine($"Loading Harrier.Small.Pure (fp32) for profiling (MaxDop={maxDop}) ...");
+        using var pure = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(
+            quantization: SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None);
+        Console.WriteLine();
+
+        var po = new ParallelOptions { MaxDegreeOfParallelism = maxDop };
+
+        foreach (var tokens in new[] { 512, 2048, 4096 })
+        {
+            if (!byTokens.TryGetValue(tokens, out var text)) continue;
+            var batch = new[] { text };
+
+            // Warmup with profiling off.
+            SentenceTransformers.Harrier.Small.Pure.Model.ForwardProfile.Enabled = false;
+            await pure.EncodeAsync(batch, po);
+
+            // One profiled encode.
+            SentenceTransformers.Harrier.Small.Pure.Model.ForwardProfile.Reset();
+            SentenceTransformers.Harrier.Small.Pure.Model.ForwardProfile.Enabled = true;
+            await pure.EncodeAsync(batch, po);
+            SentenceTransformers.Harrier.Small.Pure.Model.ForwardProfile.Enabled = false;
+            SentenceTransformers.Harrier.Small.Pure.Model.ForwardProfile.Report($"{tokens} tokens, MaxDop={maxDop}");
+            Console.WriteLine();
+        }
+    }
+
     /// <summary>Warms up once, then times the median over an iteration count that shrinks as the
     /// sequence (and therefore the per-encode cost) grows, so the large-N points stay affordable.</summary>
     private static async Task<double> TimeEncodeAsync(Func<string[], Task<float[][]>> encode, string text, int tokens)

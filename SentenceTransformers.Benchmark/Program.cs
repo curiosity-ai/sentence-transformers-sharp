@@ -31,6 +31,13 @@ if (args.Length > 0 && args[0] == "harrier-scaling")
     return;
 }
 
+if (args.Length > 0 && args[0] == "harrier-profile")
+{
+    int maxDop = args.Length > 1 ? int.Parse(args[1]) : 1;
+    await HarrierScalingBench.RunProfileAsync(maxDop);
+    return;
+}
+
 if (args.Length > 0 && args[0] == "harrier-scaling-pure")
 {
     var quant = args.Length > 1

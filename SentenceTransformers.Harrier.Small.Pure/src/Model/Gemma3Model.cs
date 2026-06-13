@@ -167,34 +167,63 @@ internal sealed class Gemma3Model
             {
                 parallelOptions.CancellationToken.ThrowIfCancellationRequested();
 
+                long ts;
                 // ---- self attention ----
+                ts = ForwardProfile.Start();
                 Ops.RmsNorm(hidden, layer.InputLayerNorm, normed, seq, h, _cfg.RmsNormEps);
+                ForwardProfile.Stop("norm+resid", ts);
+
+                ts = ForwardProfile.Start();
                 await layer.QProj.MultiplyAsync(normed, q, seq, parallelOptions).ConfigureAwait(false);
                 await layer.KProj.MultiplyAsync(normed, k, seq, parallelOptions).ConfigureAwait(false);
                 await layer.VProj.MultiplyAsync(normed, v, seq, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("qkv_proj", ts);
 
+                ts = ForwardProfile.Start();
                 ApplyHeadNorm(q, layer.QNorm, seq, _cfg.NumHeads, headDim);
                 ApplyHeadNorm(k, layer.KNorm, seq, _cfg.NumKvHeads, headDim);
 
                 ApplyRope(q, cos, sin, seq, _cfg.NumHeads, headDim);
                 ApplyRope(k, cos, sin, seq, _cfg.NumKvHeads, headDim);
+                ForwardProfile.Stop("headnorm+rope", ts);
 
+                ts = ForwardProfile.Start();
                 await AttentionAsync(q, k, v, attnOut, seq, headDim, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("attention", ts);
 
+                ts = ForwardProfile.Start();
                 await layer.OProj.MultiplyAsync(attnOut, attnProj, seq, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("o_proj", ts);
+
                 // post-attention norm then residual add
+                ts = ForwardProfile.Start();
                 Ops.RmsNorm(attnProj, layer.PostAttentionLayerNorm, attnProj, seq, h, _cfg.RmsNormEps);
                 TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), attnProj.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
+                ForwardProfile.Stop("norm+resid", ts);
 
                 // ---- feed forward ----
+                ts = ForwardProfile.Start();
                 Ops.RmsNorm(hidden, layer.PreFeedforwardLayerNorm, normed, seq, h, _cfg.RmsNormEps);
+                ForwardProfile.Stop("norm+resid", ts);
+
+                ts = ForwardProfile.Start();
                 await layer.GateProj.MultiplyAsync(normed, gate, seq, parallelOptions).ConfigureAwait(false);
                 await layer.UpProj.MultiplyAsync(normed, up, seq, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("mlp_proj", ts);
+
                 int ffLen = seq * _cfg.IntermediateSize;
+                ts = ForwardProfile.Start();
                 Ops.GeGluInPlace(gate.AsSpan(0, ffLen), up.AsSpan(0, ffLen));
+                ForwardProfile.Stop("geglu", ts);
+
+                ts = ForwardProfile.Start();
                 await layer.DownProj.MultiplyAsync(gate, down, seq, parallelOptions).ConfigureAwait(false);
+                ForwardProfile.Stop("mlp_proj", ts);
+
+                ts = ForwardProfile.Start();
                 Ops.RmsNorm(down, layer.PostFeedforwardLayerNorm, down, seq, h, _cfg.RmsNormEps);
                 TensorPrimitives.Add(hidden.AsSpan(0, hiddenLen), down.AsSpan(0, hiddenLen), hidden.AsSpan(0, hiddenLen));
+                ForwardProfile.Stop("norm+resid", ts);
             }
 
             // ---- final norm + last-token pooling ----
