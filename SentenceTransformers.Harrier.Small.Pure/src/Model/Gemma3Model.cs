@@ -598,10 +598,19 @@ internal sealed class Gemma3Model
     private static void ScaleInPlaceFma(float[] acc, int accBase, float corr, int dim)
     {
         ref float ar = ref acc[0];
-        var cv = Vector256.Create(corr);
-        for (int d = 0; d < dim; d += 8)
+        int d = 0;
+        if (Avx512F.IsSupported)
         {
-            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * cv).StoreUnsafe(ref ar, (nuint)(accBase + d));
+            var cv = Vector512.Create(corr);
+            for (; d + 16 <= dim; d += 16)
+            {
+                (Vector512.LoadUnsafe(ref ar, (nuint)(accBase + d)) * cv).StoreUnsafe(ref ar, (nuint)(accBase + d));
+            }
+        }
+        var cv2 = Vector256.Create(corr);
+        for (; d < dim; d += 8)
+        {
+            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * cv2).StoreUnsafe(ref ar, (nuint)(accBase + d));
         }
     }
 
@@ -611,10 +620,19 @@ internal sealed class Gemma3Model
     {
         ref float ar = ref acc[0];
         ref float orf = ref outArr[0];
-        var iv = Vector256.Create(inv);
-        for (int d = 0; d < dim; d += 8)
+        int d = 0;
+        if (Avx512F.IsSupported)
         {
-            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * iv).StoreUnsafe(ref orf, (nuint)(outBase + d));
+            var iv = Vector512.Create(inv);
+            for (; d + 16 <= dim; d += 16)
+            {
+                (Vector512.LoadUnsafe(ref ar, (nuint)(accBase + d)) * iv).StoreUnsafe(ref orf, (nuint)(outBase + d));
+            }
+        }
+        var iv2 = Vector256.Create(inv);
+        for (; d < dim; d += 8)
+        {
+            (Vector256.LoadUnsafe(ref ar, (nuint)(accBase + d)) * iv2).StoreUnsafe(ref orf, (nuint)(outBase + d));
         }
     }
 
@@ -711,26 +729,48 @@ internal sealed class Gemma3Model
     {
         ref byte qr = ref qu[0];
         ref sbyte kr = ref kq[0];
-        var a0 = Vector256<int>.Zero;
-        var a1 = Vector256<int>.Zero;
-        var a2 = Vector256<int>.Zero;
-        var a3 = Vector256<int>.Zero;
+        int i0, i1, i2, i3;
 
-        for (int d = 0; d < headDim; d += 32)
+        if (Vnni.Use512 && (headDim & 63) == 0)
         {
-            var kv = Vector256.LoadUnsafe(ref kr, (nuint)(kBase + d));
-            a0 = Vnni.DotAccumulate(a0, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + d)), kv);
-            a1 = Vnni.DotAccumulate(a1, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + headDim + d)), kv);
-            a2 = Vnni.DotAccumulate(a2, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + 2 * headDim + d)), kv);
-            a3 = Vnni.DotAccumulate(a3, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + 3 * headDim + d)), kv);
+            // 512-bit int8 VNNI: 64 int8 MACs per accumulate (vpdpbusd on zmm), ~2x the 256-bit path.
+            var b0 = Vector512<int>.Zero;
+            var b1 = Vector512<int>.Zero;
+            var b2 = Vector512<int>.Zero;
+            var b3 = Vector512<int>.Zero;
+            for (int d = 0; d < headDim; d += 64)
+            {
+                var kv = Vector512.LoadUnsafe(ref kr, (nuint)(kBase + d));
+                b0 = Vnni.DotAccumulate512(b0, Vector512.LoadUnsafe(ref qr, (nuint)(qBase + d)), kv);
+                b1 = Vnni.DotAccumulate512(b1, Vector512.LoadUnsafe(ref qr, (nuint)(qBase + headDim + d)), kv);
+                b2 = Vnni.DotAccumulate512(b2, Vector512.LoadUnsafe(ref qr, (nuint)(qBase + 2 * headDim + d)), kv);
+                b3 = Vnni.DotAccumulate512(b3, Vector512.LoadUnsafe(ref qr, (nuint)(qBase + 3 * headDim + d)), kv);
+            }
+            i0 = Vector512.Sum(b0); i1 = Vector512.Sum(b1); i2 = Vector512.Sum(b2); i3 = Vector512.Sum(b3);
+        }
+        else
+        {
+            var a0 = Vector256<int>.Zero;
+            var a1 = Vector256<int>.Zero;
+            var a2 = Vector256<int>.Zero;
+            var a3 = Vector256<int>.Zero;
+            for (int d = 0; d < headDim; d += 32)
+            {
+                var kv = Vector256.LoadUnsafe(ref kr, (nuint)(kBase + d));
+                a0 = Vnni.DotAccumulate(a0, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + d)), kv);
+                a1 = Vnni.DotAccumulate(a1, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + headDim + d)), kv);
+                a2 = Vnni.DotAccumulate(a2, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + 2 * headDim + d)), kv);
+                a3 = Vnni.DotAccumulate(a3, Vector256.LoadUnsafe(ref qr, (nuint)(qBase + 3 * headDim + d)), kv);
+            }
+            i0 = Vector256.Sum(a0); i1 = Vector256.Sum(a1); i2 = Vector256.Sum(a2); i3 = Vector256.Sum(a3);
         }
 
         int off = Vnni.ZeroPoint * rowSumK;
         float kScaled = scale * scaleK;
-        s0 = kScaled * sQ[sqBase + 0] * (Vector256.Sum(a0) - off);
-        s1 = kScaled * sQ[sqBase + 1] * (Vector256.Sum(a1) - off);
-        s2 = kScaled * sQ[sqBase + 2] * (Vector256.Sum(a2) - off);
-        s3 = kScaled * sQ[sqBase + 3] * (Vector256.Sum(a3) - off);
+        s0 = kScaled * sQ[sqBase + 0] * (i0 - off);
+        s1 = kScaled * sQ[sqBase + 1] * (i1 - off);
+        s2 = kScaled * sQ[sqBase + 2] * (i2 - off);
+        s3 = kScaled * sQ[sqBase + 3] * (i3 - off);
     }
 
     /// <summary>Dots the four GQA query heads at <paramref name="qBase"/> against the single shared key
@@ -781,23 +821,50 @@ internal sealed class Gemma3Model
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private static void AxpyHeads4(float s0, float s1, float s2, float s3, float[] v, int vBase, float[] outArr, int outBase, int headDim)
     {
-        int w = Vector<float>.Count;
         ref float vr = ref v[vBase];
         ref float orf = ref outArr[outBase];
-
-        var vs0 = new Vector<float>(s0);
-        var vs1 = new Vector<float>(s1);
-        var vs2 = new Vector<float>(s2);
-        var vs3 = new Vector<float>(s3);
-
         int d = 0;
-        for (; d + w <= headDim; d += w)
+
+        if (Avx512F.IsSupported)
         {
-            var vv = Vector.LoadUnsafe(ref vr, (nuint)d);
-            (Vector.LoadUnsafe(ref orf, (nuint)d)                 + vv * vs0).StoreUnsafe(ref orf, (nuint)d);
-            (Vector.LoadUnsafe(ref orf, (nuint)(headDim + d))     + vv * vs1).StoreUnsafe(ref orf, (nuint)(headDim + d));
-            (Vector.LoadUnsafe(ref orf, (nuint)(2 * headDim + d)) + vv * vs2).StoreUnsafe(ref orf, (nuint)(2 * headDim + d));
-            (Vector.LoadUnsafe(ref orf, (nuint)(3 * headDim + d)) + vv * vs3).StoreUnsafe(ref orf, (nuint)(3 * headDim + d));
+            // 512-bit FMA: 16 floats/lane, fused multiply-add into the four head accumulators.
+            var p0 = Vector512.Create(s0); var p1 = Vector512.Create(s1);
+            var p2 = Vector512.Create(s2); var p3 = Vector512.Create(s3);
+            for (; d + 16 <= headDim; d += 16)
+            {
+                var vv = Vector512.LoadUnsafe(ref vr, (nuint)d);
+                Avx512F.FusedMultiplyAdd(p0, vv, Vector512.LoadUnsafe(ref orf, (nuint)d)).StoreUnsafe(ref orf, (nuint)d);
+                Avx512F.FusedMultiplyAdd(p1, vv, Vector512.LoadUnsafe(ref orf, (nuint)(headDim + d))).StoreUnsafe(ref orf, (nuint)(headDim + d));
+                Avx512F.FusedMultiplyAdd(p2, vv, Vector512.LoadUnsafe(ref orf, (nuint)(2 * headDim + d))).StoreUnsafe(ref orf, (nuint)(2 * headDim + d));
+                Avx512F.FusedMultiplyAdd(p3, vv, Vector512.LoadUnsafe(ref orf, (nuint)(3 * headDim + d))).StoreUnsafe(ref orf, (nuint)(3 * headDim + d));
+            }
+        }
+        else if (Fma.IsSupported)
+        {
+            var p0 = Vector256.Create(s0); var p1 = Vector256.Create(s1);
+            var p2 = Vector256.Create(s2); var p3 = Vector256.Create(s3);
+            for (; d + 8 <= headDim; d += 8)
+            {
+                var vv = Vector256.LoadUnsafe(ref vr, (nuint)d);
+                Fma.MultiplyAdd(p0, vv, Vector256.LoadUnsafe(ref orf, (nuint)d)).StoreUnsafe(ref orf, (nuint)d);
+                Fma.MultiplyAdd(p1, vv, Vector256.LoadUnsafe(ref orf, (nuint)(headDim + d))).StoreUnsafe(ref orf, (nuint)(headDim + d));
+                Fma.MultiplyAdd(p2, vv, Vector256.LoadUnsafe(ref orf, (nuint)(2 * headDim + d))).StoreUnsafe(ref orf, (nuint)(2 * headDim + d));
+                Fma.MultiplyAdd(p3, vv, Vector256.LoadUnsafe(ref orf, (nuint)(3 * headDim + d))).StoreUnsafe(ref orf, (nuint)(3 * headDim + d));
+            }
+        }
+        else
+        {
+            int w = Vector<float>.Count;
+            var vs0 = new Vector<float>(s0); var vs1 = new Vector<float>(s1);
+            var vs2 = new Vector<float>(s2); var vs3 = new Vector<float>(s3);
+            for (; d + w <= headDim; d += w)
+            {
+                var vv = Vector.LoadUnsafe(ref vr, (nuint)d);
+                (Vector.LoadUnsafe(ref orf, (nuint)d)                 + vv * vs0).StoreUnsafe(ref orf, (nuint)d);
+                (Vector.LoadUnsafe(ref orf, (nuint)(headDim + d))     + vv * vs1).StoreUnsafe(ref orf, (nuint)(headDim + d));
+                (Vector.LoadUnsafe(ref orf, (nuint)(2 * headDim + d)) + vv * vs2).StoreUnsafe(ref orf, (nuint)(2 * headDim + d));
+                (Vector.LoadUnsafe(ref orf, (nuint)(3 * headDim + d)) + vv * vs3).StoreUnsafe(ref orf, (nuint)(3 * headDim + d));
+            }
         }
         for (; d < headDim; d++)
         {
