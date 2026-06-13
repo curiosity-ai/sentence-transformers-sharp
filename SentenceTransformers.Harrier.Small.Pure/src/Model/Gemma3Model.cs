@@ -2,6 +2,8 @@ using System.Buffers;
 using System.Numerics;
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using SentenceTransformers;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
 
@@ -337,6 +339,14 @@ internal sealed class Gemma3Model
     /// output matches the reference to float tolerance.</summary>
     private static void AttentionBlock(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, int heads, float scale)
     {
+        // Fast path: register-tiled FMA GEMM kernels for a full 8-query block on x64 (see
+        // AttentionBlockFma). Partial last block / non-FMA hosts use the portable head-fused path.
+        if (!ForwardProfile.ForcePortableAttention && Fma.IsSupported && (q1 - q0) == QueryBlock && (headDim & 7) == 0)
+        {
+            AttentionBlockFma(q, k, v, attnOut, q0, q1, headDim, qStride, kvStride, scale);
+            return;
+        }
+
         int blk     = q1 - q0;
         int nKeys   = q1;                 // keys 0..q1-1 are the most any query in this block attends to
         int perQ    = heads * nKeys;      // scores stride per query in the block
@@ -399,6 +409,139 @@ internal sealed class Gemma3Model
                     scores[sBase + 2 * nKeys + j],
                     scores[sBase + 3 * nKeys + j],
                     v, vBase, attnOut, qBase, headDim);
+            }
+        }
+
+        ArrayPool<float>.Shared.Return(scores);
+    }
+
+    /// <summary>
+    /// Register-tiled FMA implementation of <see cref="AttentionBlock"/> for a full <see cref="QueryBlock"/>
+    /// (8-query) block on x64. The two attention matmuls are computed as small GEMM microkernels instead
+    /// of per-(query, head) dot products:
+    /// <list type="bullet">
+    /// <item><b>scores</b> Q·Kᵀ as 4-query × 2-key register tiles (8 FMA accumulators), so each loaded
+    /// query/key SIMD vector feeds multiple outputs;</item>
+    /// <item><b>value</b> S·V with the 4 query output rows of a sub-tile accumulated in place while each
+    /// V row is loaded once and reused across them.</item>
+    /// </list>
+    /// Scores are computed densely over the block's key range and the per-query causal tail is zeroed
+    /// after softmax, so the value matmul needs no inner causal branch. Float results match the reference
+    /// to tolerance (SIMD/FMA reassociation only).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static void AttentionBlockFma(float[] q, float[] k, float[] v, float[] attnOut, int q0, int q1, int headDim, int qStride, int kvStride, float scale)
+    {
+        const int HEADS = 4;
+        int blk   = q1 - q0;          // == QueryBlock (8)
+        int nKeys = q1;
+        int perQ  = HEADS * nKeys;
+        float[] scores = ArrayPool<float>.Shared.Rent(blk * perQ);
+
+        ref float qr = ref q[0];
+        ref float kr = ref k[0];
+        ref float vr = ref v[0];
+        ref float outr = ref attnOut[0];
+
+        // ---- scores: dense Q[block] · K[0..nKeys)^T per head, tiled 4 queries × 2 keys ----
+        for (int head = 0; head < HEADS; head++)
+        {
+            int headOff = head * headDim;
+            for (int qt = 0; qt < blk; qt += 4)
+            {
+                int qb0 = (q0 + qt) * qStride + headOff;
+                int qb1 = qb0 + qStride, qb2 = qb1 + qStride, qb3 = qb2 + qStride;
+                int sb0 = (qt + 0) * perQ + head * nKeys;
+                int sb1 = sb0 + perQ, sb2 = sb1 + perQ, sb3 = sb2 + perQ;
+
+                int j = 0;
+                for (; j + 2 <= nKeys; j += 2)
+                {
+                    int kb0 = j * kvStride, kb1 = kb0 + kvStride;
+                    Vector256<float> c00 = default, c01 = default, c10 = default, c11 = default,
+                                     c20 = default, c21 = default, c30 = default, c31 = default;
+                    for (int d = 0; d < headDim; d += 8)
+                    {
+                        var k0 = Vector256.LoadUnsafe(ref kr, (nuint)(kb0 + d));
+                        var k1 = Vector256.LoadUnsafe(ref kr, (nuint)(kb1 + d));
+                        var a0 = Vector256.LoadUnsafe(ref qr, (nuint)(qb0 + d)); c00 = Fma.MultiplyAdd(a0, k0, c00); c01 = Fma.MultiplyAdd(a0, k1, c01);
+                        var a1 = Vector256.LoadUnsafe(ref qr, (nuint)(qb1 + d)); c10 = Fma.MultiplyAdd(a1, k0, c10); c11 = Fma.MultiplyAdd(a1, k1, c11);
+                        var a2 = Vector256.LoadUnsafe(ref qr, (nuint)(qb2 + d)); c20 = Fma.MultiplyAdd(a2, k0, c20); c21 = Fma.MultiplyAdd(a2, k1, c21);
+                        var a3 = Vector256.LoadUnsafe(ref qr, (nuint)(qb3 + d)); c30 = Fma.MultiplyAdd(a3, k0, c30); c31 = Fma.MultiplyAdd(a3, k1, c31);
+                    }
+                    scores[sb0 + j] = Vector256.Sum(c00) * scale; scores[sb0 + j + 1] = Vector256.Sum(c01) * scale;
+                    scores[sb1 + j] = Vector256.Sum(c10) * scale; scores[sb1 + j + 1] = Vector256.Sum(c11) * scale;
+                    scores[sb2 + j] = Vector256.Sum(c20) * scale; scores[sb2 + j + 1] = Vector256.Sum(c21) * scale;
+                    scores[sb3 + j] = Vector256.Sum(c30) * scale; scores[sb3 + j + 1] = Vector256.Sum(c31) * scale;
+                }
+                for (; j < nKeys; j++) // odd-key tail
+                {
+                    int kb0 = j * kvStride;
+                    Vector256<float> c0 = default, c1 = default, c2 = default, c3 = default;
+                    for (int d = 0; d < headDim; d += 8)
+                    {
+                        var k0 = Vector256.LoadUnsafe(ref kr, (nuint)(kb0 + d));
+                        c0 = Fma.MultiplyAdd(Vector256.LoadUnsafe(ref qr, (nuint)(qb0 + d)), k0, c0);
+                        c1 = Fma.MultiplyAdd(Vector256.LoadUnsafe(ref qr, (nuint)(qb1 + d)), k0, c1);
+                        c2 = Fma.MultiplyAdd(Vector256.LoadUnsafe(ref qr, (nuint)(qb2 + d)), k0, c2);
+                        c3 = Fma.MultiplyAdd(Vector256.LoadUnsafe(ref qr, (nuint)(qb3 + d)), k0, c3);
+                    }
+                    scores[sb0 + j] = Vector256.Sum(c0) * scale;
+                    scores[sb1 + j] = Vector256.Sum(c1) * scale;
+                    scores[sb2 + j] = Vector256.Sum(c2) * scale;
+                    scores[sb3 + j] = Vector256.Sum(c3) * scale;
+                }
+            }
+        }
+
+        // ---- per-(query, head) softmax over the causal prefix, then zero the stale tail (j > qi) so the
+        //      value matmul can run over the whole block key range without a per-element causal branch ----
+        for (int local = 0; local < blk; local++)
+        {
+            int qi = q0 + local;
+            int sBase = local * perQ;
+            for (int head = 0; head < HEADS; head++)
+            {
+                int b = sBase + head * nKeys;
+                Ops.SoftmaxInPlace(scores.AsSpan(b, qi + 1), qi + 1);
+                Array.Clear(scores, b + qi + 1, nKeys - qi - 1);
+            }
+        }
+
+        // ---- value: out += scores · V per head, 4 query rows of a sub-tile accumulated together while
+        //      each V row is loaded once. Only keys up to the sub-tile's last query matter (rest zeroed). ----
+        for (int head = 0; head < HEADS; head++)
+        {
+            int headOff = head * headDim;
+            for (int qt = 0; qt < blk; qt += 4)
+            {
+                int ob0 = (q0 + qt) * qStride + headOff;
+                int ob1 = ob0 + qStride, ob2 = ob1 + qStride, ob3 = ob2 + qStride;
+                Array.Clear(attnOut, ob0, headDim);
+                Array.Clear(attnOut, ob1, headDim);
+                Array.Clear(attnOut, ob2, headDim);
+                Array.Clear(attnOut, ob3, headDim);
+
+                int sb0 = (qt + 0) * perQ + head * nKeys;
+                int sb1 = sb0 + perQ, sb2 = sb1 + perQ, sb3 = sb2 + perQ;
+                int jMax = Math.Min(nKeys, q0 + qt + 4); // keys beyond the sub-tile's last query are all zero
+
+                for (int j = 0; j < jMax; j++)
+                {
+                    int vb = j * kvStride;
+                    var w0 = Vector256.Create(scores[sb0 + j]);
+                    var w1 = Vector256.Create(scores[sb1 + j]);
+                    var w2 = Vector256.Create(scores[sb2 + j]);
+                    var w3 = Vector256.Create(scores[sb3 + j]);
+                    for (int d = 0; d < headDim; d += 8)
+                    {
+                        var vv = Vector256.LoadUnsafe(ref vr, (nuint)(vb + d));
+                        Fma.MultiplyAdd(w0, vv, Vector256.LoadUnsafe(ref outr, (nuint)(ob0 + d))).StoreUnsafe(ref outr, (nuint)(ob0 + d));
+                        Fma.MultiplyAdd(w1, vv, Vector256.LoadUnsafe(ref outr, (nuint)(ob1 + d))).StoreUnsafe(ref outr, (nuint)(ob1 + d));
+                        Fma.MultiplyAdd(w2, vv, Vector256.LoadUnsafe(ref outr, (nuint)(ob2 + d))).StoreUnsafe(ref outr, (nuint)(ob2 + d));
+                        Fma.MultiplyAdd(w3, vv, Vector256.LoadUnsafe(ref outr, (nuint)(ob3 + d))).StoreUnsafe(ref outr, (nuint)(ob3 + d));
+                    }
+                }
             }
         }
 

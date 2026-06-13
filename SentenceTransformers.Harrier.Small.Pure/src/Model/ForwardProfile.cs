@@ -12,6 +12,10 @@ public static class ForwardProfile
 {
     public static bool Enabled;
 
+    /// <summary>Test/diagnostic switch: force the portable head-fused attention path even on x64, so the
+    /// FMA fast path can be compared against it for correctness. Not used in production.</summary>
+    public static bool ForcePortableAttention;
+
     // Stage -> accumulated stopwatch ticks. Insertion-ordered so the report reads top-to-bottom.
     private static readonly System.Collections.Generic.Dictionary<string, long> _ticks = new();
     private static readonly object _lock = new();

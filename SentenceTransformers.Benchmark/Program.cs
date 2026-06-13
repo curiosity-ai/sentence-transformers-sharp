@@ -38,6 +38,12 @@ if (args.Length > 0 && args[0] == "harrier-verify")
     return;
 }
 
+if (args.Length > 0 && args[0] == "harrier-verify-fma")
+{
+    await HarrierScalingBench.RunVerifyFmaAsync();
+    return;
+}
+
 if (args.Length > 0 && args[0] == "harrier-profile")
 {
     int maxDop = args.Length > 1 ? int.Parse(args[1]) : 1;

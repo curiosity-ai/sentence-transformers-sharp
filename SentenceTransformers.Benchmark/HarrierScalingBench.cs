@@ -244,6 +244,53 @@ public static class HarrierScalingBench
         }
     }
 
+    /// <summary>Correctness gate for the FMA fast path: encodes a long (full-block) text both with the
+    /// FMA tiled attention and with the portable head-fused path forced, and reports their agreement.
+    /// The FMA path is only taken for full 8-query blocks, so this needs a sequence of &gt;= ~64 tokens.</summary>
+    public static async Task RunVerifyFmaAsync()
+    {
+        const string inputsPath = "/tmp/harrier_scaling_inputs.json";
+        var texts = new List<string>();
+        if (File.Exists(inputsPath))
+        {
+            using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(inputsPath));
+            texts.AddRange(doc.RootElement.EnumerateArray().Select(e => e.GetProperty("text").GetString()!));
+        }
+        else
+        {
+            texts.Add(string.Join(' ', Enumerable.Range(0, 600).Select(i => Pool[i % Pool.Length])));
+        }
+
+        foreach (var quant in new[]
+        {
+            SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None,
+            SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8,
+        })
+        {
+            using var enc = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(quantization: quant);
+
+            SentenceTransformers.Harrier.Small.Pure.Model.ForwardProfile.ForcePortableAttention = true;
+            var portable = await enc.EncodeAsync(texts.ToArray(), MaxCores);
+            SentenceTransformers.Harrier.Small.Pure.Model.ForwardProfile.ForcePortableAttention = false;
+            var fma = await enc.EncodeAsync(texts.ToArray(), MaxCores);
+
+            Console.WriteLine($"=== FMA vs portable attention, {quant} ===");
+            double minCos = 1.0, maxAbs = 0;
+            for (int i = 0; i < portable.Length; i++)
+            {
+                double cos = Cosine(portable[i], fma[i]);
+                for (int d = 0; d < portable[i].Length; d++)
+                {
+                    maxAbs = Math.Max(maxAbs, Math.Abs(portable[i][d] - fma[i][d]));
+                }
+                minCos = Math.Min(minCos, cos);
+                Console.WriteLine($"  text[{i}] ({texts[i].Length,6} chars) cos(portable,fma) = {cos:F8}");
+            }
+            Console.WriteLine($"  min cos = {minCos:F8}, max|Δ| = {maxAbs:E3}");
+            Console.WriteLine();
+        }
+    }
+
     private static double Cosine(float[] a, float[] b)
     {
         double dot = 0, na = 0, nb = 0;
