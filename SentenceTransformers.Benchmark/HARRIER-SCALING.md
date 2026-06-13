@@ -75,21 +75,34 @@ Per-stage Int8 profile (4 cores), final kernels:
 single-threaded original **85,163 ms** → max cores + vectorized GeGLU + head-fused block-flash
 **13,735 ms** — **6.2× faster**.
 
-## Honest parity assessment
-- **Short/medium contexts (≤~256 tokens): parity reached** — pure Int8 (197 ms @128) actually beats
-  ONNX Int8 (209 ms), and is competitive to ~512.
-- **Long contexts: ~1.9× off at 4096**, and the gap is essentially all attention. The pure attention is
-  ~18 GFLOP/s/core; ONNX (MLAS-backed `GroupQueryAttention`) is ~2.5× higher. Closing the rest needs
-  either an MLAS-class packed/blocked fp32 GEMM microkernel or **int8/VNNI attention matmuls** (4× less
-  K/V memory traffic + VNNI throughput) — the remaining lever, with a small extra accuracy cost.
+## Long-context scaling (→ 32768, the full context window) — pure Int8 vs ONNX Int8
 
-## Long-context scaling (4096 → 32768, pure Int8 vs ONNX Int8)
-
-_Filled in by `harrier-scaling-long` (single encode per point; O(n²) makes 32768 a multi-minute encode)._
+Single encode per point on max cores (O(n²) makes 32768 a multi-minute encode):
 
 | Tokens | Pure Int8 (ms) | ONNX Int8 (ms) | ratio |
 |-------:|---------------:|---------------:|------:|
-| _pending_ | | | |
+|  4,669 |       17,059 |        11,072 | 1.54× |
+|  9,336 |       58,747 |        40,630 | 1.45× |
+| 18,669 |      232,509 |       187,555 | 1.24× |
+| 32,768 |  **714,956** | **OOM** (needs 16 GB) | pure completes |
+
+Two findings here:
+1. **The ratio improves with length (1.54× → 1.24×)** — the pure flash kernel scales *as well or better*
+   than ONNX's CPU attention as the quadratic term takes over.
+2. **At the full 32,768 context window ONNX Int8 OOMs and pure Int8 succeeds.** ONNX Runtime's CPU
+   `GroupQueryAttention` materializes the full `[heads, seq, seq]` score tensor — at 32768 that is
+   `32768² × 4 heads × 4 B ≈ 16 GB`, which fails to allocate on the 15 GiB box. The pure kernel's
+   online-softmax (block-flash) never materializes the score matrix, so it runs in O(seq) attention
+   memory and completes.
+
+## Honest parity assessment
+- **Short/medium contexts (≤~256 tokens): at parity or better** — pure Int8 (197 ms @128) beats ONNX
+  Int8 (209 ms), competitive to ~512.
+- **Mid contexts (1k–4k): ~1.6–1.9× off**, entirely attention throughput (pure ~18 GFLOP/s/core vs
+  MLAS-backed ONNX ~2.5×). The remaining lever for raw throughput is int8/VNNI attention matmuls
+  (4× less K/V traffic), with a small extra accuracy cost.
+- **Long contexts (8k–32k): the gap *narrows* (down to 1.24×) and pure becomes strictly more scalable
+  in memory** — it is the only one of the two that completes a 32768-token encode on this machine.
 
 ## Reproduce
 ```
