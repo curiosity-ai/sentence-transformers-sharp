@@ -46,6 +46,9 @@ namespace SentenceTransformers.Harrier.Small.Pure
         public TokenizerBase Tokenizer { get; }
         private readonly HarrierSmallPureTokenizer _tokenizer;
 
+        /// <summary>LRU cache of the last 16 encoded vectors, keyed by each input's <c>Hash128()</c> UID.</summary>
+        private readonly VectorCache _vectorCache = new(16);
+
         public static int GetMaxChunkLength() => 32768;
         public int MaxChunkLength => GetMaxChunkLength();
 
@@ -167,7 +170,10 @@ namespace SentenceTransformers.Harrier.Small.Pure
 
         /// <summary>Encodes a batch of texts into embeddings. Each input must fit in
         /// <see cref="MaxChunkLength"/> tokens; for longer text use the <c>ChunkAndEncode*</c> helpers.</summary>
-        public async Task<float[][]> EncodeAsync(string[] sentences, ParallelOptions parallelOptions)
+        public Task<float[][]> EncodeAsync(string[] sentences, ParallelOptions parallelOptions)
+            => _vectorCache.EncodeWithCacheAsync(sentences, (toEncode, _) => EncodeCoreAsync(toEncode, parallelOptions), parallelOptions.CancellationToken);
+
+        private async Task<float[][]> EncodeCoreAsync(string[] sentences, ParallelOptions parallelOptions)
         {
             if (sentences is null || sentences.Length == 0)
             {

@@ -26,6 +26,9 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     public           TokenizerBase    Tokenizer { get; }
     private readonly string[]         _outputNames;
 
+    /// <summary>LRU cache of the last 16 encoded vectors, keyed by each input's <c>Hash128()</c> UID.</summary>
+    private readonly VectorCache       _vectorCache = new(16);
+
     /// <summary>Maximum number of tokens the model can process per call (512 for arctic-embed-xs).</summary>
     public static int GetMaxChunkLength() => 512;
 
@@ -58,7 +61,10 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     /// <param name="sentences">Texts to embed. Each entry produces one vector in the result.</param>
     /// <param name="cancellationToken">Token used to terminate the ONNX run early.</param>
     /// <returns>Array of embedding vectors, one per input sentence in the same order.</returns>
-    public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+    public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+        => _vectorCache.EncodeWithCacheAsync(sentences, EncodeCoreAsync, cancellationToken);
+
+    private async Task<float[][]> EncodeCoreAsync(string[] sentences, CancellationToken cancellationToken)
     {
         var numSentences = sentences.Length;
 

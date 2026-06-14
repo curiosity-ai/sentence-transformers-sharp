@@ -28,6 +28,9 @@ namespace SentenceTransformers.Qwen3
         private readonly InferenceSession _session;
         private readonly string[] _outputNames;
 
+        /// <summary>LRU cache of the last 16 encoded vectors, keyed by each input's <c>Hash128()</c> UID.</summary>
+        private readonly VectorCache _vectorCache = new(16);
+
         public TokenizerBase Tokenizer { get; }
 
         public static int GetMaxChunkLength() => 32768;
@@ -136,7 +139,10 @@ namespace SentenceTransformers.Qwen3
             _sessionOptions?.Dispose();
         }
 
-        public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+        public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+            => _vectorCache.EncodeWithCacheAsync(sentences, EncodeCoreAsync, cancellationToken);
+
+        private async Task<float[][]> EncodeCoreAsync(string[] sentences, CancellationToken cancellationToken)
         {
             if (sentences is null || sentences.Length == 0)
             {
