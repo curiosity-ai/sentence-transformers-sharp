@@ -3,6 +3,7 @@ using BERTTokenizers.Base;
 using SentenceTransformers.Harrier.Small.Pure.Model;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
 using SentenceTransformers.Harrier.Small.Pure.Tokenizer;
+using UID;
 
 namespace SentenceTransformers.Harrier.Small.Pure
 {
@@ -170,8 +171,54 @@ namespace SentenceTransformers.Harrier.Small.Pure
 
         /// <summary>Encodes a batch of texts into embeddings. Each input must fit in
         /// <see cref="MaxChunkLength"/> tokens; for longer text use the <c>ChunkAndEncode*</c> helpers.</summary>
-        public Task<float[][]> EncodeAsync(string[] sentences, ParallelOptions parallelOptions)
-            => _vectorCache.EncodeWithCacheAsync(sentences, (toEncode, _) => EncodeCoreAsync(toEncode, parallelOptions), parallelOptions.CancellationToken);
+        public async Task<float[][]> EncodeAsync(string[] sentences, ParallelOptions parallelOptions)
+        {
+            if (sentences is null || sentences.Length == 0)
+            {
+                return Array.Empty<float[]>();
+            }
+
+            var       results = new float[sentences.Length][];
+            var       keys    = new UID128[sentences.Length];
+            List<int> misses  = null;
+
+            // Serve any inputs whose Hash128() UID is already cached, and collect the cache misses.
+            for (int i = 0; i < sentences.Length; i++)
+            {
+                keys[i] = (sentences[i] ?? string.Empty).Hash128();
+
+                if (_vectorCache.TryGet(keys[i], out var cached))
+                {
+                    results[i] = cached;
+                }
+                else
+                {
+                    (misses ??= new List<int>()).Add(i);
+                }
+            }
+
+            if (misses is null)
+            {
+                return results;
+            }
+
+            var toEncode = new string[misses.Count];
+            for (int i = 0; i < misses.Count; i++)
+            {
+                toEncode[i] = sentences[misses[i]];
+            }
+
+            var newVectors = await EncodeCoreAsync(toEncode, parallelOptions);
+
+            // Place each freshly encoded vector back in source order and add it to the cache.
+            for (int i = 0; i < misses.Count; i++)
+            {
+                results[misses[i]] = newVectors[i];
+                _vectorCache.Set(keys[misses[i]], newVectors[i]);
+            }
+
+            return results;
+        }
 
         private async Task<float[][]> EncodeCoreAsync(string[] sentences, ParallelOptions parallelOptions)
         {
