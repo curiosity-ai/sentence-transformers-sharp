@@ -3,6 +3,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using static SentenceTransformers.MiniLM.DenseTensorHelpers;
 using SentenceTransformers;
+using UID;
 
 namespace SentenceTransformers.MiniLM;
 
@@ -12,6 +13,9 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     private readonly InferenceSession _session;
     public           TokenizerBase    Tokenizer { get; }
     private readonly string[]         _outputNames;
+
+    /// <summary>LRU cache of the last 16 encoded vectors, keyed by each input's <c>Hash128()</c> UID.</summary>
+    private readonly VectorCache       _vectorCache = new(16);
 
     public static int GetMaxChunkLength() => 256; //The documentation is incorrect for MiniLM - the context window size is 256 - see https://stackoverflow.com/questions/75901231/max-seq-length-for-transformer-sentence-bert
     public        int MaxChunkLength      => GetMaxChunkLength();
@@ -32,6 +36,55 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     }
 
     public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+    {
+        if (sentences is null || sentences.Length == 0)
+        {
+            return Array.Empty<float[]>();
+        }
+
+        var       results = new float[sentences.Length][];
+        var       keys    = new UID128[sentences.Length];
+        List<int> misses  = null;
+
+        // Serve any inputs whose Hash128() UID is already cached, and collect the cache misses.
+        for (int i = 0; i < sentences.Length; i++)
+        {
+            keys[i] = (sentences[i] ?? string.Empty).Hash128();
+
+            if (_vectorCache.TryGet(keys[i], out var cached))
+            {
+                results[i] = cached;
+            }
+            else
+            {
+                (misses ??= new List<int>()).Add(i);
+            }
+        }
+
+        if (misses is null)
+        {
+            return results;
+        }
+
+        var toEncode = new string[misses.Count];
+        for (int i = 0; i < misses.Count; i++)
+        {
+            toEncode[i] = sentences[misses[i]];
+        }
+
+        var encoded = await EncodeCoreAsync(toEncode, cancellationToken);
+
+        // Place each freshly encoded vector back in source order and add it to the cache.
+        for (int i = 0; i < misses.Count; i++)
+        {
+            results[misses[i]] = encoded[i];
+            _vectorCache.Set(keys[misses[i]], encoded[i]);
+        }
+
+        return results;
+    }
+
+    private async Task<float[][]> EncodeCoreAsync(string[] sentences, CancellationToken cancellationToken)
     {
         var numSentences = sentences.Length;
 
