@@ -407,8 +407,9 @@ the most:
 
 | Model (patent, regression, rank 8) | Base test Spearman | Tuned test Spearman |
 | --- | ---: | ---: |
-| MiniLM     | 0.541 | 0.545 |
-| Arctic XS  | 0.480 | **0.533** |
+| MiniLM         | 0.541 | 0.545 |
+| Arctic XS      | 0.480 | **0.533** |
+| Harrier Small  | 0.555 | **0.597** |
 
 ## How it works
 
