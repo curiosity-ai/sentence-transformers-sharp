@@ -401,6 +401,15 @@ top of a frozen model. Two caveats worth knowing:
   split rather than just the in-distribution validation. Gains are largest when the base model is weakest
   on your domain; on tasks a model already handles well the headroom, and so the lift, is naturally smaller.
 
+With those same regularized regression settings the lift carries over to the held-out **test** split, and
+is largest for the model with the most headroom — **Arctic XS** starts weakest on patent phrases and gains
+the most:
+
+| Model (patent, regression, rank 8) | Base test Spearman | Tuned test Spearman |
+| --- | ---: | ---: |
+| MiniLM     | 0.541 | 0.545 |
+| Arctic XS  | 0.480 | **0.533** |
+
 ## How it works
 
 Each model package contains:
