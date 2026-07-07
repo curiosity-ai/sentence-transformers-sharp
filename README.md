@@ -306,6 +306,67 @@ using var encoder = await SentenceEncoder.CreateAsync(
     modelDataUrl: SentenceEncoder.Quantizations.FullModelDataUrl);
 ```
 
+## Fine-tuning for your use case (LoRA-style adapters)
+
+You can specialize **any** of the models above for a specific domain — support tickets, legal clauses,
+product descriptions, a particular language pair — by training a small **LoRA-style adapter** from a
+set of *related pairs* (a query and a relevant passage, two paraphrases, a question and its duplicate…).
+Nothing about the base model changes: the adapter is a tiny low-rank residual applied to the pooled
+embedding, so the exact same training code works for MiniLM, Arctic XS, Qwen3 and both Harrier models.
+
+```csharp
+using SentenceTransformers.Training;
+
+using var baseEncoder = new SentenceTransformers.MiniLM.SentenceEncoder();
+
+var dataset = new SentencePairDataset(new[]
+{
+    new SentencePair("how do I reset my password", "Use the ‘Forgot password’ link on the sign-in page."),
+    new SentencePair("cancel my subscription",      "Go to Billing → Manage plan → Cancel."),
+    // … a few hundred to a few thousand related pairs …
+});
+
+// Splits into train/validation, trains with a contrastive InfoNCE objective, keeps the best adapter.
+var report = await LoraTrainer.TrainAsync(baseEncoder, dataset, new LoraTrainingOptions
+{
+    Rank   = 16,   // low-rank bottleneck (more = more capacity)
+    Epochs = 20,
+});
+
+report.Adapter.Save("support-faq.lora");
+
+// Use the fine-tuned encoder anywhere an ISentenceEncoder is expected:
+using var tuned = new AdaptedSentenceEncoder(baseEncoder, report.Adapter);
+float[][] vectors = await tuned.EncodeAsync(new[] { "I can't log in" });
+```
+
+**How it works.** The base encoder is treated as a frozen black box — every unique sentence is embedded
+once and cached, then training only does cheap low-rank math on those vectors and optimizes the adapter
+with AdamW using *exact* analytic gradients (no autodiff, no ONNX Runtime training). The objective is the
+symmetric InfoNCE contrastive loss with in-batch negatives; pairs may optionally carry a `[0,1]` similarity
+score, in which case low-scoring pairs are excluded from the positives and the held-out validation set is
+scored with the STS Spearman correlation. Because the adapter operates purely on `ISentenceEncoder`
+output, a trained `.lora` file is a drop-in wrapper (`AdaptedSentenceEncoder`) around any model.
+
+### Training CLI + example dataset
+
+The `SentenceTransformers.LoraTraining` project is a ready-to-run console app that downloads a real
+dataset (the English [STS Benchmark](https://github.com/PhilipMay/stsb-multi-mt)) and fine-tunes any
+model against it:
+
+```bash
+cd SentenceTransformers.LoraTraining
+
+dotnet run -c Release -- download                                   # fetch STS-B train/dev/test CSVs
+dotnet run -c Release -- train --model minilm --epochs 30 --rank 32 # train + save an adapter
+dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm.lora --split test
+```
+
+`--model` accepts `minilm`, `arctic`, `qwen3`, `harrier-medium`, `harrier-small` or `harrier-small-pure`.
+Run `dotnet run -- help` for the full option list (rank, α, learning rate, temperature, batch size,
+validation fraction, positive-score threshold, …). Training reports per-epoch validation loss, retrieval
+accuracy and STS Spearman, and prints a base-vs-tuned summary at the end.
+
 ## How it works
 
 Each model package contains:

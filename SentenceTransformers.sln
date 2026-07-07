@@ -36,6 +36,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Harrie
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Benchmark.Sweep", "SentenceTransformers.Benchmark.Sweep\SentenceTransformers.Benchmark.Sweep.csproj", "{5C421C31-B967-42D0-A796-CE6E57C2CA7A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.LoraTraining", "SentenceTransformers.LoraTraining\SentenceTransformers.LoraTraining.csproj", "{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -202,6 +204,18 @@ Global
 		{5C421C31-B967-42D0-A796-CE6E57C2CA7A}.Release|x64.Build.0 = Release|Any CPU
 		{5C421C31-B967-42D0-A796-CE6E57C2CA7A}.Release|x86.ActiveCfg = Release|Any CPU
 		{5C421C31-B967-42D0-A796-CE6E57C2CA7A}.Release|x86.Build.0 = Release|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Debug|x64.Build.0 = Debug|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Debug|x86.Build.0 = Debug|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Release|x64.ActiveCfg = Release|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Release|x64.Build.0 = Release|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Release|x86.ActiveCfg = Release|Any CPU
+		{51E7A89A-7A14-4D21-B1D1-D2269BE319AA}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
