@@ -52,10 +52,11 @@ async Task<int> RunDownloadAsync(List<string> a)
 
 async Task<int> RunTrainAsync(List<string> a)
 {
-    string model    = GetOption(a, "--model", "minilm");
-    string dir      = GetOption(a, "--data", "./data");
-    string outPath  = GetOption(a, "--out", $"./adapters/{model}.lora");
-    int    maxTrain = int.Parse(GetOption(a, "--max-train", "0"), CultureInfo.InvariantCulture);
+    string model       = GetOption(a, "--model", "minilm");
+    string dir         = GetOption(a, "--data", "./data");
+    string datasetName = GetOption(a, "--dataset", "stsb").ToLowerInvariant();
+    string outPath     = GetOption(a, "--out", $"./adapters/{model}-{datasetName}.lora");
+    int    maxTrain    = int.Parse(GetOption(a, "--max-train", "0"), CultureInfo.InvariantCulture);
 
     var options = new LoraTrainingOptions
     {
@@ -73,20 +74,29 @@ async Task<int> RunTrainAsync(List<string> a)
     string alpha = GetOption(a, "--alpha", null);
     if (alpha is not null) options.Alpha = float.Parse(alpha, CultureInfo.InvariantCulture);
 
-    string trainCsv = StsbDataset.TrainPath(dir);
-    if (!File.Exists(trainCsv))
+    SentencePairDataset dataset;
+    if (datasetName == "patent")
     {
-        Console.Error.WriteLine($"Training data not found at '{trainCsv}'. Run `download` first.");
-        return 1;
+        dataset = PatentDataset.Load("train");
+    }
+    else
+    {
+        string trainCsv = StsbDataset.TrainPath(dir);
+        if (!File.Exists(trainCsv))
+        {
+            Console.Error.WriteLine($"Training data not found at '{trainCsv}'. Run `download` first (or use --dataset patent).");
+            return 1;
+        }
+        dataset = StsbDataset.Load(trainCsv);
     }
 
-    var dataset = StsbDataset.Load(trainCsv);
     if (maxTrain > 0 && dataset.Count > maxTrain)
     {
         dataset = new SentencePairDataset(dataset.Pairs.Take(maxTrain));
     }
 
     Console.WriteLine($"Model:            {model}");
+    Console.WriteLine($"Dataset:          {datasetName}");
     Console.WriteLine($"Training pairs:   {dataset.Count} (positive threshold {options.PositiveScoreThreshold:0.00}, val fraction {options.ValidationFraction:0.00})");
     Console.WriteLine($"Adapter:          rank {options.Rank}, alpha {options.Alpha?.ToString(CultureInfo.InvariantCulture) ?? options.Rank.ToString()}");
     Console.WriteLine($"Optimizer:        AdamW lr {options.LearningRate}, weight decay {options.WeightDecay}, {options.Epochs} epochs, batch {options.BatchSize}, temp {options.Temperature}");
@@ -126,22 +136,31 @@ async Task<int> RunEvalAsync(List<string> a)
     string dir         = GetOption(a, "--data", "./data");
     string adapterPath = GetOption(a, "--adapter", null);
     string split       = GetOption(a, "--split", "test");
+    string datasetName = GetOption(a, "--dataset", "stsb").ToLowerInvariant();
 
-    string csv = split.ToLowerInvariant() switch
+    SentencePairDataset data;
+    if (datasetName == "patent")
     {
-        "train" => StsbDataset.TrainPath(dir),
-        "dev"   => StsbDataset.DevPath(dir),
-        _       => StsbDataset.TestPath(dir),
-    };
+        data = PatentDataset.Load(split);
+    }
+    else
+    {
+        string csv = split.ToLowerInvariant() switch
+        {
+            "train" => StsbDataset.TrainPath(dir),
+            "dev"   => StsbDataset.DevPath(dir),
+            _       => StsbDataset.TestPath(dir),
+        };
 
-    if (!File.Exists(csv))
-    {
-        Console.Error.WriteLine($"Split '{split}' not found at '{csv}'. Run `download` first.");
-        return 1;
+        if (!File.Exists(csv))
+        {
+            Console.Error.WriteLine($"Split '{split}' not found at '{csv}'. Run `download` first (or use --dataset patent).");
+            return 1;
+        }
+        data = StsbDataset.Load(csv);
     }
 
-    var data = StsbDataset.Load(csv);
-    Console.WriteLine($"Evaluating '{model}' on {split} split ({data.Count} pairs).\n");
+    Console.WriteLine($"Evaluating '{model}' on {datasetName} {split} split ({data.Count} pairs).\n");
 
     using var baseEncoder = await EncoderFactory.CreateAsync(model);
 
@@ -187,13 +206,19 @@ USAGE
 MODELS (--model)
   {string.Join(", ", EncoderFactory.Names)}
 
+DATASETS (--dataset)
+  stsb    English STS Benchmark, downloaded on demand (run `download` first). Default.
+  patent  Google Patent Phrase Similarity, embedded in this app — no download needed.
+
 DOWNLOAD
   Downloads the English STS Benchmark (train/dev/test CSVs) into <dir> (default ./data).
+  Not needed for --dataset patent.
 
 TRAIN OPTIONS
   --model <name>          Base model to adapt (default minilm).
-  --data <dir>            Directory holding stsb-en-train.csv (default ./data).
-  --out <path>            Where to save the trained adapter (default ./adapters/<model>.lora).
+  --dataset <name>        stsb (default) or patent.
+  --data <dir>            Directory holding stsb-en-train.csv (default ./data; stsb only).
+  --out <path>            Where to save the trained adapter (default ./adapters/<model>-<dataset>.lora).
   --rank <int>            LoRA rank / bottleneck size (default 16).
   --alpha <float>         LoRA alpha; residual scale is alpha/rank (default = rank).
   --epochs <int>          Training epochs (default 20).
@@ -208,13 +233,17 @@ TRAIN OPTIONS
 
 EVAL OPTIONS
   --model <name>          Base model (default minilm).
+  --dataset <name>        stsb (default) or patent.
   --adapter <path>        Adapter to evaluate alongside the base encoder (optional).
-  --data <dir>            Directory holding the CSVs (default ./data).
+  --data <dir>            Directory holding the CSVs (default ./data; stsb only).
   --split <name>          Which split to evaluate: train | dev | test (default test).
 
-EXAMPLE
+EXAMPLES
   dotnet run -c Release -- download
   dotnet run -c Release -- train --model minilm --epochs 30 --rank 32
-  dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm.lora --split test
+  dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm-stsb.lora --split test
+
+  dotnet run -c Release -- train --model minilm --dataset patent --epochs 30 --rank 32
+  dotnet run -c Release -- eval  --model minilm --dataset patent --adapter ./adapters/minilm-patent.lora
 """);
 }

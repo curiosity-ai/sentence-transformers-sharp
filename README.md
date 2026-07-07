@@ -350,22 +350,38 @@ output, a trained `.lora` file is a drop-in wrapper (`AdaptedSentenceEncoder`) a
 
 ### Training CLI + example dataset
 
-The `SentenceTransformers.LoraTraining` project is a ready-to-run console app that downloads a real
-dataset (the English [STS Benchmark](https://github.com/PhilipMay/stsb-multi-mt)) and fine-tunes any
-model against it:
+The `SentenceTransformers.LoraTraining` project is a ready-to-run console app that fine-tunes any model
+against one of two bundled example datasets (`--dataset`):
+
+- **`stsb`** — the English [STS Benchmark](https://github.com/PhilipMay/stsb-multi-mt), a broad
+  general-English similarity set, downloaded on demand.
+- **`patent`** — the [Google Patent Phrase Similarity](https://www.kaggle.com/datasets/google/google-patent-phrase-similarity-dataset)
+  dataset (CC BY 4.0), embedded directly in the app (no download). Terse, domain-specific technical
+  phrases where a general encoder has real headroom.
 
 ```bash
 cd SentenceTransformers.LoraTraining
 
-dotnet run -c Release -- download                                   # fetch STS-B train/dev/test CSVs
-dotnet run -c Release -- train --model minilm --epochs 30 --rank 32 # train + save an adapter
-dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm.lora --split test
+# General-English STS Benchmark (needs a one-time download):
+dotnet run -c Release -- download
+dotnet run -c Release -- train --model minilm --epochs 30 --rank 32
+dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm-stsb.lora --split test
+
+# Domain-specific patent phrases (embedded, no download):
+dotnet run -c Release -- train --model minilm --dataset patent --rank 16 --lr 0.0005 --pos-threshold 0.5
+dotnet run -c Release -- eval  --model minilm --dataset patent --adapter ./adapters/minilm-patent.lora --split test
 ```
 
 `--model` accepts `minilm`, `arctic`, `qwen3`, `harrier-medium`, `harrier-small` or `harrier-small-pure`.
 Run `dotnet run -- help` for the full option list (rank, α, learning rate, temperature, batch size,
 validation fraction, positive-score threshold, …). Training reports per-epoch validation loss, retrieval
 accuracy and STS Spearman, and prints a base-vs-tuned summary at the end.
+
+The patent set is a good illustration of where adapters help most: MiniLM's out-of-the-box Spearman on
+these technical phrases is only ~0.56 (versus ~0.79 on general-English STS-B), and a rank-16 adapter
+lifts held-out validation to ~0.61 — real domain adaptation on top of a frozen model. Gains are largest
+when the base model is weakest on your domain; on tasks a model already handles well the headroom (and so
+the lift) is naturally smaller.
 
 ## How it works
 
@@ -403,4 +419,7 @@ NuGet packages are produced and published by the Azure DevOps pipeline in
 
 [MIT](https://opensource.org/licenses/MIT). The BERT tokenizers are derived from
 [BERTTokenizers](https://github.com/NMZivkovic/BertTokenizers) (MIT, © 2021 Othneil Drew). Each wrapped
-model is distributed under its own upstream license — see the linked Hugging Face model pages.
+model is distributed under its own upstream license — see the linked Hugging Face model pages. The
+[Google Patent Phrase Similarity](https://www.kaggle.com/datasets/google/google-patent-phrase-similarity-dataset)
+dataset bundled with the `SentenceTransformers.LoraTraining` example is © Google, licensed
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
