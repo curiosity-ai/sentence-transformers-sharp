@@ -74,6 +74,13 @@ async Task<int> RunTrainAsync(List<string> a)
     string alpha = GetOption(a, "--alpha", null);
     if (alpha is not null) options.Alpha = float.Parse(alpha, CultureInfo.InvariantCulture);
 
+    options.Objective = GetOption(a, "--objective", "contrastive").ToLowerInvariant() switch
+    {
+        "regression" or "cosine" or "cosine-regression" => TrainingObjective.CosineRegression,
+        "contrastive"                                    => TrainingObjective.Contrastive,
+        var other => throw new ArgumentException($"Unknown --objective '{other}'. Use 'contrastive' or 'regression'."),
+    };
+
     SentencePairDataset dataset;
     if (datasetName == "patent")
     {
@@ -97,6 +104,7 @@ async Task<int> RunTrainAsync(List<string> a)
 
     Console.WriteLine($"Model:            {model}");
     Console.WriteLine($"Dataset:          {datasetName}");
+    Console.WriteLine($"Objective:        {options.Objective}");
     Console.WriteLine($"Training pairs:   {dataset.Count} (positive threshold {options.PositiveScoreThreshold:0.00}, val fraction {options.ValidationFraction:0.00})");
     Console.WriteLine($"Adapter:          rank {options.Rank}, alpha {options.Alpha?.ToString(CultureInfo.InvariantCulture) ?? options.Rank.ToString()}");
     Console.WriteLine($"Optimizer:        AdamW lr {options.LearningRate}, weight decay {options.WeightDecay}, {options.Epochs} epochs, batch {options.BatchSize}, temp {options.Temperature}");
@@ -217,6 +225,9 @@ DOWNLOAD
 TRAIN OPTIONS
   --model <name>          Base model to adapt (default minilm).
   --dataset <name>        stsb (default) or patent.
+  --objective <name>      contrastive (default) or regression. 'regression' fits cosine similarity
+                          to the gold score (MSE) and directly targets the STS Spearman metric;
+                          it requires scored pairs. 'contrastive' uses InfoNCE with in-batch negatives.
   --data <dir>            Directory holding stsb-en-train.csv (default ./data; stsb only).
   --out <path>            Where to save the trained adapter (default ./adapters/<model>-<dataset>.lora).
   --rank <int>            LoRA rank / bottleneck size (default 16).
@@ -243,7 +254,7 @@ EXAMPLES
   dotnet run -c Release -- train --model minilm --epochs 30 --rank 32
   dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm-stsb.lora --split test
 
-  dotnet run -c Release -- train --model minilm --dataset patent --epochs 30 --rank 32
+  dotnet run -c Release -- train --model minilm --dataset patent --objective regression --rank 16
   dotnet run -c Release -- eval  --model minilm --dataset patent --adapter ./adapters/minilm-patent.lora
 """);
 }

@@ -50,11 +50,25 @@ public static class LoraTrainer
         var embeddings = await EmbedUniqueAsync(baseEncoder, train, validation, cancellationToken);
         int dim        = embeddings.Dimension;
 
-        // 2. Materialize positive-pair index lists (filtered by score threshold when scores exist).
+        bool regression = options.Objective == TrainingObjective.CosineRegression;
+
+        // 2. Materialize the training set. Contrastive uses positive pairs (filtered by score
+        //    threshold); regression uses every scored pair, dissimilar ones included.
         var trainPos = SelectPositivePairs(train,      embeddings, options.PositiveScoreThreshold);
         var valPos   = SelectPositivePairs(validation, embeddings, options.PositiveScoreThreshold);
+        var trainReg = SelectScoredPairs(train,      embeddings);
+        var valReg   = SelectScoredPairs(validation, embeddings);
 
-        if (trainPos.Count == 0)
+        if (regression)
+        {
+            if (trainReg.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "Cosine-regression training requires pairs with similarity scores, but none were found. " +
+                    "Provide scored pairs or use TrainingObjective.Contrastive.");
+            }
+        }
+        else if (trainPos.Count == 0)
         {
             throw new InvalidOperationException(
                 "No positive training pairs remained after applying the score threshold. " +
@@ -75,7 +89,8 @@ public static class LoraTrainer
 
         var epochMetrics = new List<EpochMetrics>(options.Epochs);
         var rng          = new Random(options.Seed);
-        var order        = Enumerable.Range(0, trainPos.Count).ToArray();
+        int trainCount   = regression ? trainReg.Count : trainPos.Count;
+        var order        = Enumerable.Range(0, trainCount).ToArray();
 
         LoraAdapter best         = CloneAdapter(adapter);
         float       bestPrimary  = float.NegativeInfinity;
@@ -94,12 +109,15 @@ public static class LoraTrainer
             {
                 int end = Math.Min(start + options.BatchSize, order.Length);
                 int n   = end - start;
-                if (n < 2) continue; // a batch of 1 has no negatives; skip the trailing singleton
+                // Contrastive needs at least two items for in-batch negatives; regression works on any size.
+                if (!regression && n < 2) continue;
 
                 Array.Clear(gradA);
                 Array.Clear(gradB);
 
-                float loss = ContrastiveBatch(adapter, embeddings, trainPos, order, start, n, options.Temperature, gradA, gradB);
+                float loss = regression
+                    ? RegressionBatch(adapter, trainReg, order, start, n, gradA, gradB)
+                    : ContrastiveBatch(adapter, embeddings, trainPos, order, start, n, options.Temperature, gradA, gradB);
                 epochLoss += loss;
                 batchCount++;
 
@@ -109,8 +127,9 @@ public static class LoraTrainer
 
             float trainLoss = batchCount > 0 ? (float)(epochLoss / batchCount) : float.NaN;
 
-            var (valAcc, valLoss) = Evaluate(adapter, embeddings, valPos, options.Temperature, dim, options.Rank);
-            float valSpearman     = haveScores ? EvaluateSpearman(adapter, embeddings, validation, dim, options.Rank) : float.NaN;
+            var (valAcc, valInfoNce) = Evaluate(adapter, embeddings, valPos, options.Temperature, dim, options.Rank);
+            float valLoss            = regression ? EvaluateRegression(adapter, valReg, dim, options.Rank) : valInfoNce;
+            float valSpearman        = haveScores ? EvaluateSpearman(adapter, embeddings, validation, dim, options.Rank) : float.NaN;
 
             // Primary metric: Spearman when scores exist, otherwise retrieval accuracy.
             float primary = haveScores ? valSpearman : valAcc;
@@ -207,6 +226,20 @@ public static class LoraTrainer
         return result;
     }
 
+    private readonly record struct RegPair(float[] Anchor, float[] Positive, float Score);
+
+    // All pairs that carry a similarity score (used by the cosine-regression objective).
+    private static List<RegPair> SelectScoredPairs(SentencePairDataset data, EmbeddingCache cache)
+    {
+        var result = new List<RegPair>(data.Count);
+        foreach (var p in data.Pairs)
+        {
+            if (!p.Score.HasValue) continue;
+            result.Add(new RegPair(cache.Get(p.Anchor), cache.Get(p.Positive), p.Score.Value));
+        }
+        return result;
+    }
+
     // ----- contrastive forward + backward ---------------------------------------------------------
 
     // Test-only entry point: run one contrastive batch over explicit anchor/positive vectors and
@@ -218,6 +251,55 @@ public static class LoraTrainer
         for (int i = 0; i < n; i++) pairs.Add(new PosPair(anchors[i], positives[i]));
         var order = Enumerable.Range(0, n).ToArray();
         return ContrastiveBatch(adapter, null, pairs, order, 0, n, temperature, gradA, gradB);
+    }
+
+    // Test-only entry point for the cosine-regression gradient check.
+    internal static float DebugRegressionBatch(LoraAdapter adapter, float[][] anchors, float[][] positives, float[] scores, float[] gradA, float[] gradB)
+    {
+        int n     = anchors.Length;
+        var pairs = new List<RegPair>(n);
+        for (int i = 0; i < n; i++) pairs.Add(new RegPair(anchors[i], positives[i], scores[i]));
+        var order = Enumerable.Range(0, n).ToArray();
+        return RegressionBatch(adapter, pairs, order, 0, n, gradA, gradB);
+    }
+
+    // Runs one batch of cosine-similarity regression: MSE between adapted cosine and the gold score.
+    // Accumulates exact gradients into gradA/gradB and returns the batch MSE.
+    private static float RegressionBatch(LoraAdapter adapter, List<RegPair> pairs, int[] order, int start, int n, float[] gradA, float[] gradB)
+    {
+        int dim  = adapter.Dimension;
+        int rank = adapter.Rank;
+
+        double loss = 0;
+        float  inv  = 1f / n; // loss is the mean over the batch
+
+        for (int b = 0; b < n; b++)
+        {
+            var pair = pairs[order[start + b]];
+
+            var (uA, hA, nA) = Forward(adapter, pair.Anchor,   dim, rank);
+            var (uP, hP, nP) = Forward(adapter, pair.Positive, dim, rank);
+
+            float sim  = EmbeddingMath.Dot(uA, uP);
+            float diff = sim - pair.Score;
+            loss += diff * diff;
+
+            // d(mean diff^2)/d(sim) = 2*diff/n ; d(sim)/duA = uP ; d(sim)/duP = uA.
+            float coef = 2f * diff * inv;
+
+            var gUA = new float[dim];
+            var gUP = new float[dim];
+            for (int k = 0; k < dim; k++)
+            {
+                gUA[k] = coef * uP[k];
+                gUP[k] = coef * uA[k];
+            }
+
+            Backward(adapter, pair.Anchor,   uA, hA, nA, gUA, gradA, gradB);
+            Backward(adapter, pair.Positive, uP, hP, nP, gUP, gradA, gradB);
+        }
+
+        return (float)(loss * inv);
     }
 
     // Runs one batch of the symmetric InfoNCE loss and accumulates exact gradients into gradA/gradB.
@@ -420,6 +502,22 @@ public static class LoraTrainer
         loss /= n;
 
         return ((float)correct / n, (float)loss);
+    }
+
+    // Mean squared error between adapted cosine similarity and gold score over the scored pairs.
+    private static float EvaluateRegression(LoraAdapter adapter, List<RegPair> pairs, int dim, int rank)
+    {
+        if (pairs.Count == 0) return float.NaN;
+
+        double loss = 0;
+        foreach (var p in pairs)
+        {
+            var a    = Adapt(adapter, p.Anchor,   dim, rank);
+            var b    = Adapt(adapter, p.Positive, dim, rank);
+            float d  = EmbeddingMath.Dot(a, b) - p.Score;
+            loss += d * d;
+        }
+        return (float)(loss / pairs.Count);
     }
 
     // STS-style Spearman correlation between adapted cosine similarity and gold score over all pairs.

@@ -1,11 +1,34 @@
 namespace SentenceTransformers.Training;
 
+/// <summary>Which loss the trainer optimizes.</summary>
+public enum TrainingObjective
+{
+    /// <summary>
+    /// Symmetric InfoNCE contrastive loss with in-batch negatives. Pulls each anchor towards its
+    /// positive and away from the other positives in the batch. Uses only the pairs at or above
+    /// <see cref="LoraTrainingOptions.PositiveScoreThreshold"/> (or all pairs when unscored). Best when
+    /// the goal is retrieval / nearest-neighbour separation.
+    /// </summary>
+    Contrastive,
+
+    /// <summary>
+    /// Cosine-similarity regression: minimizes the mean squared error between each pair's adapted cosine
+    /// similarity and its gold <see cref="SentencePair.Score"/>. Uses <b>all</b> scored pairs (including
+    /// dissimilar ones), so it directly shapes the full graded ordering — the objective STS Spearman
+    /// rewards. Requires every training pair to carry a score.
+    /// </summary>
+    CosineRegression,
+}
+
 /// <summary>
 /// Hyper-parameters for <see cref="LoraTrainer"/>. Defaults are reasonable for fine-tuning a
 /// sentence-embedding adapter on a few thousand related pairs.
 /// </summary>
 public sealed class LoraTrainingOptions
 {
+    /// <summary>The loss to optimize. See <see cref="TrainingObjective"/>.</summary>
+    public TrainingObjective Objective { get; set; } = TrainingObjective.Contrastive;
+
     /// <summary>Low-rank bottleneck size of the adapter.</summary>
     public int Rank { get; set; } = 16;
 

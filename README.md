@@ -342,11 +342,21 @@ float[][] vectors = await tuned.EncodeAsync(new[] { "I can't log in" });
 
 **How it works.** The base encoder is treated as a frozen black box — every unique sentence is embedded
 once and cached, then training only does cheap low-rank math on those vectors and optimizes the adapter
-with AdamW using *exact* analytic gradients (no autodiff, no ONNX Runtime training). The objective is the
-symmetric InfoNCE contrastive loss with in-batch negatives; pairs may optionally carry a `[0,1]` similarity
-score, in which case low-scoring pairs are excluded from the positives and the held-out validation set is
-scored with the STS Spearman correlation. Because the adapter operates purely on `ISentenceEncoder`
-output, a trained `.lora` file is a drop-in wrapper (`AdaptedSentenceEncoder`) around any model.
+with AdamW using *exact* analytic gradients (no autodiff, no ONNX Runtime training). The held-out
+validation set is scored with STS Spearman correlation and top-1 retrieval accuracy, and the best adapter
+is kept. Because the adapter operates purely on `ISentenceEncoder` output, a trained `.lora` file is a
+drop-in wrapper (`AdaptedSentenceEncoder`) around any model.
+
+**Two objectives** (`LoraTrainingOptions.Objective`):
+
+- `Contrastive` *(default)* — symmetric InfoNCE with in-batch negatives. Pulls each anchor towards its
+  positive and away from the other positives in the batch. Uses only pairs at or above
+  `PositiveScoreThreshold` (or all pairs when unscored). Best when the goal is **retrieval / nearest-neighbour**
+  separation.
+- `CosineRegression` — minimizes the mean squared error between each pair's adapted cosine similarity and
+  its gold `[0,1]` score, over **all** scored pairs (dissimilar ones included). It directly shapes the full
+  graded ordering, so it's the better choice when you care about **calibrated similarity scores** and the
+  STS Spearman metric. Requires every pair to carry a score.
 
 ### Training CLI + example dataset
 
@@ -367,21 +377,29 @@ dotnet run -c Release -- download
 dotnet run -c Release -- train --model minilm --epochs 30 --rank 32
 dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm-stsb.lora --split test
 
-# Domain-specific patent phrases (embedded, no download):
-dotnet run -c Release -- train --model minilm --dataset patent --rank 16 --lr 0.0005 --pos-threshold 0.5
+# Domain-specific patent phrases (embedded, no download) — graded scores, so use regression:
+dotnet run -c Release -- train --model minilm --dataset patent --objective regression --rank 8 --lr 0.0003 --weight-decay 0.05 --epochs 10
 dotnet run -c Release -- eval  --model minilm --dataset patent --adapter ./adapters/minilm-patent.lora --split test
 ```
 
 `--model` accepts `minilm`, `arctic`, `qwen3`, `harrier-medium`, `harrier-small` or `harrier-small-pure`.
-Run `dotnet run -- help` for the full option list (rank, α, learning rate, temperature, batch size,
-validation fraction, positive-score threshold, …). Training reports per-epoch validation loss, retrieval
-accuracy and STS Spearman, and prints a base-vs-tuned summary at the end.
+Run `dotnet run -- help` for the full option list (objective, rank, α, learning rate, weight decay,
+temperature, batch size, validation fraction, positive-score threshold, …). Training reports per-epoch
+validation loss, retrieval accuracy and STS Spearman, and prints a base-vs-tuned summary at the end.
 
 The patent set is a good illustration of where adapters help most: MiniLM's out-of-the-box Spearman on
-these technical phrases is only ~0.56 (versus ~0.79 on general-English STS-B), and a rank-16 adapter
-lifts held-out validation to ~0.61 — real domain adaptation on top of a frozen model. Gains are largest
-when the base model is weakest on your domain; on tasks a model already handles well the headroom (and so
-the lift) is naturally smaller.
+these technical phrases is only ~0.56 (versus ~0.79 on general-English STS-B). With the `CosineRegression`
+objective a small adapter lifts held-out validation Spearman to **~0.60–0.63** — real domain adaptation on
+top of a frozen model. Two caveats worth knowing:
+
+- **Match the objective to the metric.** `CosineRegression` targets graded Spearman directly and beats the
+  contrastive objective there; `Contrastive` is better for pure retrieval separation. On the patent set,
+  regression takes validation Spearman from 0.56 to as high as ~0.63.
+- **The patent *test* split is deliberately distribution-shifted** (unseen phrases/CPC contexts), so an
+  adapter that fits the training distribution can overfit. Light regularization (small rank, higher
+  `--weight-decay`, fewer epochs — as in the command above) is what makes the gain carry over to the test
+  split rather than just the in-distribution validation. Gains are largest when the base model is weakest
+  on your domain; on tasks a model already handles well the headroom, and so the lift, is naturally smaller.
 
 ## How it works
 
