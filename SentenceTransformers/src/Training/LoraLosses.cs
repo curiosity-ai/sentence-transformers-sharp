@@ -1,13 +1,14 @@
 using System.Numerics.Tensors;
 
-namespace SentenceTransformers.Bert.Pure.Training;
+namespace SentenceTransformers.Training;
 
 /// <summary>
 /// Analytic sentence-embedding losses that operate on already-L2-normalized vectors and accumulate the
-/// gradient w.r.t. each vector. The trainer maps these vector-gradients back through normalization and the
-/// autograd graph into the LoRA parameters, so these functions are the only place the objective math lives.
+/// gradient w.r.t. each vector. A LoRA trainer maps these vector-gradients back through normalization and
+/// the autograd graph into the LoRA parameters, so these functions are the only place the objective math
+/// lives. Shared by the BERT and Gemma3 trainers.
 /// </summary>
-internal static class LoraLosses
+public static class LoraLosses
 {
     // ----- symmetric InfoNCE (MultipleNegativesRanking) with in-batch + hard negatives ------------
 

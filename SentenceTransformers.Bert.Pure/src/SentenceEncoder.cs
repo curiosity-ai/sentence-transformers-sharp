@@ -1,7 +1,7 @@
 using System.Numerics.Tensors;
 using BERTTokenizers.Base;
 using SentenceTransformers.Bert.Pure.Model;
-using SentenceTransformers.Bert.Pure.Numerics;
+using SentenceTransformers.Training.Autograd;
 using UID;
 
 namespace SentenceTransformers.Bert.Pure;

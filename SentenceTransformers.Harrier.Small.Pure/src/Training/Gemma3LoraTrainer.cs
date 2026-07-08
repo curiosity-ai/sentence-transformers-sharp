@@ -1,113 +1,105 @@
 using System.Numerics.Tensors;
-using SentenceTransformers.Bert.Pure.Model;
 using SentenceTransformers.Training;
 using Tensor = SentenceTransformers.Training.Autograd.Tensor;
 using Graph  = SentenceTransformers.Training.Autograd.Graph;
 
-namespace SentenceTransformers.Bert.Pure.Training;
+namespace SentenceTransformers.Harrier.Small.Pure.Training;
 
 /// <summary>
-/// Trains real weight-space LoRA adapters for a pure-C# BERT encoder. Unlike an output-space adapter, the
-/// low-rank factors are injected <b>inside</b> the transformer's linear projections and optimized by
-/// backpropagating the contrastive / CoSENT / regression loss through the whole (frozen) network via the
-/// autograd graph. Supports in-batch + hard (explicit and mined) negatives with false-negative masking,
-/// a learned temperature, warmup + cosine LR, multi-seed model selection, Matryoshka sub-dimension losses,
-/// asymmetric query/document prefixes, a learned output-centering bias and optional post-hoc whitening.
+/// Trains real weight-space LoRA adapters for the Harrier Small (Gemma3) encoder: low-rank factors are
+/// injected inside the decoder's attention/MLP projections and optimized by backpropagating the
+/// contrastive / CoSENT / regression loss through the whole frozen decoder via the autograd graph. Shares
+/// the objective math (<see cref="LoraLosses"/>) and whitening with the BERT trainer; the training loop is
+/// specialized to the Gemma model/adapter. Because the base decoder is ~270M params, each forward+backward
+/// is heavy — keep <see cref="GemmaLoraTrainingOptions.MaxTokens"/> / batch modest.
 /// </summary>
-public static class BertLoraTrainer
+public static class Gemma3LoraTrainer
 {
-    public static async Task<BertLoraTrainingReport> TrainAsync(
-        SentenceEncoder baseEncoder, SentencePairDataset dataset, BertLoraTrainingOptions options = null, CancellationToken ct = default)
+    public static async Task<GemmaLoraTrainingReport> TrainAsync(
+        Gemma3LoraEncoder baseEncoder, SentencePairDataset dataset, GemmaLoraTrainingOptions options = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(baseEncoder);
         ArgumentNullException.ThrowIfNull(dataset);
-        options ??= new BertLoraTrainingOptions();
+        options ??= new GemmaLoraTrainingOptions();
         if (dataset.Count < 2) throw new ArgumentException("Need at least two pairs to train.", nameof(dataset));
 
-        var model = baseEncoder.ModelInternal;
-        var cfg   = model.Config;
         baseEncoder.Tokenizer.SetMaxTokens(Math.Min(options.MaxTokens, baseEncoder.MaxChunkLength));
-
         var (train, validation) = dataset.Split(options.ValidationFraction, options.Seed);
         bool haveScores = validation.Count > 0 && validation.Pairs.All(p => p.Score.HasValue);
 
-        // Baseline (frozen encoder) validation metrics.
-        var baseRetr = await EmbeddingEvaluation.RetrievalAsync(baseEncoder, validation, minScore: 0.6f, ct);
+        var baseRetr = await EmbeddingEvaluation.RetrievalAsync(baseEncoder, validation, 0.6f, ct);
         float baselineSpearman = haveScores ? await EmbeddingEvaluation.SpearmanAsync(baseEncoder, validation, ct) : float.NaN;
 
-        LoraAdapter best = null;
-        float bestPrimary = float.NegativeInfinity;
-        float bestAcc = float.NaN, bestSpear = float.NaN;
-        var allMetrics = new List<BertEpochMetrics>();
+        GemmaLoraAdapter best = null;
+        float bestPrimary = float.NegativeInfinity, bestAcc = float.NaN, bestSpear = float.NaN;
+        var allMetrics = new List<GemmaEpochMetrics>();
 
         for (int s = 0; s < Math.Max(1, options.NumSeeds); s++)
         {
             int seed = options.Seed + s;
-            var (adapter, metrics, acc, spear) = await TrainOneSeedAsync(baseEncoder, model, cfg, train, validation, haveScores, options, seed, ct);
+            var (adapter, metrics, acc, spear) = await TrainOneSeedAsync(baseEncoder, train, validation, haveScores, options, seed, ct);
             allMetrics.AddRange(metrics);
             float primary = haveScores ? spear : acc;
             if (primary > bestPrimary) { bestPrimary = primary; best = adapter; bestAcc = acc; bestSpear = spear; }
         }
 
-        // Optional post-hoc whitening fitted from the tuned training embeddings.
         if (options.ApplyWhitening && best != null)
         {
             using var tuned = baseEncoder.WithAdapter(best);
-            WhiteningFitter.Fit(tuned, train, best, ct);
-            // Re-evaluate with whitening applied.
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var rows = new List<float[]>();
+            void Add(string t) { if (t != null && seen.Add(t)) rows.Add(tuned.PooledPreNormalize(t)); }
+            foreach (var p in train.Pairs) { Add(p.Anchor); Add(p.Positive); }
+            var (mean, matrix) = Whitening.Fit(rows, best.Dimension, ct);
+            if (mean != null) { best.WhiteningMean = mean; best.WhiteningMatrix = matrix; }
             using var tunedW = baseEncoder.WithAdapter(best);
-            bestAcc   = (await EmbeddingEvaluation.RetrievalAsync(tunedW, validation, minScore: 0.6f, ct)).Accuracy;
+            bestAcc   = (await EmbeddingEvaluation.RetrievalAsync(tunedW, validation, 0.6f, ct)).Accuracy;
             bestSpear = haveScores ? await EmbeddingEvaluation.SpearmanAsync(tunedW, validation, ct) : float.NaN;
         }
 
-        return new BertLoraTrainingReport(best, allMetrics, baseRetr.Accuracy, baselineSpearman, bestAcc, bestSpear);
+        return new GemmaLoraTrainingReport(best, allMetrics, baseRetr.Accuracy, baselineSpearman, bestAcc, bestSpear);
     }
 
-    private static async Task<(LoraAdapter adapter, List<BertEpochMetrics> metrics, float acc, float spear)> TrainOneSeedAsync(
-        SentenceEncoder baseEncoder, BertModel model, BertConfig cfg,
-        SentencePairDataset train, SentencePairDataset validation, bool haveScores,
-        BertLoraTrainingOptions options, int seed, CancellationToken ct)
+    private static async Task<(GemmaLoraAdapter, List<GemmaEpochMetrics>, float, float)> TrainOneSeedAsync(
+        Gemma3LoraEncoder baseEncoder, SentencePairDataset train, SentencePairDataset validation, bool haveScores,
+        GemmaLoraTrainingOptions options, int seed, CancellationToken ct)
     {
+        var model = baseEncoder.ModelInternal;
+        var cfg = model.Config;
         int dim = cfg.HiddenSize;
-        bool contrastive = options.Objective == BertTrainingObjective.Contrastive;
+        bool contrastive = options.Objective == GemmaTrainingObjective.Contrastive;
 
-        // Build the training examples (anchor/positive [+ explicit negative], score).
         var examples = BuildExamples(train, options, contrastive);
-        if (examples.Count == 0)
-            throw new InvalidOperationException("No usable training examples after filtering (check PositiveScoreThreshold / scores).");
+        if (examples.Count == 0) throw new InvalidOperationException("No usable training examples after filtering.");
 
-        var adapter = LoraAdapter.CreateInitialized(cfg, options.Rank, options.Alpha, options.Targets, seed);
+        var adapter = GemmaLoraAdapter.CreateInitialized(cfg, options.Rank, options.Alpha, options.Targets, seed);
         if (options.UseOutputBias) adapter.OutputBias = new float[dim];
         var rt = adapter.ToRuntime();
         var paramTensors = rt.Parameters().ToList();
         var adam = new AdamW(paramTensors, options);
 
-        float temp = options.Temperature;
-        float tempM = 0, tempV = 0; // Adam state for the learned temperature
-
-        int[] dims = (options.MatryoshkaDims != null && options.MatryoshkaDims.Length > 0)
+        float temp = options.Temperature, tempM = 0, tempV = 0;
+        int[] dims = (options.MatryoshkaDims is { Length: > 0 })
             ? options.MatryoshkaDims.Where(d => d > 0 && d <= dim).Append(dim).Distinct().OrderBy(d => d).ToArray()
             : new[] { dim };
 
         var tokenCache = new Dictionary<string, int[]>(StringComparer.Ordinal);
-        int[] Ids(string prefixed) => tokenCache.TryGetValue(prefixed, out var v) ? v : (tokenCache[prefixed] = baseEncoder.TokenIds(prefixed));
+        int[] Ids(string t) => tokenCache.TryGetValue(t, out var v) ? v : (tokenCache[t] = baseEncoder.TokenIds(t));
 
         var rng = new Random(seed);
         int totalSteps = Math.Max(1, options.Epochs * ((examples.Count + options.BatchSize - 1) / options.BatchSize));
         int step = 0;
 
-        var metrics = new List<BertEpochMetrics>();
-        LoraAdapter bestSeed = null;
+        var metrics = new List<GemmaEpochMetrics>();
+        GemmaLoraAdapter bestSeed = null;
         float bestPrimary = float.NegativeInfinity, bestAcc = float.NaN, bestSpear = float.NaN;
-
         List<string>[] minedNeg = null;
 
         for (int epoch = 1; epoch <= options.Epochs; epoch++)
         {
             ct.ThrowIfCancellationRequested();
-
             if (contrastive && options.MinedNegativesPerAnchor > 0 && (epoch - 1) % Math.Max(1, options.MineEveryEpochs) == 0)
-                minedNeg = MineNegatives(baseEncoder, adapter, rt, examples, options, Ids, ct);
+                minedNeg = MineNegatives(model, rt, examples, options, Ids, ct);
 
             var order = Enumerable.Range(0, examples.Count).ToArray();
             Shuffle(order, rng);
@@ -117,56 +109,45 @@ public static class BertLoraTrainer
             {
                 ct.ThrowIfCancellationRequested();
                 int end = Math.Min(start + options.BatchSize, order.Length);
-                var batch = new ArraySegment<int>(order, start, end - start);
-
                 float lr = ScheduleLr(options, step, totalSteps);
-                double loss = TrainBatch(model, rt, examples, batch, minedNeg, dims, dim, options, ref temp, Ids, adam, lr, ref tempM, ref tempV, contrastive);
-                epochLoss += loss; batches++;
-                step++;
+                epochLoss += TrainBatch(model, rt, examples, new ArraySegment<int>(order, start, end - start), minedNeg, dims, options, ref temp, Ids, adam, lr, ref tempM, ref tempV, contrastive);
+                batches++; step++;
             }
 
             adapter.CopyFrom(rt);
             using var tuned = baseEncoder.WithAdapter(adapter);
-            float valAcc   = (await EmbeddingEvaluation.RetrievalAsync(tuned, validation, minScore: 0.6f, ct)).Accuracy;
+            float valAcc = (await EmbeddingEvaluation.RetrievalAsync(tuned, validation, 0.6f, ct)).Accuracy;
             float valSpear = haveScores ? await EmbeddingEvaluation.SpearmanAsync(tuned, validation, ct) : float.NaN;
-            float primary  = haveScores ? valSpear : valAcc;
+            float primary = haveScores ? valSpear : valAcc;
             bool isBest = primary > bestPrimary;
             if (isBest) { bestPrimary = primary; bestSeed = Clone(adapter); bestAcc = valAcc; bestSpear = valSpear; }
 
-            var m = new BertEpochMetrics(seed, epoch, (float)(epochLoss / Math.Max(1, batches)), float.NaN, valAcc, valSpear, isBest);
+            var m = new GemmaEpochMetrics(seed, epoch, (float)(epochLoss / Math.Max(1, batches)), valAcc, valSpear, isBest);
             metrics.Add(m);
             options.OnEpoch?.Invoke(m);
         }
-
         return (bestSeed ?? Clone(adapter), metrics, bestAcc, bestSpear);
     }
 
-    // ----- one optimization step ------------------------------------------------------------------
-
     private static double TrainBatch(
-        BertModel model, LoraRuntime rt, List<Example> examples, ArraySegment<int> batch, List<string>[] minedNeg,
-        int[] dims, int fullDim, BertLoraTrainingOptions options, ref float temp,
-        Func<string, int[]> ids, AdamW adam, float lr, ref float tempM, ref float tempV, bool contrastive)
+        Gemma3LoraModel model, GemmaLoraRuntime rt, List<Example> examples, ArraySegment<int> batch, List<string>[] minedNeg,
+        int[] dims, GemmaLoraTrainingOptions options, ref float temp, Func<string, int[]> ids, AdamW adam, float lr, ref float tempM, ref float tempV, bool contrastive)
     {
-        // Intern every unique (prefixed) string in the batch and run one forward per unique text.
-        var uniq   = new Dictionary<string, int>(StringComparer.Ordinal);
+        var uniq = new Dictionary<string, int>(StringComparer.Ordinal);
         var graphs = new List<Graph>();
-        var zs     = new List<Tensor>();
-
+        var zs = new List<Tensor>();
         int Intern(string text)
         {
             if (uniq.TryGetValue(text, out int id)) return id;
             id = zs.Count; uniq[text] = id;
             var g = new Graph();
-            var z = model.Forward(g, ids(text), rt);
-            graphs.Add(g); zs.Add(z);
+            zs.Add(model.Forward(g, ids(text), rt)); graphs.Add(g);
             return id;
         }
 
         int n = batch.Count;
         var aIdx = new int[n]; var pIdx = new int[n]; var scores = new float[n];
         List<int>[] extraNeg = contrastive ? new List<int>[n] : null;
-
         for (int b = 0; b < n; b++)
         {
             var ex = examples[batch[b]];
@@ -177,13 +158,11 @@ public static class BertLoraTrainer
             {
                 var negs = new List<int>();
                 if (options.UseExplicitNegatives && ex.NegativePrefixed != null) negs.Add(Intern(ex.NegativePrefixed));
-                if (minedNeg != null && minedNeg[batch[b]] != null)
-                    foreach (var t in minedNeg[batch[b]]) negs.Add(Intern(t));
+                if (minedNeg != null && minedNeg[batch[b]] != null) foreach (var t in minedNeg[batch[b]]) negs.Add(Intern(t));
                 extraNeg[b] = negs;
             }
         }
 
-        // False-negative masks (index equality captures text equality since we deduped by string).
         bool[][] allowP = null, allowQ = null;
         if (contrastive)
         {
@@ -194,50 +173,37 @@ public static class BertLoraTrainer
                 for (int j = 0; j < n; j++)
                 {
                     if (i == j) continue;
-                    bool okP = !options.MaskFalseNegatives || (pIdx[j] != pIdx[i] && pIdx[j] != aIdx[i]);
-                    bool okQ = !options.MaskFalseNegatives || (aIdx[j] != aIdx[i] && aIdx[j] != pIdx[i]);
-                    allowP[i][j] = okP; allowQ[i][j] = okQ;
+                    allowP[i][j] = !options.MaskFalseNegatives || (pIdx[j] != pIdx[i] && pIdx[j] != aIdx[i]);
+                    allowQ[i][j] = !options.MaskFalseNegatives || (aIdx[j] != aIdx[i] && aIdx[j] != pIdx[i]);
                 }
             }
         }
 
         int u = zs.Count;
         double totalLoss = 0, totalDTemp = 0;
-
         foreach (int d in dims)
         {
-            // Normalize the leading-d prefix of each pooled vector.
-            var vecs  = new float[u][];
-            var norms = new float[u];
+            var vecs = new float[u][]; var norms = new float[u];
             for (int t = 0; t < u; t++)
             {
                 var zt = zs[t].Data;
                 float ss = 0; for (int k = 0; k < d; k++) ss += zt[k] * zt[k];
-                float nrm = MathF.Max(MathF.Sqrt(ss), 1e-12f);
-                norms[t] = nrm;
-                var uu = new float[d];
-                float invn = 1f / nrm;
+                float nrm = MathF.Max(MathF.Sqrt(ss), 1e-12f); norms[t] = nrm;
+                var uu = new float[d]; float invn = 1f / nrm;
                 for (int k = 0; k < d; k++) uu[k] = zt[k] * invn;
                 vecs[t] = uu;
             }
-
-            var gU = new float[u][];
-            for (int t = 0; t < u; t++) gU[t] = new float[d];
+            var gU = new float[u][]; for (int t = 0; t < u; t++) gU[t] = new float[d];
 
             double loss, dTemp = 0;
             switch (options.Objective)
             {
-                case BertTrainingObjective.Contrastive:
-                    loss = LoraLosses.Contrastive(vecs, aIdx, pIdx, extraNeg, allowP, allowQ, temp, gU, out dTemp); break;
-                case BertTrainingObjective.CoSent:
-                    loss = LoraLosses.CoSent(vecs, aIdx, pIdx, scores, temp, gU, out dTemp); break;
-                default:
-                    loss = LoraLosses.Regression(vecs, aIdx, pIdx, scores, gU); break;
+                case GemmaTrainingObjective.Contrastive: loss = LoraLosses.Contrastive(vecs, aIdx, pIdx, extraNeg, allowP, allowQ, temp, gU, out dTemp); break;
+                case GemmaTrainingObjective.CoSent:      loss = LoraLosses.CoSent(vecs, aIdx, pIdx, scores, temp, gU, out dTemp); break;
+                default:                                 loss = LoraLosses.Regression(vecs, aIdx, pIdx, scores, gU); break;
             }
-            totalLoss += loss / dims.Length;
-            totalDTemp += dTemp;
+            totalLoss += loss / dims.Length; totalDTemp += dTemp;
 
-            // Backprop the prefix normalization into z.Grad[0..d): dz = (gU - (gU·u)u)/norm.
             for (int t = 0; t < u; t++)
             {
                 var uu = vecs[t]; var g = gU[t]; var gz = zs[t].Grad;
@@ -247,12 +213,11 @@ public static class BertLoraTrainer
             }
         }
 
-        // Backward each unique text's graph (accumulates into the shared LoRA params), then step.
         adam.ClearGrads();
         for (int t = 0; t < u; t++) graphs[t].Backward();
         adam.Step(lr);
 
-        if (options.LearnableTemperature && (options.Objective != BertTrainingObjective.CosineRegression))
+        if (options.LearnableTemperature && options.Objective != GemmaTrainingObjective.CosineRegression)
         {
             float g = (float)(totalDTemp / dims.Length);
             tempM = options.Beta1 * tempM + (1 - options.Beta1) * g;
@@ -260,7 +225,6 @@ public static class BertLoraTrainer
             temp -= lr * tempM / (MathF.Sqrt(tempV) + options.Epsilon);
             temp = Math.Clamp(temp, 1e-3f, 1f);
         }
-
         return totalLoss;
     }
 
@@ -268,62 +232,45 @@ public static class BertLoraTrainer
 
     private readonly record struct Example(string AnchorPrefixed, string PositivePrefixed, string NegativePrefixed, float Score);
 
-    private static List<Example> BuildExamples(SentencePairDataset train, BertLoraTrainingOptions options, bool contrastive)
+    private static List<Example> BuildExamples(SentencePairDataset train, GemmaLoraTrainingOptions o, bool contrastive)
     {
-        string q = options.QueryPrefix ?? "";
-        string doc = options.DocumentPrefix ?? "";
+        string q = o.QueryPrefix ?? "", doc = o.DocumentPrefix ?? "";
         var list = new List<Example>(train.Count);
         foreach (var p in train.Pairs)
         {
-            if (contrastive)
-            {
-                if (p.Score.HasValue && p.Score.Value < options.PositiveScoreThreshold) continue;
-            }
-            else
-            {
-                if (!p.Score.HasValue) continue;
-            }
-            string neg = (contrastive && options.UseExplicitNegatives && p.Negative != null) ? doc + p.Negative : null;
+            if (contrastive) { if (p.Score.HasValue && p.Score.Value < o.PositiveScoreThreshold) continue; }
+            else            { if (!p.Score.HasValue) continue; }
+            string neg = (contrastive && o.UseExplicitNegatives && p.Negative != null) ? doc + p.Negative : null;
             list.Add(new Example(q + p.Anchor, doc + p.Positive, neg, p.Score ?? 1f));
         }
         return list;
     }
 
-    // Embed all anchors/positives with the current adapter (no grad) and pick each anchor's nearest
-    // foreign positives as hard negatives (skipping near-duplicates likely to be false negatives).
-    private static List<string>[] MineNegatives(
-        SentenceEncoder baseEncoder, LoraAdapter adapter, LoraRuntime rt, List<Example> examples,
-        BertLoraTrainingOptions options, Func<string, int[]> ids, CancellationToken ct)
+    private static List<string>[] MineNegatives(Gemma3LoraModel model, GemmaLoraRuntime rt, List<Example> examples, GemmaLoraTrainingOptions o, Func<string, int[]> ids, CancellationToken ct)
     {
-        var model = baseEncoder.ModelInternal;
         int nEx = examples.Count;
-
-        // Unique positive texts and their embeddings.
-        var posText = new List<string>();
-        var posOf   = new int[nEx];
+        var posText = new List<string>(); var posOf = new int[nEx];
         var posIndex = new Dictionary<string, int>(StringComparer.Ordinal);
         for (int i = 0; i < nEx; i++)
         {
-            if (!posIndex.TryGetValue(examples[i].PositivePrefixed, out int id))
-            { id = posText.Count; posIndex[examples[i].PositivePrefixed] = id; posText.Add(examples[i].PositivePrefixed); }
+            if (!posIndex.TryGetValue(examples[i].PositivePrefixed, out int id)) { id = posText.Count; posIndex[examples[i].PositivePrefixed] = id; posText.Add(examples[i].PositivePrefixed); }
             posOf[i] = id;
         }
         var posVec = new float[posText.Count][];
         for (int i = 0; i < posText.Count; i++) posVec[i] = EmbedNoGrad(model, rt, ids(posText[i]));
 
         var result = new List<string>[nEx];
-        int k = options.MinedNegativesPerAnchor;
+        int k = o.MinedNegativesPerAnchor;
         for (int i = 0; i < nEx; i++)
         {
             ct.ThrowIfCancellationRequested();
             var a = EmbedNoGrad(model, rt, ids(examples[i].AnchorPrefixed));
-            // score against all positives except this example's own positive
-            var scored = new List<(int idx, float sim)>(posText.Count);
+            var scored = new List<(int idx, float sim)>();
             for (int j = 0; j < posText.Count; j++)
             {
                 if (j == posOf[i]) continue;
                 float sim = TensorPrimitives.Dot(a, posVec[j]);
-                if (sim > options.MinedNegativeMaxCosine) continue; // likely false negative
+                if (sim > o.MinedNegativeMaxCosine) continue;
                 scored.Add((j, sim));
             }
             scored.Sort((x, y) => y.sim.CompareTo(x.sim));
@@ -334,17 +281,16 @@ public static class BertLoraTrainer
         return result;
     }
 
-    private static float[] EmbedNoGrad(BertModel model, LoraRuntime rt, int[] ids)
+    private static float[] EmbedNoGrad(Gemma3LoraModel model, GemmaLoraRuntime rt, int[] ids)
     {
         var g = new Graph();
-        var z = model.Forward(g, ids, rt);
-        var v = (float[])z.Data.Clone();
+        var v = (float[])model.Forward(g, ids, rt).Data.Clone();
         float norm = MathF.Max(MathF.Sqrt(TensorPrimitives.Dot(v, v)), 1e-12f);
         TensorPrimitives.Divide(v, norm, v);
         return v;
     }
 
-    private static float ScheduleLr(BertLoraTrainingOptions o, int step, int totalSteps)
+    private static float ScheduleLr(GemmaLoraTrainingOptions o, int step, int totalSteps)
     {
         int warmup = (int)(o.WarmupFraction * totalSteps);
         if (warmup > 0 && step < warmup) return o.LearningRate * (step + 1) / warmup;
@@ -354,19 +300,9 @@ public static class BertLoraTrainer
         return o.LearningRate * 0.5f * (1f + MathF.Cos(MathF.PI * progress));
     }
 
-    private static void Shuffle(int[] a, Random rng)
-    {
-        for (int i = a.Length - 1; i > 0; i--) { int j = rng.Next(i + 1); (a[i], a[j]) = (a[j], a[i]); }
-    }
+    private static void Shuffle(int[] a, Random rng) { for (int i = a.Length - 1; i > 0; i--) { int j = rng.Next(i + 1); (a[i], a[j]) = (a[j], a[i]); } }
 
-    private static LoraAdapter Clone(LoraAdapter a)
-    {
-        using var ms = new MemoryStream();
-        a.Save(ms); ms.Position = 0;
-        return LoraAdapter.Load(ms);
-    }
-
-    // ----- AdamW ----------------------------------------------------------------------------------
+    private static GemmaLoraAdapter Clone(GemmaLoraAdapter a) { using var ms = new MemoryStream(); a.Save(ms); ms.Position = 0; return GemmaLoraAdapter.Load(ms); }
 
     private sealed class AdamW
     {
@@ -374,23 +310,17 @@ public static class BertLoraTrainer
         private readonly float[][] _m, _v;
         private readonly float _beta1, _beta2, _eps, _wd;
         private int _t;
-
-        public AdamW(List<Tensor> parameters, BertLoraTrainingOptions o)
+        public AdamW(List<Tensor> ps, GemmaLoraTrainingOptions o)
         {
-            _params = parameters;
-            _m = new float[parameters.Count][];
-            _v = new float[parameters.Count][];
-            for (int i = 0; i < parameters.Count; i++) { _m[i] = new float[parameters[i].Data.Length]; _v[i] = new float[parameters[i].Data.Length]; }
+            _params = ps; _m = new float[ps.Count][]; _v = new float[ps.Count][];
+            for (int i = 0; i < ps.Count; i++) { _m[i] = new float[ps[i].Data.Length]; _v[i] = new float[ps[i].Data.Length]; }
             _beta1 = o.Beta1; _beta2 = o.Beta2; _eps = o.Epsilon; _wd = o.WeightDecay;
         }
-
         public void ClearGrads() { foreach (var p in _params) p.ClearGrad(); }
-
         public void Step(float lr)
         {
             _t++;
-            float bc1 = 1f - MathF.Pow(_beta1, _t);
-            float bc2 = 1f - MathF.Pow(_beta2, _t);
+            float bc1 = 1f - MathF.Pow(_beta1, _t), bc2 = 1f - MathF.Pow(_beta2, _t);
             for (int pi = 0; pi < _params.Count; pi++)
             {
                 var data = _params[pi].Data; var grad = _params[pi].Grad; var m = _m[pi]; var v = _v[pi];

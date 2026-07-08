@@ -308,19 +308,26 @@ using var encoder = await SentenceEncoder.CreateAsync(
 
 ## Fine-tuning for your use case (real weight-space LoRA)
 
-You can specialize the **BERT-family encoders** (MiniLM and Arctic XS) for a specific domain — support
-tickets, legal clauses, product descriptions, a particular language pair — by training a **real
-weight-space LoRA adapter** from a set of *related pairs* (a query and a relevant passage, two
+You can specialize the **pure-C# encoders** — MiniLM, Arctic XS and Harrier Small — for a specific
+domain (support tickets, legal clauses, product descriptions, a particular language pair) by training a
+**real weight-space LoRA adapter** from a set of *related pairs* (a query and a relevant passage, two
 paraphrases, a question and its duplicate…). This is proper LoRA: small low-rank factors are injected
 *inside* the transformer's attention/MLP projections (`W + (α/r)·B·A`), and the loss is backpropagated
 through the whole (frozen) network. The forward **and backward** passes run entirely in pure C# — no ONNX
-Runtime, and no PyTorch/autodiff dependency.
+Runtime, and no PyTorch/autodiff dependency. A shared tensor autograd engine (`SentenceTransformers.Training.Autograd`)
+powers both model families.
 
-> This applies to the pure-C# `SentenceTransformers.Bert.Pure` encoder, which implements the `BertModel`
-> architecture behind `all-MiniLM-L6-v2` and `snowflake-arctic-embed-xs`. The full-precision weights are
-> read directly from the fp32 ONNX graphs already embedded in the MiniLM / Arctic packages, so training is
-> self-contained (no model download). The ONNX-only models (Qwen3, Harrier Medium/Small) are inference-only
-> and are not trainable here.
+> **MiniLM / Arctic XS** (`SentenceTransformers.Bert.Pure`, the `BertModel` architecture) read their
+> full-precision weights directly from the fp32 ONNX graphs already embedded in the MiniLM / Arctic
+> packages, so training is fully self-contained — no model download.
+>
+> **Harrier Small** (`SentenceTransformers.Harrier.Small.Pure`, a Gemma3 decoder) trains through the same
+> autograd engine and LoRA objectives via `Gemma3LoraTrainer` / `Gemma3LoraEncoder`; its bf16 weights are
+> downloaded on first use, and because it is a ~270M-param decoder each step is much heavier than the small
+> BERTs (keep the batch / sequence length modest). LoRA there targets q/k/v/o and the gate/up/down MLP
+> projections.
+>
+> The remaining ONNX-only models (Qwen3, Harrier Medium) are inference-only and are not trainable here.
 
 ```csharp
 using SentenceTransformers.Bert.Pure;
@@ -378,8 +385,8 @@ which projections carry adapters (`Targets`: `Attention`, `Mlp` or `All`).
 
 ### Training CLI + example dataset
 
-The `SentenceTransformers.LoraTraining` project is a ready-to-run console app that fine-tunes MiniLM or
-Arctic XS against one of two bundled example datasets (`--dataset`):
+The `SentenceTransformers.LoraTraining` project is a ready-to-run console app that fine-tunes MiniLM,
+Arctic XS or Harrier Small against one of two bundled example datasets (`--dataset`):
 
 - **`stsb`** — the English [STS Benchmark](https://github.com/PhilipMay/stsb-multi-mt), a broad
   general-English similarity set, downloaded on demand.
@@ -398,9 +405,12 @@ dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm-stsb.l
 # Domain-specific patent phrases (embedded, no download) — graded scores:
 dotnet run -c Release -- train --model arctic --dataset patent --objective cosent --rank 8 --whitening
 dotnet run -c Release -- eval  --model arctic --dataset patent --adapter ./adapters/arctic-patent.lora --split test
+
+# Harrier Small (Gemma3, pure C#) — bf16 weights downloaded on first use; heavier, so keep batch small:
+dotnet run -c Release -- train --model harrier-small --dataset patent --objective cosent --rank 8 --batch 8 --max-tokens 64
 ```
 
-`--model` accepts `minilm` or `arctic`. Run `dotnet run -- help` for the full option list (objective,
+`--model` accepts `minilm`, `arctic` or `harrier-small`. Run `dotnet run -- help` for the full option list (objective,
 targets, rank, α, learning rate, warmup, temperature, mined negatives, learnable temperature, output bias,
 whitening, Matryoshka, query/doc prefixes, multi-seed, …). Training prints per-epoch validation retrieval
 accuracy and STS Spearman and a base-vs-tuned summary at the end.

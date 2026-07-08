@@ -3,6 +3,7 @@ using SentenceTransformers;
 using SentenceTransformers.Bert.Pure;
 using SentenceTransformers.Bert.Pure.Model;
 using SentenceTransformers.Bert.Pure.Training;
+using SentenceTransformers.Harrier.Small.Pure.Training;
 using SentenceTransformers.LoraTraining;
 using SentenceTransformers.Training;
 
@@ -54,9 +55,13 @@ async Task<int> RunDownloadAsync(List<string> a)
     return 0;
 }
 
+bool IsGemma(string model) => model is "harrier-small" or "harrier" or "harrier-small-pure";
+
 async Task<int> RunTrainAsync(List<string> a)
 {
     string model       = GetOption(a, "--model", "minilm");
+    if (IsGemma(model)) return await RunTrainGemmaAsync(a, model);
+
     string dir         = GetOption(a, "--data", "./data");
     string datasetName = GetOption(a, "--dataset", "stsb").ToLowerInvariant();
     string outPath     = GetOption(a, "--out", $"./adapters/{model}-{datasetName}.lora");
@@ -143,6 +148,8 @@ async Task<int> RunTrainAsync(List<string> a)
 async Task<int> RunEvalAsync(List<string> a)
 {
     string model       = GetOption(a, "--model", "minilm");
+    if (IsGemma(model)) return await RunEvalGemmaAsync(a, model);
+
     string dir         = GetOption(a, "--data", "./data");
     string adapterPath = GetOption(a, "--adapter", null);
     string split       = GetOption(a, "--split", "test");
@@ -159,6 +166,106 @@ async Task<int> RunEvalAsync(List<string> a)
     if (adapterPath is not null)
     {
         var adapter = LoraAdapter.Load(adapterPath);
+        using var tuned = baseEncoder.WithAdapter(adapter);
+        await ReportAsync("tuned", tuned, data);
+    }
+    return 0;
+}
+
+async Task<int> RunTrainGemmaAsync(List<string> a, string model)
+{
+    string dir         = GetOption(a, "--data", "./data");
+    string datasetName = GetOption(a, "--dataset", "stsb").ToLowerInvariant();
+    string outPath     = GetOption(a, "--out", $"./adapters/{model}-{datasetName}.lora");
+    int    maxTrain    = int.Parse(GetOption(a, "--max-train", "0"), CultureInfo.InvariantCulture);
+
+    var options = new GemmaLoraTrainingOptions
+    {
+        Rank                    = int.Parse(GetOption(a, "--rank", "8"), CultureInfo.InvariantCulture),
+        Epochs                  = int.Parse(GetOption(a, "--epochs", "5"), CultureInfo.InvariantCulture),
+        BatchSize               = int.Parse(GetOption(a, "--batch", "8"), CultureInfo.InvariantCulture),
+        LearningRate            = float.Parse(GetOption(a, "--lr", "0.0005"), CultureInfo.InvariantCulture),
+        Temperature             = float.Parse(GetOption(a, "--temp", "0.05"), CultureInfo.InvariantCulture),
+        WeightDecay             = float.Parse(GetOption(a, "--weight-decay", "0.0001"), CultureInfo.InvariantCulture),
+        ValidationFraction      = float.Parse(GetOption(a, "--val-frac", "0.1"), CultureInfo.InvariantCulture),
+        PositiveScoreThreshold  = float.Parse(GetOption(a, "--pos-threshold", "0.6"), CultureInfo.InvariantCulture),
+        MaxTokens               = int.Parse(GetOption(a, "--max-tokens", "64"), CultureInfo.InvariantCulture),
+        WarmupFraction          = float.Parse(GetOption(a, "--warmup", "0.1"), CultureInfo.InvariantCulture),
+        MinedNegativesPerAnchor = int.Parse(GetOption(a, "--mined-negatives", "0"), CultureInfo.InvariantCulture),
+        NumSeeds                = int.Parse(GetOption(a, "--seeds", "1"), CultureInfo.InvariantCulture),
+        Seed                    = int.Parse(GetOption(a, "--seed", "42"), CultureInfo.InvariantCulture),
+        LearnableTemperature    = GetFlag(a, "--learnable-temp"),
+        UseOutputBias           = GetFlag(a, "--output-bias"),
+        ApplyWhitening          = GetFlag(a, "--whitening"),
+        QueryPrefix             = GetOption(a, "--query-prefix", null),
+        DocumentPrefix          = GetOption(a, "--doc-prefix", null),
+    };
+    string alpha = GetOption(a, "--alpha", null);
+    if (alpha is not null) options.Alpha = float.Parse(alpha, CultureInfo.InvariantCulture);
+
+    options.Objective = GetOption(a, "--objective", "contrastive").ToLowerInvariant() switch
+    {
+        "regression" or "cosine" or "cosine-regression" => GemmaTrainingObjective.CosineRegression,
+        "cosent"                                         => GemmaTrainingObjective.CoSent,
+        "contrastive"                                    => GemmaTrainingObjective.Contrastive,
+        var other => throw new ArgumentException($"Unknown --objective '{other}'."),
+    };
+    options.Targets = GetOption(a, "--targets", "attention").ToLowerInvariant() switch
+    {
+        "attention" => GemmaLoraTargets.Attention,
+        "mlp"       => GemmaLoraTargets.Mlp,
+        "all"       => GemmaLoraTargets.All,
+        var other   => throw new ArgumentException($"Unknown --targets '{other}'."),
+    };
+    string matryoshka = GetOption(a, "--matryoshka", null);
+    if (matryoshka is not null) options.MatryoshkaDims = matryoshka.Split(',').Select(x => int.Parse(x, CultureInfo.InvariantCulture)).ToArray();
+
+    var dataset = LoadDataset(datasetName, dir, "train");
+    if (dataset is null) return 1;
+    if (maxTrain > 0 && dataset.Count > maxTrain) dataset = new SentencePairDataset(dataset.Pairs.Take(maxTrain));
+
+    Console.WriteLine($"Model:            harrier-small (pure C# Gemma3, real weight-space LoRA)");
+    Console.WriteLine($"Dataset:          {datasetName}   Objective: {options.Objective}   Targets: {options.Targets}");
+    Console.WriteLine($"Adapter:          rank {options.Rank}, alpha {options.Alpha?.ToString(CultureInfo.InvariantCulture) ?? options.Rank.ToString()}");
+    Console.WriteLine($"Training pairs:   {dataset.Count}\n");
+    Console.WriteLine("Downloading/loading Harrier Small weights (bf16 safetensors) ...");
+
+    using var encoder = await Gemma3LoraEncoder.CreateAsync(reportProgress: p => Console.Error.Write($"\r  {p.Fraction*100,5:0.0}%   "));
+    Console.Error.WriteLine();
+    Console.WriteLine($"\n{"seed",4} {"epoch",5} {"train_loss",12} {"val_acc",9} {"val_spearman",13}");
+    Console.WriteLine(new string('-', 48));
+    options.OnEpoch = m => Console.WriteLine($"{m.Seed,4} {m.Epoch,5} {Fmt(m.TrainLoss),12} {Fmt(m.ValidationAccuracy),9} {Fmt(m.ValidationSpearman),13}{(m.IsBest ? "  *best" : "")}");
+
+    var report = await Gemma3LoraTrainer.TrainAsync(encoder, dataset, options);
+
+    Console.WriteLine("\nValidation summary (base -> tuned):");
+    Console.WriteLine($"  retrieval accuracy: {Fmt(report.BaselineAccuracy)} -> {Fmt(report.BestAccuracy)}");
+    if (!float.IsNaN(report.BaselineSpearman))
+        Console.WriteLine($"  STS spearman:       {Fmt(report.BaselineSpearman)} -> {Fmt(report.BestSpearman)}");
+    report.Adapter.Save(outPath);
+    Console.WriteLine($"\nSaved adapter ({report.Adapter.ParameterCount:N0} parameters) to '{Path.GetFullPath(outPath)}'.");
+    return 0;
+}
+
+async Task<int> RunEvalGemmaAsync(List<string> a, string model)
+{
+    string dir         = GetOption(a, "--data", "./data");
+    string adapterPath = GetOption(a, "--adapter", null);
+    string split       = GetOption(a, "--split", "test");
+    string datasetName = GetOption(a, "--dataset", "stsb").ToLowerInvariant();
+
+    var data = LoadDataset(datasetName, dir, split);
+    if (data is null) return 1;
+
+    Console.WriteLine($"Evaluating 'harrier-small' on {datasetName} {split} split ({data.Count} pairs).\n");
+    Console.WriteLine("Downloading/loading Harrier Small weights ...");
+    using var baseEncoder = await Gemma3LoraEncoder.CreateAsync(reportProgress: p => Console.Error.Write($"\r  {p.Fraction*100,5:0.0}%   "));
+    Console.Error.WriteLine();
+
+    await ReportAsync("base", baseEncoder, data);
+    if (adapterPath is not null)
+    {
+        var adapter = GemmaLoraAdapter.Load(adapterPath);
         using var tuned = baseEncoder.WithAdapter(adapter);
         await ReportAsync("tuned", tuned, data);
     }
@@ -210,7 +317,8 @@ USAGE
   dotnet run -- train    [--model <name>] [--dataset <name>] [--out <path>] [training options]
   dotnet run -- eval      --model <name> [--adapter <path>] [--dataset <name>] [--split train|dev|test]
 
-MODELS (--model)     {string.Join(", ", EncoderFactory.Names)}   (pure C#; weights read from the embedded fp32 ONNX)
+MODELS (--model)     {string.Join(", ", EncoderFactory.Names)} (weights from embedded fp32 ONNX, no download),
+                     harrier-small (pure C# Gemma3; bf16 weights downloaded on first use)
 DATASETS (--dataset) stsb (download first), patent (embedded)
 
 TRAIN OPTIONS

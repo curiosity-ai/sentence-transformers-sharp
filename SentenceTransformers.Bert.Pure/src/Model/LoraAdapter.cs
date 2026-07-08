@@ -1,5 +1,5 @@
 using System.Buffers.Binary;
-using SentenceTransformers.Bert.Pure.Numerics;
+using SentenceTransformers.Training.Autograd;
 
 namespace SentenceTransformers.Bert.Pure.Model;
 

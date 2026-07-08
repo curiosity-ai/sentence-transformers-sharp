@@ -1,5 +1,5 @@
 using SentenceTransformers.Bert.Pure.Model;
-using SentenceTransformers.Bert.Pure.Numerics;
+using SentenceTransformers.Training.Autograd;
 
 namespace SentenceTransformers.Tests;
 
