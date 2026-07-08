@@ -1,71 +1,34 @@
 using SentenceTransformers;
+using SentenceTransformers.Bert.Pure;
+using SentenceTransformers.Bert.Pure.Model;
 
 namespace SentenceTransformers.LoraTraining;
 
 /// <summary>
-/// Instantiates any of the library's models by short name, so the training CLI can fine-tune every
-/// supported encoder through the single model-agnostic LoRA pipeline. Embedded models load instantly;
-/// downloaded models fetch their weights on first use.
+/// Builds the pure-C# BERT encoders that support real weight-space LoRA fine-tuning. Only the
+/// BertModel-family encoders qualify (they run a full forward <b>and backward</b> pass in managed code);
+/// the ONNX-only models (Qwen3, Harrier) are inference-only and are not trainable here.
+///
+/// <para>The full-precision weights are read directly from the fp32 ONNX graphs already embedded in the
+/// MiniLM / ArcticXs packages — no download and no ONNX Runtime — so training is fully self-contained.</para>
 /// </summary>
 internal static class EncoderFactory
 {
-    public static readonly string[] Names =
-    {
-        "minilm", "arctic", "qwen3", "harrier-medium", "harrier-small", "harrier-small-pure",
-    };
+    public static readonly string[] Names = { "minilm", "arctic" };
 
-    /// <summary>Creates the encoder identified by <paramref name="name"/> (case-insensitive).</summary>
-    public static async Task<ISentenceEncoder> CreateAsync(string name, CancellationToken cancellationToken = default)
-    {
-        Action<DownloadProgress> progress = p =>
+    private static (BertConfig cfg, int maxTokens, System.Reflection.Assembly asm) Spec(string name) =>
+        (name ?? "").Trim().ToLowerInvariant() switch
         {
-            if (p.TotalBytes is > 0)
-            {
-                Console.Error.Write($"\r  downloading {name}: {p.Fraction * 100f,5:0.0}%   ");
-            }
+            "minilm"              => (BertConfig.MiniLM,   256, typeof(SentenceTransformers.MiniLM.SentenceEncoder).Assembly),
+            "arctic" or "arcticxs"=> (BertConfig.ArcticXs, 512, typeof(SentenceTransformers.ArcticXs.SentenceEncoder).Assembly),
+            _ => throw new ArgumentException($"Unknown or unsupported model '{name}'. Trainable models: {string.Join(", ", Names)}."),
         };
 
-        switch ((name ?? "").Trim().ToLowerInvariant())
-        {
-            case "minilm":
-                return new SentenceTransformers.MiniLM.SentenceEncoder();
-
-            case "arctic":
-            case "arcticxs":
-                return new SentenceTransformers.ArcticXs.SentenceEncoder();
-
-            case "qwen3":
-            {
-                var e = await SentenceTransformers.Qwen3.SentenceEncoder.CreateAsync(reportProgress: progress, cancellationToken: cancellationToken);
-                Console.Error.WriteLine();
-                return e;
-            }
-
-            case "harrier-medium":
-            {
-                var e = await SentenceTransformers.Harrier.Medium.SentenceEncoder.CreateAsync(reportProgress: progress, cancellationToken: cancellationToken);
-                Console.Error.WriteLine();
-                return e;
-            }
-
-            case "harrier-small":
-            {
-                var e = await SentenceTransformers.Harrier.Small.SentenceEncoder.CreateAsync(reportProgress: progress, cancellationToken: cancellationToken);
-                Console.Error.WriteLine();
-                return e;
-            }
-
-            case "harrier-small-pure":
-            {
-                var e = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.CreateAsync(
-                    reportProgress: progress,
-                    parallelOptions: new ParallelOptions { CancellationToken = cancellationToken });
-                Console.Error.WriteLine();
-                return e;
-            }
-
-            default:
-                throw new ArgumentException($"Unknown model '{name}'. Known models: {string.Join(", ", Names)}.");
-        }
+    /// <summary>Creates the pure BERT encoder for <paramref name="name"/>, optionally with an adapter applied.</summary>
+    public static SentenceEncoder Create(string name, LoraAdapter adapter = null)
+    {
+        var (cfg, maxTokens, asm) = Spec(name);
+        var onnx = ResourceLoader.GetResource(asm, "model.onnx"); // fp32 weights, extracted with no ORT
+        return SentenceEncoder.LoadFromOnnx(onnx, cfg, maxTokens, adapter);
     }
 }

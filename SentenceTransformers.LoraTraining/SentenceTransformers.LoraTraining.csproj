@@ -19,12 +19,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.Bert.Pure\SentenceTransformers.Bert.Pure.csproj" />
+    <!-- MiniLM / ArcticXs are referenced only to reuse the fp32 weights embedded in their model.onnx
+         (extracted with no ONNX Runtime); the pure BertModel does the training. -->
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
     <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
-    <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
-    <ProjectReference Include="..\SentenceTransformers.Harrier.Medium\SentenceTransformers.Harrier.Medium.csproj" />
-    <ProjectReference Include="..\SentenceTransformers.Harrier.Small\SentenceTransformers.Harrier.Small.csproj" />
-    <ProjectReference Include="..\SentenceTransformers.Harrier.Small.Pure\SentenceTransformers.Harrier.Small.Pure.csproj" />
   </ItemGroup>
 
 </Project>

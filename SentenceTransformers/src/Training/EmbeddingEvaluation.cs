@@ -7,9 +7,9 @@ namespace SentenceTransformers.Training;
 public readonly record struct RetrievalMetrics(int Count, float Accuracy, float MRR);
 
 /// <summary>
-/// Model-agnostic evaluation utilities for <see cref="ISentenceEncoder"/>s (base or
-/// <see cref="AdaptedSentenceEncoder">adapted</see>). Used both to report training progress and to
-/// compare a fine-tuned adapter against its frozen baseline on a held-out split.
+/// Model-agnostic evaluation utilities for <see cref="ISentenceEncoder"/>s (base or LoRA-adapted). Used
+/// both to report training progress and to compare a fine-tuned adapter against its frozen baseline on a
+/// held-out split.
 /// </summary>
 public static class EmbeddingEvaluation
 {
