@@ -1,0 +1,4 @@
+# Generated at runtime by the CLI — not source.
+data/
+adapters/
+*.lora

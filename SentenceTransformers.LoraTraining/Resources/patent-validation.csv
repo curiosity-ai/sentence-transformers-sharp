@@ -1,0 +1,2844 @@
+anchor,target,rating,score,context
+substantial amounts,amounts,2b,0.50,C22
+substantial amounts,traces,0,0.00,C22
+substantial amounts,high amounts,2b,0.50,C22
+substantial amounts,high quantities,2b,0.50,C22
+substantial amounts,large quantities,2b,0.50,C22
+substantial amounts,large amount,2b,0.50,C22
+substantial amounts,combination,0,0.00,C22
+substantial amounts,quantities,2b,0.50,C22
+substantial amounts,amount,2b,0.50,C22
+substantial amounts,oxides,1c,0.25,C22
+substantial amounts,large amounts,2b,0.50,C22
+substantial amounts,small amounts,2b,0.50,C22
+substantial amounts,small amount,2b,0.50,C22
+substantial amounts,contain substantial amounts,2b,0.50,C22
+substantial amounts,minor amounts,2a,0.50,D01
+substantial amounts,minor quantities,2a,0.50,D01
+substantial amounts,traces,2a,0.50,D01
+substantial amounts,substantial traces,2a,0.50,D01
+substantial amounts,substantial amount,4,1.00,D01
+substantial amounts,substantial concentration,3,0.75,D01
+substantial amounts,significant concentration,3,0.75,D01
+substantial amounts,amounts,2b,0.50,D01
+substantial amounts,small quantities,2a,0.50,D01
+substantial amounts,molecules,1c,0.25,D01
+substantial amounts,substantial trace,2a,0.50,D01
+substantial amounts,significant amount,3,0.75,D01
+substantial amounts,small amount,2a,0.50,D01
+substantial amounts,significant trace,2a,0.50,D01
+substantial amounts,significant traces,2a,0.50,D01
+substantial amounts,small proportion,2a,0.50,D01
+substantial amounts,large amount,2b,0.50,D01
+substantial amounts,large proportion,2b,0.50,D01
+substantial amounts,much,0,0.00,D01
+substantial amounts,quantities,2b,0.50,D01
+substantial amounts,small amounts,2a,0.50,D01
+substantial amounts,contain substantial amounts,3,0.75,D01
+substantial amounts,ample amounts,3,0.75,D01
+substantial amounts,substantial quantity,3,0.75,D01
+substantial amounts,considerable amount,3,0.75,D01
+substantial amounts,substantial weight,2a,0.50,D01
+substantial amounts,considerable quantities,3,0.75,D01
+substantial amounts,substantial proportion,2b,0.50,D01
+substantial amounts,considerable size,3,0.75,D01
+substantial amounts,substantial portion,2a,0.50,D01
+substantial amounts,composition,1c,0.25,D01
+substantial amounts,load,1c,0.25,D01
+substantial amounts,portion,1c,0.25,D01
+substantial amounts,aggregate,1c,0.25,D01
+substantial amounts,surfactant,1b,0.25,D01
+substantial amounts,mass,1b,0.25,D01
+substantial amounts,substantial energy,0,0.00,D01
+substantial amounts,account,0,0.00,D01
+substantial amounts,substantial meal,0,0.00,D01
+substantial amounts,conductivity,0,0.00,D01
+substantial amounts,co2 amount,0,0.00,D01
+substantial amounts,visible,0,0.00,D01
+substantial amounts,amounts,2b,0.50,C10
+substantial amounts,levels,2b,0.50,C10
+substantial amounts,large amounts,2b,0.50,C10
+substantial amounts,large amount,2b,0.50,C10
+substantial amounts,salts,0,0.00,C10
+substantial amounts,salt,0,0.00,C10
+substantial amounts,particles,0,0.00,C10
+substantial amounts,traces,0,0.00,C10
+substantial amounts,large concentration,2b,0.50,C10
+substantial amounts,significant concentration,2b,0.50,C10
+substantial amounts,significant amount,2b,0.50,C10
+substantial amounts,considerable quantity,3,0.75,C10
+substantial amounts,good amount,2b,0.50,C10
+substantial amounts,generous measure,2b,0.50,C10
+substantial amounts,good quantity,2b,0.50,C10
+substantial amounts,abundant proportion,3,0.75,C10
+substantial amounts,large quantity,2b,0.50,C10
+substantial amounts,voluminous weight,3,0.75,C10
+substantial amounts,strong concentration,2b,0.50,C10
+substantial amounts,measurement,1d,0.25,C10
+substantial amounts,less amount,1a,0.25,C10
+substantial amounts,totality,1d,0.25,C10
+substantial amounts,low concentration,1a,0.25,C10
+substantial amounts,mass,1d,0.25,C10
+substantial amounts,abundant water,0,0.00,C10
+substantial amounts,substantial evidence,0,0.00,C10
+substantial amounts,voluminous body,0,0.00,C10
+substantial amounts,substantial question of law,0,0.00,C10
+substantial amounts,generou person,0,0.00,C10
+substantial amounts,substantial tariffs,0,0.00,C10
+constant optical,constant,1d,0.25,G02
+constant optical,uniform optical,3,0.75,G02
+constant optical,predetermined,0,0.00,G02
+constant optical,semicircular optical,2a,0.50,G02
+constant optical,semicircular light,2a,0.50,G02
+constant optical,circular,0,0.00,G02
+constant optical,circular optical,2a,0.50,G02
+constant optical,uniform,0,0.00,G02
+constant optical,uniform surface,2b,0.50,G02
+constant optical,semicircular,0,0.00,G02
+constant optical,predetermined optical,2b,0.50,G02
+constant optical,predetermined light,0,0.00,G02
+constant optical,circular light,2a,0.50,G02
+constant optical,constant optical shaft,3,0.75,G02
+constant optical,optimal film thickness,2a,0.50,G02
+constant optical,constant optical depth,3,0.75,G02
+constant optical,steady optical,3,0.75,G02
+constant optical,optical behavior,3,0.75,G02
+constant optical,glass persistence,3,0.75,G02
+constant optical,optics housing,2b,0.50,G02
+constant optical,glass diameter,2b,0.50,G02
+constant optical,optical constants,1b,0.25,G02
+constant optical,optical,1c,0.25,G02
+constant optical,ambiguous decoding,1a,0.25,G02
+constant optical,rays,1b,0.25,G02
+constant optical,ambiguous characters,1a,0.25,G02
+constant optical,variable optical,1a,0.25,G02
+constant optical,constant pressure,0,0.00,G02
+constant optical,circular ground,0,0.00,G02
+constant optical,constant variable,0,0.00,G02
+constant optical,circle shape rotator,0,0.00,G02
+constant optical,optical mouse,0,0.00,G02
+constant optical,constant gain,0,0.00,G02
+constant optical,transmission,1b,0.25,B41
+constant optical,uniform optical,3,0.75,B41
+constant optical,uniform visible,1b,0.25,B41
+constant optical,reflective optical,2a,0.50,B41
+constant optical,reflective visible,1b,0.25,B41
+constant optical,predetermined path,1b,0.25,B41
+constant optical,constant path,2b,0.50,B41
+constant optical,predetermined focal,1b,0.25,B41
+constant optical,light,1b,0.25,B41
+constant optical,optical,2b,0.50,B41
+constant optical,thermal,1b,0.25,B41
+constant optical,thermal transmission,1b,0.25,B41
+constant optical,constant focal,2b,0.50,B41
+constant optical,constant optical,4,1.00,B41
+constant optical,optical constants,4,1.00,B41
+constant optical,constant opticals,3,0.75,B41
+constant optical,constant optical glass,3,0.75,B41
+constant optical,optical behavior of a substance,3,0.75,B41
+constant optical,same optical,3,0.75,B41
+constant optical,optical system,2b,0.50,B41
+constant optical,optical sensor,2b,0.50,B41
+constant optical,optical write head,1d,0.25,B41
+constant optical,varying optical,1a,0.25,B41
+constant optical,screen printing,1d,0.25,B41
+constant optical,mirror image,1d,0.25,B41
+constant optical,laser discharge imaging,1d,0.25,B41
+constant optical,imprint media,1d,0.25,B41
+constant optical,constant function,0,0.00,B41
+constant optical,constant fever,0,0.00,B41
+constant optical,optic nerve pathway,0,0.00,B41
+constant optical,constant pain,0,0.00,B41
+constant optical,optical blood glucose monitor,0,0.00,B41
+constant optical,optical isomerism,0,0.00,B41
+cool by system,cool in system,3,0.75,F25
+cool by system,cool by cooling system,3,0.75,F25
+cool by system,cool system,3,0.75,F25
+cool by system,cooling system,3,0.75,F25
+cool by system,chill system,3,0.75,F25
+cool by system,cooling by system,4,1.00,F25
+cool by system,chilling device,3,0.75,F25
+cool by system,cooling apparatus,3,0.75,F25
+cool by system,refreshing system,3,0.75,F25
+cool by system,cool by unit,3,0.75,F25
+cool by system,thermal comfort,2b,0.50,F25
+cool by system,cooling chamber,1b,0.25,F25
+cool by system,hvac,1c,0.25,F25
+cool by system,cooling pump,1b,0.25,F25
+cool by system,heating and ventilation,1c,0.25,F25
+cool by system,coolant,1d,0.25,F25
+cool by system,solar system,0,0.00,F25
+cool by system,fly by wire,0,0.00,F25
+cool by system,respiratory system,0,0.00,F25
+cool by system,system by design,0,0.00,F25
+cool by system,nervous system,0,0.00,F25
+cool by system,system settings,0,0.00,F25
+flap gate,vehicle,2b,0.50,E02
+flap gate,door,2b,0.50,E02
+flap gate,gate door,2a,0.50,E02
+flap gate,gate,2b,0.50,E02
+flap gate,cut off gate,2a,0.50,E02
+flap gate,flap door,2c,0.50,E02
+flap gate,sluice door,2a,0.50,E02
+flap gate,hydro gate,3,0.75,E02
+flap gate,water cut off valve,2a,0.50,E02
+flap gate,closing device,2b,0.50,E02
+flap gate,discharge gate valve,2a,0.50,E02
+flap gate,wall attachment,2b,0.50,E02
+flap gate,drain valve disc,1b,0.25,E02
+flap gate,flat back seats,1b,0.25,E02
+flap gate,open and shut valve,1b,0.25,E02
+flap gate,flange,1c,0.25,E02
+flap gate,closing hatch,1b,0.25,E02
+flap gate,metal sheet,1c,0.25,E02
+flap gate,flapping bird,0,0.00,E02
+flap gate,car seats,0,0.00,E02
+flap gate,flapjack,0,0.00,E02
+flap gate,back area,0,0.00,E02
+flap gate,gate exam,0,0.00,E02
+flap gate,device maker,0,0.00,E02
+flap gate,weir gate,2a,0.50,E03
+flap gate,weir used,1c,0.25,E03
+flap gate,flow control device,2b,0.50,E03
+flap gate,bucket door,2b,0.50,E03
+flap gate,discharge gate valve,2a,0.50,E03
+flap gate,tilting gate,3,0.75,E03
+flap gate,hinged flap valve,2a,0.50,E03
+flap gate,discharge flaps,2a,0.50,E03
+flap gate,thimbles,1b,0.25,E03
+flap gate,hinges,1c,0.25,E03
+flap gate,closing,1d,0.25,E03
+flap gate,wall thimbles,1b,0.25,E03
+flap gate,headwalls,1b,0.25,E03
+flap gate,closing devices,1c,0.25,E03
+flap gate,entrance gate,0,0.00,E03
+flap gate,cut off rate,0,0.00,E03
+flap gate,main gate,0,0.00,E03
+flap gate,wall poster,0,0.00,E03
+flap gate,flap mobile,0,0.00,E03
+flap gate,wall paint,0,0.00,E03
+fluid filler,perforating,1b,0.25,B67
+fluid filler,fluid filler,4,1.00,B67
+fluid filler,fluid filling arrangement,3,0.75,B67
+fluid filler,water filler,3,0.75,B67
+fluid filler,filling the fluid,3,0.75,B67
+fluid filler,liquid filler,3,0.75,B67
+fluid filler,transmission fluid filler,2a,0.50,B67
+fluid filler,filler system,2b,0.50,B67
+fluid filler,fluid filler cap,2a,0.50,B67
+fluid filler,pressure operated valve,1d,0.25,B67
+fluid filler,dispenser,1c,0.25,B67
+fluid filler,flow restrictor,1d,0.25,B67
+fluid filler,peripheral wall surface,1d,0.25,B67
+fluid filler,counter water bottle dispenser,1d,0.25,B67
+fluid filler,tubular member,1d,0.25,B67
+fluid filler,fluid mosaic model,0,0.00,B67
+fluid filler,filler rod,0,0.00,B67
+fluid filler,programming filler text,0,0.00,B67
+fluid filler,grain fillers,0,0.00,B67
+fluid filler,fluid intelligence,0,0.00,B67
+fluid filler,amniotic fluid,0,0.00,B67
+fluid filler,filler fluid,4,1.00,A61
+fluid filler,filler,2b,0.50,G09
+fluid filler,fuel filler,3,0.75,G09
+fluid filler,portable filler,2a,0.50,G09
+fluid filler,filling,2b,0.50,G09
+fluid filler,filler fluid,3,0.75,G09
+fluid filler,fuel filler port,2a,0.50,G09
+fluid filler,flowable filler,2b,0.50,G09
+fluid filler,fuel filling pipe,2a,0.50,G09
+fluid filler,hydraulic oil tunnel,2a,0.50,G09
+fluid filler,fuel filler neck,2b,0.50,G09
+fluid filler,hollow space filler,2b,0.50,G09
+fluid filler,pressure transfer fluid,2b,0.50,G09
+fluid filler,liquid transmitting medium,2b,0.50,G09
+fluid filler,tank filler,1b,0.25,G09
+fluid filler,syringe,1c,0.25,G09
+fluid filler,fuel fill tube,1b,0.25,G09
+fluid filler,non fluid filler,1a,0.25,G09
+fluid filler,filler inlet,1b,0.25,G09
+fluid filler,fluid remover,1a,0.25,G09
+fluid filler,fluid coupling,0,0.00,G09
+fluid filler,medium size,0,0.00,G09
+fluid filler,fluid mosaic,0,0.00,G09
+fluid filler,tunnel diode,0,0.00,G09
+fluid filler,filler rod,0,0.00,G09
+fluid filler,hollow fiber,0,0.00,G09
+aqueous alkaline processing composition,image developing element,1c,0.25,G03
+aqueous alkaline processing composition,image releasing compound,1c,0.25,G03
+aqueous alkaline processing composition,alkali developing developer,2b,0.50,G03
+aqueous alkaline processing composition,image providing means,1c,0.25,G03
+aqueous alkaline processing composition,alkaline processing developer,2b,0.50,G03
+aqueous alkaline processing composition,alkali processing solution,2b,0.50,G03
+aqueous alkaline processing composition,exposure dye providing compound,2c,0.50,G03
+aqueous alkaline processing composition,image dye in a means,2a,0.50,G03
+aqueous alkaline processing composition,alkaline developing developer,2a,0.50,G03
+aqueous alkaline processing composition,image dye,2a,0.50,G03
+aqueous alkaline processing composition,image dye releasing compound,2c,0.50,G03
+aqueous alkaline processing composition,image dye releasing means,2c,0.50,G03
+aqueous alkaline processing composition,image dye suitable,2a,0.50,G03
+aqueous alkaline processing composition,image dye to means,2b,0.50,G03
+aqueous alkaline processing composition,alkaline processing solution,2b,0.50,G03
+aqueous alkaline processing composition,alkaline halide forming developer,2a,0.50,G03
+aqueous alkaline processing composition,image development source,2a,0.50,G03
+aqueous alkaline processing composition,image development element,2a,0.50,G03
+aqueous alkaline processing composition,image developing suitable,2a,0.50,G03
+aqueous alkaline processing composition,alkaline halide developing developer,2a,0.50,G03
+aqueous alkaline processing composition,alkali halide developing developer,2a,0.50,G03
+aqueous alkaline processing composition,alkali halide forming developer,2a,0.50,G03
+aqueous alkaline processing composition,exposed development source,2b,0.50,G03
+aqueous alkaline processing composition,image developing,2a,0.50,G03
+aqueous alkaline processing composition,image dye providing means,2c,0.50,G03
+aqueous alkaline processing composition,image dye providing compound,2b,0.50,G03
+aqueous alkaline processing composition,image providing compound,2a,0.50,G03
+aqueous alkaline processing composition,alkali processing developer,2c,0.50,G03
+aqueous alkaline processing composition,image developing source,2a,0.50,G03
+aqueous alkaline processing composition,exposed developing source,2b,0.50,G03
+aqueous alkaline processing composition,alkaline developing solution,2b,0.50,G03
+aqueous alkaline processing composition,alkali developing solution,2b,0.50,G03
+aqueous alkaline processing composition,exposed developing element,2b,0.50,G03
+aqueous alkaline processing composition,exposed development element,2b,0.50,G03
+aqueous alkaline processing composition,image dye to a means,2a,0.50,G03
+aqueous alkaline processing composition,alkaline processing composition,3,0.75,G03
+aqueous alkaline processing composition,alkaline detergent composition,2a,0.50,G03
+aqueous alkaline processing composition,alkaline composition,2b,0.50,G03
+aqueous alkaline processing composition,alkaline aqueous medium,2b,0.50,G03
+aqueous alkaline processing composition,aqueous alkaline electrolyte,2b,0.50,G03
+aqueous alkaline processing composition,aqueous alkaline,2b,0.50,G03
+aqueous alkaline processing composition,aqueous alkaline developer,2b,0.50,G03
+aqueous alkaline processing composition,processing composition,2b,0.50,G03
+aqueous alkaline processing composition,photographic processing composition,1c,0.25,G03
+aqueous alkaline processing composition,contain processing composition,2b,0.50,G03
+aqueous alkaline processing composition,aqueous alkaline processing,3,0.75,G03
+aqueous alkaline processing composition,aqueous processing,2b,0.50,G03
+aqueous alkaline processing composition,aqueous potassium hydroxide composition,2a,0.50,G03
+aqueous alkaline processing composition,alkaline cleaning solutions,2b,0.50,G03
+aqueous alkaline processing composition,aqueous alkaline medium,2b,0.50,G03
+aqueous alkaline processing composition,aqueous alkaline solution,2b,0.50,G03
+aqueous alkaline processing composition,aqueous alkaline composition,2b,0.50,G03
+aqueous alkaline processing composition,strong aqueous solution,2a,0.50,G03
+aqueous alkaline processing composition,alkaline silver halide composition,2a,0.50,G03
+aqueous alkaline processing composition,suitable acidic solution,2b,0.50,G03
+aqueous alkaline processing composition,ammonium,1c,0.25,G03
+aqueous alkaline processing composition,chemical,1c,0.25,G03
+aqueous alkaline processing composition,ph,1c,0.25,G03
+aqueous alkaline processing composition,cleaning agent,1b,0.25,G03
+aqueous alkaline processing composition,hydroxide,1c,0.25,G03
+aqueous alkaline processing composition,processing agent,1b,0.25,G03
+aqueous alkaline processing composition,contact lens,0,0.00,G03
+aqueous alkaline processing composition,composition of air,0,0.00,G03
+aqueous alkaline processing composition,optical fiber,0,0.00,G03
+aqueous alkaline processing composition,blood composition,0,0.00,G03
+aqueous alkaline processing composition,chromatography,0,0.00,G03
+aqueous alkaline processing composition,process oriented,0,0.00,G03
+fixed member,member fixed,3,0.75,C03
+fixed member,fixed object,3,0.75,C03
+fixed member,fixed part,3,0.75,C03
+fixed member,constant element,2b,0.50,C03
+fixed member,fixed piece,3,0.75,C03
+fixed member,fixed unit,3,0.75,C03
+fixed member,fixed portion,3,0.75,C03
+fixed member,fixed section,3,0.75,C03
+fixed member,fixed segment,3,0.75,C03
+fixed member,entities,1d,0.25,C03
+fixed member,moveable member,1a,0.25,C03
+fixed member,articles,1d,0.25,C03
+fixed member,stable element,2a,0.50,C03
+fixed member,parts,1d,0.25,C03
+fixed member,anchored,2a,0.50,C03
+fixed member,element interface,0,0.00,C03
+fixed member,fixed deposit,0,0.00,C03
+fixed member,element software,0,0.00,C03
+fixed member,fixed cost,0,0.00,C03
+fixed member,fixed income,0,0.00,C03
+fixed member,fixed capital,0,0.00,C03
+fixed member,fixed frame member,2a,0.50,A01
+fixed member,fixed element,3,0.75,A01
+fixed member,mounting element,2b,0.50,A01
+fixed member,stationary member,2b,0.50,A01
+fixed member,fixation device,2b,0.50,A01
+fixed member,immovable member,2b,0.50,A01
+fixed member,fixed assembly,2c,0.50,A01
+fixed member,stable member,2b,0.50,A01
+fixed member,fixation members,3,0.75,A01
+fixed member,member part,1c,0.25,A01
+fixed member,supporting apparatus,1c,0.25,A01
+fixed member,element of the component,1c,0.25,A01
+fixed member,fixed to wall,1d,0.25,A01
+fixed member,part of the component,1c,0.25,A01
+fixed member,affixed to,1d,0.25,A01
+fixed member,fixed deposit,0,0.00,A01
+fixed member,fixed length,0,0.00,A01
+fixed member,fixed salary,0,0.00,A01
+fixed member,member login,0,0.00,A01
+fixed member,fixed timing,0,0.00,A01
+fixed member,fixed intervals,0,0.00,A01
+fixed member,fixed jaw member,2a,0.50,A23
+fixed member,member fixed,4,1.00,B62
+fixed member,fixed jaw member,2a,0.50,B60
+fixed member,rigid elongated member,2a,0.50,E04
+fixed member,short tubular member,2a,0.50,E04
+fixed member,short elongated rod,2b,0.50,E04
+fixed member,short member,2b,0.50,E04
+fixed member,rigid tubular member,2a,0.50,E04
+fixed member,rigid elongated rod,2a,0.50,E04
+fixed member,short tubular rod,2a,0.50,E04
+fixed member,connector,2b,0.50,E04
+fixed member,coupling,2b,0.50,E04
+fixed member,coupling detachably,1a,0.25,E04
+fixed member,short rod,2b,0.50,E04
+fixed member,rigid member,2a,0.50,E04
+fixed member,rigid tubular rod,2a,0.50,E04
+fixed member,short elongated member,2a,0.50,E04
+fixed member,coupling means,2b,0.50,E04
+fixed member,rigid rod,2b,0.50,E04
+fixed member,coupling removably,1a,0.25,E04
+fixed member,fixed portion,3,0.75,F01
+fixed member,fixing member,4,1.00,F01
+fixed member,fixed point,2a,0.50,F01
+fixed member,stationary member,3,0.75,F01
+fixed member,fixed,1c,0.25,F01
+fixed member,member fixed,2c,0.50,F01
+fixed member,fixed base member,2a,0.50,F01
+methacrylic acids,meth acids,3,0.75,G01
+methacrylic acids,methacrylate,2b,0.50,G01
+methacrylic acids,methacrylic acid,4,1.00,G01
+methacrylic acids,methacrylate acids,3,0.75,G01
+methacrylic acids,methacrylate acid,3,0.75,G01
+methacrylic acids,methacrylic,2b,0.50,G01
+methacrylic acids,meth,2b,0.50,G01
+methacrylic acids,methyl methacrylate,2a,0.50,G01
+methacrylic acids,methacrylate composition,3,0.75,G01
+methacrylic acids,acrylic acids,3,0.75,G01
+methacrylic acids,methacrylic monomers,2b,0.50,G01
+methacrylic acids,esters of acids,3,0.75,G01
+methacrylic acids,methacrylic acid esters,2a,0.50,G01
+methacrylic acids,substituted methacrylic acids,3,0.75,G01
+methacrylic acids,maa,3,0.75,G01
+methacrylic acids,biogenic aldehyde,1a,0.25,G01
+methacrylic acids,polymer,1b,0.25,G01
+methacrylic acids,modified alkylphenol aldehyde resins,1a,0.25,G01
+methacrylic acids,acid composition,1c,0.25,G01
+methacrylic acids,aldehyde protecting group,1d,0.25,G01
+methacrylic acids,non methacrylate acids,1a,0.25,G01
+methacrylic acids,omega 3 fatty acids,0,0.00,G01
+methacrylic acids,acid reflux,0,0.00,G01
+methacrylic acids,strong acids,0,0.00,G01
+methacrylic acids,acid drug,0,0.00,G01
+methacrylic acids,acid rain,0,0.00,G01
+methacrylic acids,methacrylic acid,4,1.00,C10
+methacrylic acids,maleic acids,1d,0.25,C10
+methacrylic acids,maleic acid,1d,0.25,C10
+methacrylic acids,methacrylic,2b,0.50,C10
+methacrylic acids,maleic,1c,0.25,C10
+methacrylic acids,c4h6o2,3,0.75,C10
+methacrylic acids,maa,2b,0.50,C10
+methacrylic acids,methylpropenoic acid,3,0.75,C10
+methacrylic acids,methyl acrylic acid,3,0.75,C10
+methacrylic acids,methyl methacrylate,2b,0.50,C10
+methacrylic acids,acido metacrilico,3,0.75,C10
+methacrylic acids,polymethyl methacrylate,2b,0.50,C10
+methacrylic acids,organic compound,1c,0.25,C10
+methacrylic acids,colorless liquid,1c,0.25,C10
+methacrylic acids,viscous liquid,1c,0.25,C10
+methacrylic acids,melting point,1c,0.25,C10
+methacrylic acids,mineral acid,0,0.00,C10
+methacrylic acids,math numericals,0,0.00,C10
+methacrylic acids,sulfuric acid,0,0.00,C10
+methacrylic acids,master of none,0,0.00,C10
+methacrylic acids,hydrochloric acid,0,0.00,C10
+methacrylic acids,monkey in the zoo,0,0.00,C10
+electro luminescence element,el luminescence element,1d,0.25,C09
+electro luminescence element,el display diode,2b,0.50,C09
+electro luminescence element,thin emitting device,1c,0.25,C09
+electro luminescence element,thin emitting diode,1c,0.25,C09
+electro luminescence element,thin display diode,2b,0.50,C09
+electro luminescence element,electro el element,1d,0.25,C09
+electro luminescence element,el luminescence device,2b,0.50,C09
+electro luminescence element,el emitting diode,2b,0.50,C09
+electro luminescence element,light emitting display device,3,0.75,C09
+electro luminescence element,el luminescence elements,1d,0.25,C09
+electro luminescence element,electro luminescence el,1d,0.25,C09
+electro luminescence element,el luminescence material,1d,0.25,C09
+electro luminescence element,electroluminescent diode,2b,0.50,C09
+electro luminescence element,el diode,2b,0.50,C09
+electro luminescence element,el display device,2b,0.50,C09
+electro luminescence element,electroluminescent el,1d,0.25,C09
+electro luminescence element,electro el material,1d,0.25,C09
+electro luminescence element,light device,2b,0.50,C09
+electro luminescence element,el luminescence el element,1d,0.25,C09
+electro luminescence element,light emitting device,2b,0.50,C09
+electro luminescence element,light emitting diode,2b,0.50,C09
+electro luminescence element,light display device,2b,0.50,C09
+electro luminescence element,thin emitting display device,2b,0.50,C09
+electro luminescence element,light emitting,1c,0.25,C09
+electro luminescence element,electro luminescence el element,1d,0.25,C09
+electro luminescence element,electro luminescence,1c,0.25,C09
+electro luminescence element,electro luminescence device,2b,0.50,C09
+electro luminescence element,el device,2b,0.50,C09
+electro luminescence element,electroluminescent element,4,1.00,C09
+electro luminescence element,el emitting,1d,0.25,C09
+electro luminescence element,el luminescence,1d,0.25,C09
+electro luminescence element,electro el elements,1d,0.25,C09
+electro luminescence element,light display diode,2b,0.50,C09
+electro luminescence element,electroluminescent luminescence,1d,0.25,C09
+electro luminescence element,electro luminescence elements,4,1.00,C09
+electro luminescence element,electroluminescent,1c,0.25,C09
+electro luminescence element,electro luminescence material,2b,0.50,C09
+electro luminescence element,el element,3,0.75,C09
+electro luminescence element,el elements,3,0.75,C09
+electro luminescence element,el luminescence el,1d,0.25,C09
+electro luminescence element,electroluminescent device,2b,0.50,C09
+electro luminescence element,el emitting device,1d,0.25,C09
+electro luminescence element,light emitting display diode,2b,0.50,C09
+electro luminescence element,thin emitting display diode,2b,0.50,C09
+electro luminescence element,thin display device,2b,0.50,C09
+electro luminescence element,organic electro luminescence device,2b,0.50,C09
+electro luminescence element,electro luminescence display device,2b,0.50,C09
+electro luminescence element,luminescence element,2b,0.50,C09
+electro luminescence element,led,2a,0.50,C09
+electro luminescence element,optical phenomenon element,2b,0.50,C09
+electro luminescence element,light sources element,2b,0.50,C09
+electro luminescence element,electrical phenomenon element,2b,0.50,C09
+electro luminescence element,electro radiating element,3,0.75,C09
+electro luminescence element,zinc sulfide doped with copper,2b,0.50,C09
+electro luminescence element,luminescent layer,2b,0.50,C09
+electro luminescence element,zinc sulfide doped with manganese,2b,0.50,C09
+electro luminescence element,phosphor materials,1c,0.25,C09
+electro luminescence element,chemiluminescence element,1a,0.25,C09
+electro luminescence element,conductor material,1d,0.25,C09
+electro luminescence element,sonoluminescence element,1a,0.25,C09
+electro luminescence element,silicon nanostructure,1d,0.25,C09
+electro luminescence element,mechanoluminescence element,1a,0.25,C09
+electro luminescence element,bus conductor,0,0.00,C09
+electro luminescence element,electric car,0,0.00,C09
+electro luminescence element,material science,0,0.00,C09
+electro luminescence element,electric charger,0,0.00,C09
+electro luminescence element,light rays,0,0.00,C09
+electro luminescence element,electric bus,0,0.00,C09
+pedal mounting,respective mounting,2b,0.50,B64
+pedal mounting,respective pedal,2b,0.50,B64
+pedal mounting,associated pedal,2b,0.50,B64
+pedal mounting,support,1c,0.25,B64
+pedal mounting,mounting,2b,0.50,B64
+pedal mounting,respective pedal mounting,3,0.75,B64
+pedal mounting,associated pedal mounting,3,0.75,B64
+pedal mounting,associated mounting,2b,0.50,B64
+pedal mounting,pedal support,2c,0.50,B64
+pedal mounting,pedal,2b,0.50,B64
+pedal mounting,body mounting,2b,0.50,G05
+pedal mounting,engine mounting,2b,0.50,G05
+pedal mounting,mounting,2b,0.50,B62
+pedal mounting,support,1b,0.25,B62
+pedal mounting,pedal,2b,0.50,B62
+pedal mounting,pedals,2b,0.50,B62
+pedal mounting,pedal means,2b,0.50,B62
+pedal mounting,screw,1b,0.25,B62
+pedal mounting,pedal mounting,4,1.00,B62
+pedal mounting,pedal mount,4,1.00,B62
+pedal mounting,pedal mounting tape,2a,0.50,B62
+pedal mounting,mounting of the pedal,4,1.00,B62
+pedal mounting,guitar pedal mounting,2a,0.50,B62
+pedal mounting,pedal plate,2a,0.50,B62
+pedal mounting,pedal system,2b,0.50,B62
+pedal mounting,pedal assembly,2b,0.50,B62
+pedal mounting,traveling server,1d,0.25,B62
+pedal mounting,guide rod,1b,0.25,B62
+pedal mounting,collapsible golf scooter cart,1d,0.25,B62
+pedal mounting,bracket pin,1b,0.25,B62
+pedal mounting,maintenance assemblies,1d,0.25,B62
+pedal mounting,mudguard,1d,0.25,B62
+pedal mounting,mounting in react,0,0.00,B62
+pedal mounting,pedal pulses,0,0.00,B62
+pedal mounting,pitting pedal edema,0,0.00,B62
+pedal mounting,pedal vein,0,0.00,B62
+pedal mounting,pedal edema,0,0.00,B62
+pedal mounting,tv wall mounting,0,0.00,B62
+pedal mounting,mounting,2b,0.50,F16
+pedal mounting,sprocket mounting,2a,0.50,F16
+pedal mounting,pedal mounting,4,1.00,F16
+pedal mounting,speed change pedals,2a,0.50,F16
+pedal mounting,pedal mounting bracket,2a,0.50,F16
+pedal mounting,foot plate,2b,0.50,F16
+pedal mounting,pedal adapter mounting,2a,0.50,F16
+pedal mounting,connecting rod,2b,0.50,F16
+pedal mounting,accelerator pedal mounting,2a,0.50,F16
+pedal mounting,control lever,2b,0.50,F16
+pedal mounting,lower magnetic bearing,1d,0.25,F16
+pedal mounting,board,1c,0.25,F16
+pedal mounting,controlling gear shifting,1d,0.25,F16
+pedal mounting,brackets,1b,0.25,F16
+pedal mounting,wheel hub drive,1d,0.25,F16
+pedal mounting,nut and bolts,1b,0.25,F16
+pedal mounting,pedal edema,0,0.00,F16
+pedal mounting,pedal edema model,0,0.00,F16
+pedal mounting,bike support,0,0.00,F16
+pedal mounting,pedal pulses,0,0.00,F16
+pedal mounting,racket mounting,0,0.00,F16
+stream media,media data stream,3,0.75,H04
+stream media,media content stream,3,0.75,H04
+stream media,media stream,2a,0.50,H04
+stream media,broadcast media stream,3,0.75,H04
+stream media,streaming media,4,1.00,H04
+stream media,multimedia,3,0.75,H04
+stream media,stream multimedia,3,0.75,H04
+stream media,video streaming,2a,0.50,H04
+stream media,delivering multimedia data,3,0.75,H04
+stream media,mobile stream,2a,0.50,H04
+stream media,transfer of data,2b,0.50,H04
+stream media,streaming platform,2b,0.50,H04
+stream media,hiding a media uri,1a,0.25,H04
+stream media,media data,1d,0.25,H04
+stream media,hiding media processing signals,1a,0.25,H04
+stream media,audio,1c,0.25,H04
+stream media,hiding media information,1a,0.25,H04
+stream media,download,1d,0.25,H04
+stream media,water stream,0,0.00,H04
+stream media,streamline,0,0.00,H04
+stream media,stream of ribbons,0,0.00,H04
+stream media,streamline flow,0,0.00,H04
+stream media,media attention,0,0.00,H04
+stream media,stream deck,0,0.00,H04
+synthesize salt,synthesize in analogy,0,0.00,C01
+synthesize salt,synthesize polynucleotides,0,0.00,C01
+synthesize salt,synthesize in accordance,0,0.00,C01
+synthesize salt,synthesize molecular sieve,1d,0.25,C01
+synthesize salt,mss,2a,0.50,C01
+synthesize salt,synthesizing salt,4,1.00,C01
+synthesize salt,synthesize nanoparticles,2b,0.50,C01
+synthesize salt,salt preparation,3,0.75,C01
+synthesize salt,prepare crystalline derivatives,3,0.75,C01
+synthesize salt,manufacture of salt,3,0.75,C01
+synthesize salt,extraction,1d,0.25,C01
+synthesize salt,saltpeter,1d,0.25,C01
+synthesize salt,preparation,1c,0.25,C01
+synthesize salt,non covalent interactions,1d,0.25,C01
+synthesize salt,development,1d,0.25,C01
+synthesize salt,salt bridge,1d,0.25,C01
+synthesize salt,derivative instruments,0,0.00,C01
+synthesize salt,salting in,0,0.00,C01
+synthesize salt,equity derivative,0,0.00,C01
+synthesize salt,synthesiser,0,0.00,C01
+synthesize salt,photosynthesis,0,0.00,C01
+synthesize salt,synthesizer,0,0.00,C01
+word lattice,dictionary,2a,0.50,G10
+word lattice,database,2c,0.50,G10
+word lattice,word dictionary,3,0.75,G10
+word lattice,phonetic dictionary,3,0.75,G10
+word lattice,language model,2b,0.50,G10
+word lattice,phoneme lattice,3,0.75,G10
+word lattice,word sequence,3,0.75,G10
+word lattice,word sequences,3,0.75,G10
+word lattice,non word lattice,1a,0.25,G10
+word lattice,music,1c,0.25,G10
+word lattice,musical tuning,1c,0.25,G10
+word lattice,structure,1d,0.25,G10
+word lattice,lattice fence,0,0.00,G10
+word lattice,polymer lattice panel,0,0.00,G10
+word lattice,lattice panel,0,0.00,G10
+word lattice,model platform,0,0.00,G10
+word lattice,lattice permutation,0,0.00,G10
+word lattice,safety framework,0,0.00,G10
+mns,cores,1c,0.25,C04
+mns,materials,1d,0.25,C04
+pillar member,heater,1c,0.25,F21
+pillar member,cooling fins,1c,0.25,F21
+pillar member,heating fins,1c,0.25,F21
+pillar member,housing,1c,0.25,F21
+pillar member,semiconductor body,1c,0.25,F21
+pillar member,semiconductor member,1c,0.25,F21
+pillar member,leds,0,0.00,F21
+pillar member,substrate,1b,0.25,F21
+pillar member,led body,0,0.00,F21
+pillar member,light emitting body,0,0.00,F21
+pillar member,pillar portion,3,0.75,F21
+pillar member,reinforcing member,2b,0.50,F21
+pillar member,pillar element,3,0.75,F21
+pillar member,sidesill,2b,0.50,F21
+pillar member,vertical pillar member,2a,0.50,F21
+pillar member,pillar members,4,1.00,F21
+pillar member,pillar,2b,0.50,F21
+pillar member,reinforcing bracket,3,0.75,F21
+pillar member,element,1c,0.25,F21
+pillar member,lateral member,1d,0.25,F21
+pillar member,frame,1c,0.25,F21
+pillar member,upper lateral frame,1d,0.25,F21
+pillar member,portion,1c,0.25,F21
+pillar member,strut tower bar,1c,0.25,F21
+pillar member,pillar tap,0,0.00,F21
+pillar member,led light,0,0.00,F21
+pillar member,pillar cock,0,0.00,F21
+pillar member,tail fin,0,0.00,F21
+pillar member,membrane,0,0.00,F21
+pillar member,cooling sheet,0,0.00,F21
+pillar member,vehicle,1c,0.25,B60
+pillar member,roof,2b,0.50,B60
+pillar member,roof panel,2b,0.50,B60
+pillar member,vehicle ditch,1d,0.25,B60
+pillar member,vehicle panel,2b,0.50,B60
+pillar member,flange,1b,0.25,B60
+pillar member,pillar,2b,0.50,B60
+pillar member,post member,3,0.75,B60
+pillar member,automobile,1c,0.25,B60
+pillar member,roof ditch,2c,0.50,B60
+pillar member,flanges,1b,0.25,B60
+pillar member,roof ditch flange,2a,0.50,B60
+pillar member,roof ditch flanges,2a,0.50,B60
+pillar member,cylindrical pillar member,2a,0.50,E04
+pillar member,connecting member,2b,0.50,E04
+pillar member,hollow pillar members,2a,0.50,E04
+pillar member,connector,1d,0.25,E04
+pillar member,limb,1d,0.25,E04
+pillar member,hollow pillar member,2a,0.50,E04
+pillar member,hollow member,2b,0.50,E04
+pillar member,cylindrical pillar members,2a,0.50,E04
+pillar member,cylindrical member,2b,0.50,E04
+pillar member,anchor,1d,0.25,E04
+pillar member,pillar,2b,0.50,E04
+pillar member,pillar members,4,1.00,E04
+pillar member,column member,2b,0.50,E04
+pillar member,connecting portion,2b,0.50,E04
+pillar member,anchor member,2b,0.50,E04
+pillar member,shoulder,1d,0.25,F16
+pillar member,threaded end,1b,0.25,F16
+pillar member,threaded second end,1b,0.25,F16
+pillar member,pointed second end,1b,0.25,F16
+pillar member,pointed second portion,1b,0.25,F16
+pillar member,pointed first end,1b,0.25,F16
+pillar member,tip,1b,0.25,F16
+pillar member,threaded second portion,1b,0.25,F16
+pillar member,threaded first end,1b,0.25,F16
+pillar member,pillar member,4,1.00,F16
+pillar member,upper reinforcing member,2a,0.50,F16
+pillar member,pillar parts,3,0.75,F16
+pillar member,beam member,3,0.75,F16
+pillar member,hinge pillar member,2a,0.50,F16
+pillar member,roof cross member,2a,0.50,F16
+pillar member,conductive pillar member,2a,0.50,F16
+pillar member,horizontal member,2b,0.50,F16
+pillar member,guide bearing,1d,0.25,F16
+pillar member,housing,1c,0.25,F16
+pillar member,planet gear device,1d,0.25,F16
+pillar member,steel plates,1b,0.25,F16
+pillar member,adjustable furnace,1d,0.25,F16
+pillar member,support structure,1c,0.25,F16
+pillar member,member control programmer,0,0.00,F16
+pillar member,parliament member,0,0.00,F16
+pillar member,scented pillar candles,0,0.00,F16
+pillar member,second runner,0,0.00,F16
+pillar member,artificial pillar candles,0,0.00,F16
+pillar member,tip top,0,0.00,F16
+stimulate vagus nerve,stimulate heart,1b,0.25,A61
+stimulate vagus nerve,drive pump,1c,0.25,A61
+stimulate vagus nerve,drive actuator,1c,0.25,A61
+stimulate vagus nerve,control the device,1c,0.25,A61
+stimulate vagus nerve,control the unit,1c,0.25,A61
+stimulate vagus nerve,drive the unit,1c,0.25,A61
+stimulate vagus nerve,control pump,1c,0.25,A61
+stimulate vagus nerve,control the of unit,1c,0.25,A61
+stimulate vagus nerve,control actuator,1c,0.25,A61
+stimulate vagus nerve,control device,1c,0.25,A61
+stimulate vagus nerve,control unit,1c,0.25,A61
+stimulate vagus nerve,drive the device,1c,0.25,A61
+stimulate vagus nerve,drive control device,1c,0.25,A61
+stimulate vagus nerve,control the control device,1c,0.25,A61
+stimulate vagus nerve,control the control unit,1c,0.25,A61
+stimulate vagus nerve,stimulate nerve,2b,0.50,A61
+stimulate vagus nerve,apply to vagus nerve,2b,0.50,A61
+stimulate vagus nerve,vagus nerve,2b,0.50,A61
+stimulate vagus nerve,vagus nerve stimulation,4,1.00,A61
+stimulate vagus nerve,pneumogastric nerve,3,0.75,A61
+stimulate vagus nerve,restoring vagus nerve,3,0.75,A61
+stimulate vagus nerve,cranial nerve,2b,0.50,A61
+stimulate vagus nerve,restore vagus nerve,3,0.75,A61
+stimulate vagus nerve,parasympathetic control,2b,0.50,A61
+stimulate vagus nerve,nerve,2b,0.50,A61
+stimulate vagus nerve,accessory nerves,2b,0.50,A61
+stimulate vagus nerve,stimulate pneumogastric nerve,3,0.75,A61
+stimulate vagus nerve,nerves that emerge from the brain,1c,0.25,A61
+stimulate vagus nerve,depression,1b,0.25,A61
+stimulate vagus nerve,head and neck,1c,0.25,A61
+stimulate vagus nerve,device,1b,0.25,A61
+stimulate vagus nerve,special senses,1c,0.25,A61
+stimulate vagus nerve,tone,1b,0.25,A61
+stimulate vagus nerve,stimulated emission,0,0.00,A61
+stimulate vagus nerve,stimulation test,0,0.00,A61
+stimulate vagus nerve,to have nerves of steel,0,0.00,A61
+stimulate vagus nerve,brain stimulation,0,0.00,A61
+stimulate vagus nerve,nervous during interview,0,0.00,A61
+stimulate vagus nerve,nerve pain,0,0.00,A61
+stimulate vagus nerve,drive control unit,1c,0.25,A61
+atomize in nozzle,atomize material,2b,0.50,B01
+atomize in nozzle,atomize air,2b,0.50,B01
+atomize in nozzle,atomize by air,2b,0.50,B01
+atomize in nozzle,atomize liquid fuel,2b,0.50,B01
+atomize in nozzle,suck in nozzle,2b,0.50,B01
+atomize in nozzle,provide in nozzle,2b,0.50,B01
+atomize in nozzle,incorporate in nozzle,2b,0.50,B01
+atomize in nozzle,terminate in nozzle,2b,0.50,B01
+atomize in nozzle,air atomizing nozzles,2a,0.50,B01
+atomize in nozzle,spray nozzle,2b,0.50,B01
+atomize in nozzle,atomizing spray orifices,2a,0.50,B01
+atomize in nozzle,atomizing fluids,2b,0.50,B01
+atomize in nozzle,atomizing ducts,2b,0.50,B01
+atomize in nozzle,atomizing air,2b,0.50,B01
+atomize in nozzle,atomizing means,2b,0.50,B01
+atomize in nozzle,nebulizer,2b,0.50,B01
+atomize in nozzle,free flowing particles,1c,0.25,B01
+atomize in nozzle,feed line,1c,0.25,B01
+atomize in nozzle,liquid discharging,1c,0.25,B01
+atomize in nozzle,emission,1c,0.25,B01
+atomize in nozzle,control of liquid,1c,0.25,B01
+atomize in nozzle,speed supply,1c,0.25,B01
+atomize in nozzle,air pressure,0,0.00,B01
+atomize in nozzle,atomic bonding,0,0.00,B01
+atomize in nozzle,food duct,0,0.00,B01
+atomize in nozzle,atmosphere,0,0.00,B01
+atomize in nozzle,bile duct,0,0.00,B01
+atomize in nozzle,puzzle,0,0.00,B01
+contact engaging portion,engaging contact,2b,0.50,A45
+contact engaging portion,contact engaging,2b,0.50,A45
+contact engaging portion,contact entangling portion,2b,0.50,A45
+contact engaging portion,contact assembly,2b,0.50,A45
+contact engaging portion,contact point portion,2b,0.50,A45
+contact engaging portion,connecting regions,2b,0.50,A45
+contact engaging portion,contact junction portion,2b,0.50,A45
+contact engaging portion,attachment portion,2b,0.50,A45
+contact engaging portion,contact terminal portion,2b,0.50,A45
+contact engaging portion,contacting parts,2b,0.50,A45
+contact engaging portion,point portion,1b,0.25,A45
+contact engaging portion,non contact assembly,1a,0.25,A45
+contact engaging portion,junction portion,1b,0.25,A45
+contact engaging portion,locking elements,1b,0.25,A45
+contact engaging portion,terminal portion,1b,0.25,A45
+contact engaging portion,fixation members,1c,0.25,A45
+contact engaging portion,engaging fire,0,0.00,A45
+contact engaging portion,contact lens,0,0.00,A45
+contact engaging portion,engaging pitch,0,0.00,A45
+contact engaging portion,contact information,0,0.00,A45
+contact engaging portion,engaging science and technology,0,0.00,A45
+contact engaging portion,user engagement,0,0.00,A45
+contact engaging portion,contact means,2b,0.50,H01
+contact engaging portion,contact portion,2b,0.50,H01
+contact engaging portion,engaging contact,2b,0.50,H01
+contact engaging portion,contact engaging,2b,0.50,H01
+contact engaging portion,spring contact,2a,0.50,H01
+contact engaging portion,conductor engaging portion,3,0.75,H01
+contact engaging portion,receptacle contact portion,2a,0.50,H01
+contact engaging portion,electrical contact,2b,0.50,H01
+contact engaging portion,terminal engagement,2b,0.50,H01
+contact engaging portion,second contact engaging portion,2a,0.50,H01
+contact engaging portion,projecting contact portion,2a,0.50,H01
+contact engaging portion,electrical contact portion,2b,0.50,H01
+contact engaging portion,flexible printed circuit board,1c,0.25,H01
+contact engaging portion,mating portions,1c,0.25,H01
+contact engaging portion,non contact engaging portion,1a,0.25,H01
+contact engaging portion,dc value,1c,0.25,H01
+contact engaging portion,magnetic lock system,1c,0.25,H01
+contact engaging portion,reference level,1c,0.25,H01
+contact engaging portion,portion divider,0,0.00,H01
+contact engaging portion,clamp for pipe,0,0.00,H01
+contact engaging portion,contact lens,0,0.00,H01
+contact engaging portion,clamp meter,0,0.00,H01
+contact engaging portion,white board,0,0.00,H01
+contact engaging portion,circumference of a circle,0,0.00,H01
+high performance liquid chromatograph,high performance liquid system,2b,0.50,G01
+high performance liquid chromatograph,high liquid chromatograph system,2b,0.50,G01
+high performance liquid chromatograph,normal lc,0,0.00,G01
+high performance liquid chromatograph,high performance a liquid system,2b,0.50,G01
+high performance liquid chromatograph,high performance a chromatograph system,2b,0.50,G01
+high performance liquid chromatograph,high a chromatograph,2b,0.50,G01
+high performance liquid chromatograph,lc chromatograph,2b,0.50,G01
+high performance liquid chromatograph,normal,0,0.00,G01
+high performance liquid chromatograph,normal liquid,1d,0.25,G01
+high performance liquid chromatograph,normal performance chromatography,2b,0.50,G01
+high performance liquid chromatograph,high analysis liquid chromatograph,3,0.75,G01
+high performance liquid chromatograph,normal liquid chromatography,2a,0.50,G01
+high performance liquid chromatograph,high liquid chromatograph,2b,0.50,G01
+high performance liquid chromatograph,normal performance liquid,2b,0.50,G01
+high performance liquid chromatograph,performance liquid,2b,0.50,G01
+high performance liquid chromatograph,performance liquid chromatography,2b,0.50,G01
+high performance liquid chromatograph,performance chromatography,2b,0.50,G01
+high performance liquid chromatograph,gp chromatograph,2c,0.50,G01
+high performance liquid chromatograph,gp lc,2c,0.50,G01
+high performance liquid chromatograph,high liquid system,2b,0.50,G01
+high performance liquid chromatograph,high a liquid system,0,0.00,G01
+high performance liquid chromatograph,high performance liquid chromatography,4,1.00,G01
+high performance liquid chromatograph,high analysis liquid chromatography,3,0.75,G01
+high performance liquid chromatograph,high performance liquid chromatograph system,3,0.75,G01
+high performance liquid chromatograph,determine by performance liquid chromatography,2a,0.50,G01
+high performance liquid chromatograph,performance liquid chromatograph,2b,0.50,G01
+high performance liquid chromatograph,high purity liquid,2a,0.50,G01
+high performance liquid chromatograph,high speed liquid,2a,0.50,G01
+high performance liquid chromatograph,high boiling liquid,2a,0.50,G01
+high performance liquid chromatograph,liquid chromatograph mass,2a,0.50,G01
+high performance liquid chromatograph,liquid chromatograph,2b,0.50,G01
+high performance liquid chromatograph,liquid chromatograph mass spectrometer,2a,0.50,G01
+high performance liquid chromatograph,dynamic high performance liquid chromatograph device,3,0.75,G01
+high performance liquid chromatograph,high pressure liquid chromatography,3,0.75,G01
+high performance liquid chromatograph,ultrahigh pressure liquid,2a,0.50,G01
+high performance liquid chromatograph,analytical chemistry,2b,0.50,G01
+high performance liquid chromatograph,liquid phase simulation,2b,0.50,G01
+high performance liquid chromatograph,hplc,3,0.75,G01
+high performance liquid chromatograph,accumulated error test platform,2c,0.50,G01
+high performance liquid chromatograph,component mixture,2b,0.50,G01
+high performance liquid chromatograph,detachment tool,1c,0.25,G01
+high performance liquid chromatograph,chemistry,1c,0.25,G01
+high performance liquid chromatograph,detachment interface,1d,0.25,G01
+high performance liquid chromatograph,liquid,1c,0.25,G01
+high performance liquid chromatograph,low performing agent,1a,0.25,G01
+high performance liquid chromatograph,low performance liquid chromatograph,1a,0.25,G01
+high performance liquid chromatograph,performance appraisal,0,0.00,G01
+high performance liquid chromatograph,performance management,0,0.00,G01
+high performance liquid chromatograph,liquid oxygen,0,0.00,G01
+high performance liquid chromatograph,liquid paraffin,0,0.00,G01
+high performance liquid chromatograph,liquid mutual funds,0,0.00,G01
+high performance liquid chromatograph,high protein,0,0.00,G01
+high performance liquid chromatograph,quantitative chromatograph coupled,2a,0.50,H01
+high performance liquid chromatograph,liquid chromatography,2b,0.50,H01
+high performance liquid chromatograph,chromatograph,2b,0.50,H01
+high performance liquid chromatograph,liquid chromatograph coupled,2b,0.50,H01
+high performance liquid chromatograph,liquid chromatography coupled,2b,0.50,H01
+high performance liquid chromatograph,liquid chromatograph,2b,0.50,H01
+high performance liquid chromatograph,gas chromatography,2c,0.50,H01
+high performance liquid chromatograph,quantitative chromatograph,2b,0.50,H01
+high performance liquid chromatograph,quantitative chromatography coupled,2b,0.50,H01
+high performance liquid chromatograph,gas chromatograph,2c,0.50,H01
+high performance liquid chromatograph,determine by performance liquid chromatography,3,0.75,H01
+high performance liquid chromatograph,performance liquid chromatography,2b,0.50,H01
+high performance liquid chromatograph,performance liquid chromatograph,2b,0.50,H01
+high performance liquid chromatograph,performance liquid,1b,0.25,H01
+high performance liquid chromatograph,high purity liquid,1b,0.25,H01
+high performance liquid chromatograph,high speed liquid,1b,0.25,H01
+high performance liquid chromatograph,high boiling liquid,1b,0.25,H01
+high performance liquid chromatograph,high performance liquid chromatography,4,1.00,H01
+high performance liquid chromatograph,liquid chromatograph mass,2a,0.50,H01
+high performance liquid chromatograph,liquid chromatograph mass spectrometer,2a,0.50,H01
+high performance liquid chromatograph,liquid chromatography apparatus,2b,0.50,H01
+high performance liquid chromatograph,liquid chromatography unit,2b,0.50,H01
+high performance liquid chromatograph,liquid chromatography system,2b,0.50,H01
+high performance liquid chromatograph,liquid chromatograph column,2a,0.50,H01
+high performance liquid chromatograph,high speed liquid chromatography,3,0.75,H01
+high performance liquid chromatograph,high pressure liquid chromatography,3,0.75,H01
+high performance liquid chromatograph,high performance chromatography,2b,0.50,H01
+high performance liquid chromatograph,separation column,1b,0.25,H01
+high performance liquid chromatograph,ultraviolet absorption,1c,0.25,H01
+high performance liquid chromatograph,analysis column,1b,0.25,H01
+high performance liquid chromatograph,waters instrument,1b,0.25,H01
+high performance liquid chromatograph,sample injector,1b,0.25,H01
+high performance liquid chromatograph,photodiode,1d,0.25,H01
+high performance liquid chromatograph,liquid funds,0,0.00,H01
+high performance liquid chromatograph,high speed boat,0,0.00,H01
+high performance liquid chromatograph,liquid assets,0,0.00,H01
+high performance liquid chromatograph,high venture vessel,0,0.00,H01
+high performance liquid chromatograph,liquid cryoto,0,0.00,H01
+high performance liquid chromatograph,liquid vessel,0,0.00,H01
+form over electrode layer,form over electrode,3,0.75,G02
+form over electrode layer,dispose over electrode layer,3,0.75,G02
+form over electrode layer,form over bottom electrode,2a,0.50,G02
+form over electrode layer,dispose over electrode,3,0.75,G02
+form over electrode layer,electrochemical double layer,2a,0.50,G02
+form over electrode layer,conductive layer formed,2b,0.50,G02
+form over electrode layer,formed on electrode surfaces,3,0.75,G02
+form over electrode layer,form over conductive film,2a,0.50,G02
+form over electrode layer,catalyst layers,2a,0.50,G02
+form over electrode layer,electrode structure,2b,0.50,G02
+form over electrode layer,membrane electrode assembly,2c,0.50,G02
+form over electrode layer,semiconductor layer formation,2c,0.50,G02
+form over electrode layer,degrade by dissolving,1a,0.25,G02
+form over electrode layer,substrate,1b,0.25,G02
+form over electrode layer,dissolution medium,1d,0.25,G02
+form over electrode layer,electrical conductor,1c,0.25,G02
+form over electrode layer,disintegrating core,1b,0.25,G02
+form over electrode layer,semiconductor,1b,0.25,G02
+form over electrode layer,application form,0,0.00,G02
+form over electrode layer,soft layer,0,0.00,G02
+form over electrode layer,admission form,0,0.00,G02
+form over electrode layer,over table,0,0.00,G02
+form over electrode layer,registration form,0,0.00,G02
+form over electrode layer,form agent,0,0.00,G02
+slide tube,slide on tube,2b,0.50,A44
+slide tube,slide in tube,2b,0.50,B67
+slide tube,slide tube,4,1.00,B67
+slide tube,sliding tubes,4,1.00,B67
+slide tube,slide pipe,3,0.75,B67
+slide tube,tilling tubes,3,0.75,B67
+slide tube,slide conduit,3,0.75,B67
+slide tube,dip tube,3,0.75,B67
+slide tube,tube system,2b,0.50,B67
+slide tube,switch valve,1d,0.25,B67
+slide tube,fixed tube,1a,0.25,B67
+slide tube,liquid temperature detectors,1d,0.25,B67
+slide tube,tube,1c,0.25,B67
+slide tube,evacuation system,1d,0.25,B67
+slide tube,slide plate,1d,0.25,B67
+slide tube,slide egg,0,0.00,B67
+slide tube,tube tyre,0,0.00,B67
+slide tube,blood collection tube,0,0.00,B67
+slide tube,slide screen,0,0.00,B67
+slide tube,blood vessels vascular tube,0,0.00,B67
+slide tube,rubber tube,0,0.00,B67
+slide tube,sliding tube,4,1.00,A61
+slide tube,bracket,0,0.00,F25
+slide tube,slide plate,2c,0.50,F25
+slide tube,sliding tube,4,1.00,F25
+slide tube,slide,2b,0.50,F25
+slide tube,rectangular slide tube,2a,0.50,F25
+slide tube,tube,2b,0.50,F25
+slide tube,slide onto tube,2a,0.50,F25
+slide tube,slide along tube,2b,0.50,A47
+slide tube,slide along tube,3,0.75,F03
+slide tube,slide in tube,4,1.00,F21
+slide tube,slide onto tube,2b,0.50,F21
+slide tube,slide channel,3,0.75,F21
+slide tube,sliding tube,4,1.00,F21
+slide tube,slidably tube,4,1.00,F21
+slide tube,tube sliding,4,1.00,F21
+slide tube,slide pipe,3,0.75,F21
+slide tube,guide tube,3,0.75,F21
+slide tube,slidably pipe,3,0.75,F21
+slide tube,slidable tube,4,1.00,F21
+slide tube,shape,1c,0.25,F21
+slide tube,support sleeve,1d,0.25,F21
+slide tube,metal,1c,0.25,F21
+slide tube,actuating rod,1d,0.25,F21
+slide tube,groove,1c,0.25,F21
+slide tube,thruster sleeve,1d,0.25,F21
+slide tube,tube map,0,0.00,F21
+slide tube,slide hammer,0,0.00,F21
+slide tube,tube mate,0,0.00,F21
+slide tube,slide share,0,0.00,F21
+slide tube,slide sorter,0,0.00,F21
+slide tube,tube top,0,0.00,F21
+slide tube,standard slide tube,2a,0.50,B60
+slide tube,standard tube,2b,0.50,B60
+slide tube,tube,2b,0.50,B60
+slide tube,slide,2b,0.50,B60
+slide tube,slide tubes,4,1.00,B60
+slide tube,sliding tube,4,1.00,B60
+slide tube,sliding tubes,4,1.00,B60
+slide tube,slide on tube,2a,0.50,B60
+disk component,seal,1b,0.25,H01
+disk component,membrane,2a,0.50,H01
+disk component,disc component,4,1.00,H01
+disk component,sealing disk,2a,0.50,H01
+disk component,seal disk,2a,0.50,H01
+disk component,component,2b,0.50,H01
+disk component,disk,2b,0.50,H01
+disk component,disc components,4,1.00,H01
+disk component,sealing member,1c,0.25,H01
+disk component,seal member,1c,0.25,H01
+disk component,disk components,4,1.00,H01
+disk component,diaphragm,2b,0.50,H01
+disk component,disk drive component,3,0.75,H01
+disk component,second disk component,3,0.75,H01
+disk component,cylindrical spacer ring,2a,0.50,H01
+disk component,annular plate,2a,0.50,H01
+disk component,inner circular plate,2a,0.50,H01
+disk component,disk element,3,0.75,H01
+disk component,cup shaped disk,2a,0.50,H01
+disk component,device housing,1c,0.25,H01
+disk component,shaft assembly,1c,0.25,H01
+disk component,signals path,1b,0.25,H01
+disk component,support ring,1c,0.25,H01
+disk component,rotating device,1c,0.25,H01
+disk component,side partition,1c,0.25,H01
+disk component,housing construction,0,0.00,H01
+disk component,disc golf,0,0.00,H01
+disk component,finger ring,0,0.00,H01
+disk component,components of report,0,0.00,H01
+disk component,member number,0,0.00,H01
+disk component,components vectors,0,0.00,H01
+disk component,disk,2b,0.50,F24
+disk component,annular component,2c,0.50,F24
+disk component,annular disk preferably,2a,0.50,F24
+disk component,side surface,1c,0.25,F24
+disk component,outer surface,1c,0.25,F24
+disk component,side portion,1c,0.25,F24
+disk component,panel,2b,0.50,F24
+disk component,component,1b,0.25,F24
+disk component,disk member,3,0.75,F24
+disk component,disk preferably,2b,0.50,F24
+disk component,disk component preferably,3,0.75,F24
+disk component,annular disk component,2a,0.50,F24
+disk component,spacer,2b,0.50,F24
+disk component,disk drive component,2a,0.50,F24
+disk component,circular plate,2b,0.50,F24
+disk component,plate like member,2b,0.50,F24
+disk component,edge support ring,2c,0.50,F24
+disk component,cylindrical spacer ring,2a,0.50,F24
+disk component,open disc,1d,0.25,F24
+disk component,plate,1d,0.25,F24
+disk component,starter disk,1d,0.25,F24
+disk component,arms actuators,1b,0.25,F24
+disk component,partition member,1d,0.25,F24
+disk component,control panel,0,0.00,F24
+disk component,disk cleanup,0,0.00,F24
+disk component,fire ring,0,0.00,F24
+disk component,component testing,0,0.00,F24
+disk component,cylindrical lens,0,0.00,F24
+disk component,data composition,0,0.00,F24
+reinforce with reinforcement,reinforcement wire,2a,0.50,F16
+reinforce with reinforcement,reinforcement component,2b,0.50,F16
+reinforce with reinforcement,fiber reinforcement material,2a,0.50,F16
+reinforce with reinforcement,rail reinforcement,2a,0.50,F16
+reinforce with reinforcement,reinforce with fabric,2a,0.50,F16
+reinforce with reinforcement,reinforce with fibers,2a,0.50,F16
+reinforce with reinforcement,reinforce with glass,2a,0.50,F16
+reinforce with reinforcement,reinforce with filler,2a,0.50,F16
+reinforce with reinforcement,reinforce with reinforcement,4,1.00,F16
+reinforce with reinforcement,reinforcing material,2b,0.50,F16
+reinforce with reinforcement,reinforce with reinforcement welding,2a,0.50,F16
+reinforce with reinforcement,additional reinforcing elements,2a,0.50,F16
+reinforce with reinforcement,reinforce with reinforcement solder,2a,0.50,F16
+reinforce with reinforcement,rigid reinforcing material,2a,0.50,F16
+reinforce with reinforcement,reinforcement system,2b,0.50,F16
+reinforce with reinforcement,continuous reinforcing material,2a,0.50,F16
+reinforce with reinforcement,stepped transmission,1d,0.25,F16
+reinforce with reinforcement,resin matrix,1c,0.25,F16
+reinforce with reinforcement,sintered steel bearing,1d,0.25,F16
+reinforce with reinforcement,strengthening material,1c,0.25,F16
+reinforce with reinforcement,rotational speed detector,1d,0.25,F16
+reinforce with reinforcement,fiber reinforcement materials,1b,0.25,F16
+reinforce with reinforcement,reinforce algorithm,0,0.00,F16
+reinforce with reinforcement,resistance training,0,0.00,F16
+reinforce with reinforcement,reinforce coding algorithm,0,0.00,F16
+reinforce with reinforcement,weight training,0,0.00,F16
+reinforce with reinforcement,reinforce algorithm transport pipeline,0,0.00,F16
+reinforce with reinforcement,training techniques,0,0.00,F16
+fine particle fraction,fp fraction,3,0.75,A61
+fine particle fraction,respirable fraction,0,0.00,A61
+fine particle fraction,fraction,2b,0.50,A61
+fine particle fraction,particle fraction,2b,0.50,A61
+fine particle fraction,particle size fraction,2b,0.50,A61
+fine particle fraction,fine particle film,2b,0.50,A61
+fine particle fraction,resin fine particle,2b,0.50,A61
+fine particle fraction,ultra fine particle,2b,0.50,A61
+fine particle fraction,fine particle dispersion liquid,0,0.00,A61
+fine particle fraction,fine fraction,2b,0.50,A61
+fine particle fraction,particulates fraction,2b,0.50,A61
+fine particle fraction,fine particle dose,3,0.75,A61
+fine particle fraction,dust particles,2b,0.50,A61
+fine particle fraction,fraction of emitted particles,2a,0.50,A61
+fine particle fraction,very fine particles,2b,0.50,A61
+fine particle fraction,fine particle fragment,3,0.75,A61
+fine particle fraction,atmospheric aerosol particles,2b,0.50,A61
+fine particle fraction,fine particle,2b,0.50,A61
+fine particle fraction,solid or liquid matter,1c,0.25,A61
+fine particle fraction,component,1b,0.25,A61
+fine particle fraction,solid particle,1c,0.25,A61
+fine particle fraction,drug,1b,0.25,A61
+fine particle fraction,size,1b,0.25,A61
+fine particle fraction,fine recipe,0,0.00,A61
+fine particle fraction,particle accelerator,0,0.00,A61
+fine particle fraction,fine art,0,0.00,A61
+fine particle fraction,fraction number,0,0.00,A61
+fine particle fraction,fine article,0,0.00,A61
+fine particle fraction,fine arts,0,0.00,A61
+register means,shift register means,3,0.75,G01
+register means,code register means,3,0.75,G01
+register means,counter means,2b,0.50,G01
+register means,address register means,3,0.75,G01
+register means,recording system,2a,0.50,G01
+register means,record card,2c,0.50,G01
+register means,memory,2b,0.50,G01
+register means,variable range designation,2c,0.50,G01
+register means,storage means,3,0.75,G01
+register means,deregistration type information,1a,0.25,G01
+register means,electronics circuit,1c,0.25,G01
+register means,delete information,1a,0.25,G01
+register means,recorder,1c,0.25,G01
+register means,delete gestures,1a,0.25,G01
+register means,chip,1c,0.25,G01
+register means,means of communication,0,0.00,G01
+register means,shift,0,0.00,G01
+register means,visual means,0,0.00,G01
+register means,means way,0,0.00,G01
+register means,register marriage,0,0.00,G01
+register means,mean device,0,0.00,G01
+register means,selection device,2a,0.50,G07
+register means,voting means,2a,0.50,G07
+register means,voter selection means,2a,0.50,G07
+register means,voting selection means,2a,0.50,G07
+register means,memory,1c,0.25,G07
+register means,selection means,2a,0.50,G07
+register means,register with means,2c,0.50,G07
+register means,flip flops,2b,0.50,G07
+register means,record details,2b,0.50,G07
+register means,shift register,2a,0.50,G07
+register means,listing means,3,0.75,G07
+register means,fifo register,2a,0.50,G07
+register means,register file,3,0.75,G07
+register means,counter pairs,2b,0.50,G07
+register means,logic circuit,2a,0.50,G07
+register means,circuit,1d,0.25,G07
+register means,microcontroller,1c,0.25,G07
+register means,electronics,1d,0.25,G07
+register means,counter,1b,0.25,G07
+register means,bread board,1d,0.25,G07
+register means,data processor,1c,0.25,G07
+register means,register post,0,0.00,G07
+register means,circuit breaker,0,0.00,G07
+register means,registered office,0,0.00,G07
+register means,counter strike,0,0.00,G07
+register means,attendance register,0,0.00,G07
+register means,gst details,0,0.00,G07
+register means,register shift means,2a,0.50,B41
+register means,shift register means,2a,0.50,B41
+register means,shift,1d,0.25,B41
+register means,register mark,2a,0.50,B41
+register means,registers,2b,0.50,B41
+register means,shift means,1d,0.25,B41
+register means,register shift,2a,0.50,B41
+register means,interruptions,1d,0.25,B41
+register means,errors,1d,0.25,B41
+register means,registration means,4,1.00,B41
+register means,register,2b,0.50,B41
+register means,latch,1d,0.25,B41
+register means,shift register,2a,0.50,B41
+register means,marks,1c,0.25,B41
+register means,register marks,2a,0.50,B41
+register means,counter,1d,0.25,B41
+register means,register with means,2b,0.50,B41
+register means,register unit,3,0.75,H04
+register means,input means,1d,0.25,H04
+register means,registers data,2a,0.50,H04
+register means,electrodes,0,0.00,H04
+register means,registers,2b,0.50,H04
+register means,register,2b,0.50,H04
+register means,registers means,4,1.00,H04
+register means,data means,1c,0.25,H04
+register means,data second means,0,0.00,H04
+register means,data,1c,0.25,H04
+register means,register data,2a,0.50,H04
+register means,memory,1c,0.25,H04
+register means,holding means,0,0.00,H04
+register means,holding memory,2b,0.50,H04
+register means,buffer means,2c,0.50,H04
+register means,buffer memory,2c,0.50,H04
+register means,shift register means,2a,0.50,H04
+expand in direction perpendicular,expand in direction,2b,0.50,B23
+expand in direction perpendicular,expand in radial direction,1a,0.25,B23
+expand in direction perpendicular,expand in perpendicular,3,0.75,B23
+expand in direction perpendicular,expand in direction perpendicular,4,1.00,B23
+expand in direction perpendicular,expand in perpendicular direction,4,1.00,B23
+expand in direction perpendicular,expand in tangential direction,3,0.75,B23
+expand in direction perpendicular,expansion in direction perpendicular,4,1.00,B23
+expand in direction perpendicular,expand in direction at right angle,3,0.75,B23
+expand in direction perpendicular,stretch in direction perpendicular,3,0.75,B23
+expand in direction perpendicular,enlarge in direction,2b,0.50,B23
+expand in direction perpendicular,expand in all direction,2b,0.50,B23
+expand in direction perpendicular,multiple bit unit,1d,0.25,B23
+expand in direction perpendicular,contract in a direction perpendicular,1a,0.25,B23
+expand in direction perpendicular,tool carrier,1d,0.25,B23
+expand in direction perpendicular,locating pin,1d,0.25,B23
+expand in direction perpendicular,toothed wrench,1d,0.25,B23
+expand in direction perpendicular,sleeve portion,1d,0.25,B23
+expand in direction perpendicular,lungs expand pressure,0,0.00,B23
+expand in direction perpendicular,expanded wire cable,0,0.00,B23
+expand in direction perpendicular,perpendicular parking,0,0.00,B23
+expand in direction perpendicular,perpendicular beams,0,0.00,B23
+expand in direction perpendicular,blood vessels expand,0,0.00,B23
+expand in direction perpendicular,rotational direction,0,0.00,B23
+high pressure source,fluid supply source,1c,0.25,B24
+high pressure source,gas supply,1c,0.25,B24
+high pressure source,gas fluid source,2b,0.50,B24
+high pressure source,supply unit,1c,0.25,B24
+high pressure source,fluid supply,1c,0.25,B24
+high pressure source,supply,1d,0.25,B24
+high pressure source,gas supply source,1c,0.25,B24
+high pressure source,pressure unit,2b,0.50,B24
+high pressure source,present device,0,0.00,B24
+high pressure source,fluid invention,0,0.00,B24
+high pressure source,fluid source,1c,0.25,B24
+high pressure source,supply source,1c,0.25,B24
+high pressure source,gas fluid supply,1c,0.25,B24
+high pressure source,pressure device,2b,0.50,B24
+high pressure source,supply device,1c,0.25,B24
+high pressure source,high pressure source,4,1.00,B24
+high pressure source,source of high pressure,4,1.00,B24
+high pressure source,high level pressure source,3,0.75,B24
+high pressure source,aggressive pressure source,3,0.75,B24
+high pressure source,peak pressure source,3,0.75,B24
+high pressure source,compressed source,3,0.75,B24
+high pressure source,pressure source,2b,0.50,B24
+high pressure source,high pressure cylinder,2a,0.50,B24
+high pressure source,low pressure source,1a,0.25,B24
+high pressure source,machine tool,1d,0.25,B24
+high pressure source,pressure,1c,0.25,B24
+high pressure source,optical lens,1d,0.25,B24
+high pressure source,pneumatic valve,1d,0.25,B24
+high pressure source,high protein foods,0,0.00,B24
+high pressure source,blood pressure,0,0.00,B24
+high pressure source,eye pressure test,0,0.00,B24
+high pressure source,high voltage,0,0.00,B24
+high pressure source,blood pressure symptoms,0,0.00,B24
+high pressure source,source of income,0,0.00,B24
+high pressure source,cryogen source,1d,0.25,C03
+high pressure source,high pressure supply,3,0.75,C03
+high pressure source,low cryogen supply,1d,0.25,C03
+high pressure source,supply,1d,0.25,C03
+high pressure source,source supply,1d,0.25,C03
+high pressure source,cryogenic tank,1d,0.25,C03
+high pressure source,supply source,1d,0.25,C03
+high pressure source,source,1d,0.25,C03
+high pressure source,cryogen tank,1d,0.25,C03
+high pressure source,low pressure source,1a,0.25,C03
+high pressure source,low cryogen source,1d,0.25,C03
+high pressure source,injector source,1d,0.25,C03
+high pressure source,cryogenic source,1d,0.25,C03
+high pressure source,high cryogen source,1d,0.25,C03
+high pressure source,high cryogen supply,1d,0.25,C03
+high pressure source,low pressure supply,1a,0.25,C03
+high pressure source,high pressure generator,2a,0.50,C03
+high pressure source,high pressure tank,3,0.75,C03
+high pressure source,large pressure source,3,0.75,C03
+high pressure source,pressurize flow,2b,0.50,C03
+high pressure source,high pressure pump,2a,0.50,C03
+high pressure source,fluid pressure amplifier,2a,0.50,C03
+high pressure source,elevated pressure source,3,0.75,C03
+high pressure source,pressure pump,3,0.75,C03
+high pressure source,pressure source,1c,0.25,C03
+high pressure source,jets,1c,0.25,C03
+high pressure source,force generator,1d,0.25,C03
+high pressure source,spray,1c,0.25,C03
+high pressure source,surface tension source,1d,0.25,C03
+high pressure source,protein source,0,0.00,C03
+high pressure source,passageway,0,0.00,C03
+high pressure source,large intestine,0,0.00,C03
+high pressure source,conveyor,0,0.00,C03
+high pressure source,elevated highway,0,0.00,C03
+high pressure source,origin,0,0.00,C03
+high pressure source,control valve,1b,0.25,B60
+high pressure source,control pump,1b,0.25,B60
+high pressure source,hydraulic chamber,1c,0.25,B60
+high pressure source,hydraulic oil chamber,1c,0.25,B60
+high pressure source,pressure chamber,2b,0.50,B60
+high pressure source,high hydraulic chamber,1c,0.25,B60
+high pressure source,line pressure passage,1b,0.25,B60
+high pressure source,hydraulic pressure chamber,2b,0.50,B60
+high pressure source,hydraulic pressure passage,1b,0.25,B60
+high pressure source,high pressure chamber,3,0.75,B60
+high pressure source,drain port,1b,0.25,B60
+high pressure source,reservoir passage,1b,0.25,B60
+high pressure source,reservoir chamber,1c,0.25,B60
+high pressure source,line pressure chamber,2b,0.50,B60
+high pressure source,high hydraulic pressure chamber,3,0.75,B60
+high pressure source,switching valve,1b,0.25,B60
+high pressure source,pressure hydraulic chamber,1c,0.25,B60
+high pressure source,high pressure hydraulic chamber,3,0.75,B60
+high pressure source,drain passage,1b,0.25,B60
+high pressure source,atmospheric pressure chamber,2b,0.50,B60
+high pressure source,supply pressure chamber,2b,0.50,B60
+high pressure source,hydraulic passage,1b,0.25,B60
+high pressure source,reservoir port,1b,0.25,B60
+high pressure source,line oil chamber,1c,0.25,B60
+high pressure source,low pressure inlet,1a,0.25,F02
+high pressure source,low flow source,1a,0.25,F02
+high pressure source,motive source,1c,0.25,F02
+high pressure source,high pressure inlet,2a,0.50,F02
+high pressure source,low pressure source,1a,0.25,F02
+high pressure source,high flow source,2a,0.50,F02
+high pressure source,high flow inlet,2a,0.50,F02
+high pressure source,high pressure,2b,0.50,F02
+high pressure source,high source,2b,0.50,F02
+high pressure source,fuel pump,1b,0.25,F02
+high pressure source,pressure source,2b,0.50,F02
+high pressure source,pressure,2b,0.50,F02
+central upstanding,centrally,2b,0.50,B23
+central upstanding,central externally,1b,0.25,B23
+central upstanding,central internally,1b,0.25,B23
+central upstanding,centrally externally,1b,0.25,B23
+central upstanding,centrally extending externally,1b,0.25,B23
+central upstanding,centrally projecting externally,1b,0.25,B23
+central upstanding,central extending externally,1b,0.25,B23
+central upstanding,upstanding central,4,1.00,B23
+central upstanding,central upstanding,4,1.00,B23
+central upstanding,standing central,3,0.75,B23
+central upstanding,center upstanding,4,1.00,B23
+central upstanding,central upright,3,0.75,B23
+central upstanding,centre upstanding,4,1.00,B23
+central upstanding,central axis upright,3,0.75,B23
+central upstanding,middle upstanding,3,0.75,B23
+central upstanding,central upstanding wall,2a,0.50,B23
+central upstanding,extreme upstanding,1a,0.25,B23
+central upstanding,interconnection member,1d,0.25,B23
+central upstanding,corner tip,1d,0.25,B23
+central upstanding,welding electrode,1d,0.25,B23
+central upstanding,cutting screw thread,1d,0.25,B23
+central upstanding,radial slots,1d,0.25,B23
+central upstanding,central processing unit,0,0.00,B23
+central upstanding,central nervous system,0,0.00,B23
+central upstanding,upstanding thought,0,0.00,B23
+central upstanding,central median,0,0.00,B23
+central upstanding,central venous pressure,0,0.00,B23
+central upstanding,upstanding beam,0,0.00,B23
+central upstanding,pad,1b,0.25,B61
+central upstanding,upstanding portions,2a,0.50,B61
+central upstanding,central portion,2b,0.50,B61
+central upstanding,reinforcement,1c,0.25,B61
+central upstanding,upstanding,2b,0.50,B61
+central upstanding,spaced upstanding,2a,0.50,B61
+central upstanding,flexible upstanding,2a,0.50,B61
+central upstanding,spaced flexible upstanding,2a,0.50,B61
+central upstanding,bolster reinforcement,1c,0.25,B61
+central upstanding,upstanding portion,2a,0.50,B61
+central upstanding,central portions,2b,0.50,B61
+central upstanding,upstanding central,2a,0.50,B61
+central upstanding,central upstanding,4,1.00,B61
+central upstanding,upstanding center,3,0.75,B61
+central upstanding,center upstanding,4,1.00,B61
+central upstanding,travel in opposite direction,2a,0.50,B61
+central upstanding,central parts,2b,0.50,B61
+central upstanding,central upright,3,0.75,B61
+central upstanding,upstanding system,2b,0.50,B61
+central upstanding,central upstanding wall,2a,0.50,B61
+central upstanding,locomotive signal,1d,0.25,B61
+central upstanding,connection member,1d,0.25,B61
+central upstanding,train fault condition,1d,0.25,B61
+central upstanding,terminal elements,1d,0.25,B61
+central upstanding,estimated range occupied by train,1d,0.25,B61
+central upstanding,curved steel strip,1d,0.25,B61
+central upstanding,central limit theorem,0,0.00,B61
+central upstanding,central database,0,0.00,B61
+central upstanding,upstanding oral elements,0,0.00,B61
+central upstanding,central lock,0,0.00,B61
+central upstanding,central obesity,0,0.00,B61
+central upstanding,upstanding citizen,0,0.00,B61
+drive by wave,wave drive,4,1.00,H02
+drive by wave,wave operation,2b,0.50,H02
+drive by wave,driving electric signal,2a,0.50,H02
+drive by wave,wave control,2b,0.50,H02
+drive by wave,driving pulse train,2c,0.50,H02
+drive by wave,sinusoidal control,2a,0.50,H02
+drive by wave,conduction pulse,3,0.75,H02
+drive by wave,wave motor,2a,0.50,H02
+drive by wave,high frequency drive signal,2b,0.50,H02
+drive by wave,motor drives,1c,0.25,H02
+drive by wave,continuous rectangular wave,1b,0.25,H02
+drive by wave,induction drive,1c,0.25,H02
+drive by wave,modulation signal,1c,0.25,H02
+drive by wave,network current,1d,0.25,H02
+drive by wave,wave signal,1d,0.25,H02
+drive by wave,drive by attack,0,0.00,H02
+drive by wave,motor drive,0,0.00,H02
+drive by wave,drive by chords,0,0.00,H02
+drive by wave,screw driver,0,0.00,H02
+drive by wave,wave cyber membrane,0,0.00,H02
+drive by wave,wave board,0,0.00,H02
+reside in system,reside at system,3,0.75,G11
+reside in system,reside in a system,4,1.00,G11
+reside in system,resident on the server,2a,0.50,G11
+reside in system,reside on system,4,1.00,G11
+reside in system,residing within computer system,2a,0.50,G11
+reside in system,memory resident,2b,0.50,G11
+reside in system,resided in the system memory,2a,0.50,G11
+reside in system,resident monitor,2b,0.50,G11
+reside in system,resident storage objects,2b,0.50,G11
+reside in system,residency system,1d,0.25,G11
+reside in system,interface,1d,0.25,G11
+reside in system,memory residency,1d,0.25,G11
+reside in system,module,1d,0.25,G11
+reside in system,data residency,1d,0.25,G11
+reside in system,accessed,1d,0.25,G11
+reside in system,residency tower,0,0.00,G11
+reside in system,respiratory system,0,0.00,G11
+reside in system,systematic plan,0,0.00,G11
+reside in system,solar system,0,0.00,G11
+reside in system,monitoring,0,0.00,G11
+reside in system,induction system,0,0.00,G11
+cool temperature,cool below critical temperature,2a,0.50,B21
+cool temperature,predetermined temperature,2b,0.50,A23
+cool temperature,temperature,2b,0.50,A23
+cool temperature,cool to cooling temperature,2b,0.50,A23
+cool temperature,cooling point temperature,2b,0.50,A23
+cool temperature,cold temperature,3,0.75,A23
+cool temperature,temperature of cooling,2b,0.50,A23
+cool temperature,temperature at which substance cools,2b,0.50,A23
+cool temperature,temperature range,2b,0.50,A23
+cool temperature,temperature to cool,2b,0.50,A23
+cool temperature,freezing temperature,2c,0.50,A23
+cool temperature,refrigerate seeds,1d,0.25,A23
+cool temperature,hot and cool,1c,0.25,A23
+cool temperature,freezing time,1d,0.25,A23
+cool temperature,thermodynamics branch,1c,0.25,A23
+cool temperature,storage area,1c,0.25,A23
+cool temperature,temperature control,1c,0.25,A23
+cool temperature,self cooling mug,0,0.00,A23
+cool temperature,cool head,0,0.00,A23
+cool temperature,engine coolant,0,0.00,A23
+cool temperature,cool mind,0,0.00,A23
+cool temperature,cooling electrode,0,0.00,A23
+cool temperature,cool to atmospheric temperature,2a,0.50,B67
+cool temperature,cool to predetermined temperature,2a,0.50,B67
+cool temperature,cool to predetermined temperature,2a,0.50,G05
+cool temperature,cool environment,3,0.75,G05
+cool temperature,cool degree celsius,3,0.75,G05
+cool temperature,freezing temperature,2a,0.50,G05
+cool temperature,below freezing temperature,2a,0.50,G05
+cool temperature,low temperature,3,0.75,G05
+cool temperature,suitable storage temperature,2a,0.50,G05
+cool temperature,ambient temperature,2c,0.50,G05
+cool temperature,chill temperature,3,0.75,G05
+cool temperature,hot temperature,1a,0.25,G05
+cool temperature,global warming,1d,0.25,G05
+cool temperature,storage area,1c,0.25,G05
+cool temperature,hot climate,1a,0.25,G05
+cool temperature,40c,1b,0.25,G05
+cool temperature,cool background,0,0.00,G05
+cool temperature,cool math games,0,0.00,G05
+cool temperature,cool photos,0,0.00,G05
+cool temperature,cool images,0,0.00,G05
+cool temperature,cool technology,0,0.00,G05
+cool temperature,body temperature,0,0.00,G05
+cool temperature,cool to atmospheric temperature,2a,0.50,F24
+cool temperature,cool below critical temperature,2a,0.50,F24
+optical injection,laser delivery,2b,0.50,G02
+optical injection,optical delivery,2b,0.50,G02
+optical injection,injection,1c,0.25,G02
+optical injection,mode,1d,0.25,G02
+optical injection,phase,1d,0.25,G02
+optical injection,frequency,2b,0.50,G02
+optical injection,laser,2a,0.50,G02
+optical injection,optical,2b,0.50,G02
+optical injection,optical injection carriers,3,0.75,G02
+optical injection,single mode semiconductor laser,2a,0.50,G02
+optical injection,optoinjection,4,1.00,G02
+optical injection,longitudinal mode spectrum,2b,0.50,G02
+optical injection,photoinjection,3,0.75,G02
+optical injection,injecting optically,2c,0.50,G02
+optical injection,laser injection,3,0.75,G02
+optical injection,optically injecting,4,1.00,G02
+optical injection,extraction electrode,1b,0.25,G02
+optical injection,communication,1c,0.25,G02
+optical injection,extraction of rna,1a,0.25,G02
+optical injection,cables,1c,0.25,G02
+optical injection,feature extraction,1a,0.25,G02
+optical injection,non optical injections,1a,0.25,G02
+optical injection,optical illusion,0,0.00,G02
+optical injection,injection molding,0,0.00,G02
+optical injection,optical fibre,0,0.00,G02
+optical injection,injecting air,0,0.00,G02
+optical injection,injection moulding,0,0.00,G02
+optical injection,inject box,0,0.00,G02
+type fins,type,1d,0.25,H03
+type fins,type wells,0,0.00,H03
+type fins,type regions,2b,0.50,H03
+type fins,type mos transistors,1b,0.25,H03
+type fins,type fin,4,1.00,H03
+type fins,type substrate,1d,0.25,H03
+type fins,type silicon substrate,1d,0.25,H03
+type fins,type semiconductor transistors,1b,0.25,H03
+type fins,type silicon fin,3,0.75,H03
+type fins,silicon substrate,1d,0.25,H03
+type fins,silicon fin,2a,0.50,H03
+type fins,wells,0,0.00,H03
+type fins,well,0,0.00,H03
+type fins,well regions,0,0.00,H03
+type fins,type mos regions,2a,0.50,H03
+type fins,mos regions,2a,0.50,H03
+type fins,semiconductor transistors,2a,0.50,H03
+type fins,fins,2b,0.50,H03
+type fins,pillars,1c,0.25,H03
+type fins,fin,2b,0.50,H03
+type fins,type substrate fin,3,0.75,H03
+type fins,substrate,1d,0.25,H03
+type fins,type semiconductor regions,2b,0.50,H03
+type fins,mos transistors,1b,0.25,H03
+type fins,semiconductor regions,2b,0.50,H03
+type fins,heat exchanger,2b,0.50,H03
+type fins,plate fin type heat exchanger,2a,0.50,H03
+type fins,ribs,2b,0.50,H03
+type fins,window type fin,2a,0.50,H03
+type fins,heat sink,2b,0.50,H03
+type fins,fin type radiating device,2a,0.50,H03
+type fins,projections,2c,0.50,H03
+type fins,integral type fin,3,0.75,H03
+type fins,flat oval tubes,1c,0.25,H03
+type fins,convection guide,1c,0.25,H03
+type fins,heat pipes,1c,0.25,H03
+type fins,heat radiation,1c,0.25,H03
+type fins,plates,1c,0.25,H03
+type fins,radiating device,1c,0.25,H03
+type fins,money exchanger,0,0.00,H03
+type fins,type writing,0,0.00,H03
+type fins,sink cleaner,0,0.00,H03
+type fins,type machine,0,0.00,H03
+type fins,flat rent,0,0.00,H03
+type fins,fish fins,0,0.00,H03
+zero bit,zero,2b,0.50,G06
+zero bit,bit,2b,0.50,G06
+zero bit,zero bits,4,1.00,G06
+zero bit,integer bits,2b,0.50,G06
+zero bit,zero empty bits,2c,0.50,G06
+zero bit,bits,2b,0.50,G06
+zero bit,integer bit,2b,0.50,G06
+zero bit,empty bits,2c,0.50,G06
+zero bit,empty bit,2c,0.50,G06
+zero bit,non zero bit,1a,0.25,G06
+zero bit,significant non zero bit,1a,0.25,G06
+zero bit,zero bit position,3,0.75,G06
+zero bit,weak bit,2b,0.50,G06
+zero bit,zero bit angle,2a,0.50,G06
+zero bit,0 bit,3,0.75,G06
+zero bit,zero bit adding circuit,2a,0.50,G06
+zero bit,null bit,3,0.75,G06
+zero bit,zero data,2c,0.50,G06
+zero bit,false indicator,1c,0.25,G06
+zero bit,computer,1c,0.25,G06
+zero bit,false flag,1c,0.25,G06
+zero bit,more than zero bit,1a,0.25,G06
+zero bit,format specifier,1c,0.25,G06
+zero bit,byte,1a,0.25,G06
+zero bit,bitcoin,0,0.00,G06
+zero bit,data roaming,0,0.00,G06
+zero bit,zero vector,0,0.00,G06
+zero bit,weak person,0,0.00,G06
+zero bit,bit array,0,0.00,G06
+zero bit,empty pot,0,0.00,G06
+zero bit,non zero bit,1a,0.25,H03
+zero bit,significant non zero bit,1a,0.25,H03
+zero bit,null bit,3,0.75,H03
+zero bit,zero bit position,3,0.75,H03
+zero bit,0 bit,3,0.75,H03
+zero bit,zero bit angle,2a,0.50,H03
+zero bit,bit,2b,0.50,H03
+zero bit,zero bit adding circuit,2a,0.50,H03
+zero bit,digital number,2b,0.50,H03
+zero bit,1 bit,1a,0.25,H03
+zero bit,false indicator,1c,0.25,H03
+zero bit,binary numbers,1c,0.25,H03
+zero bit,false flag,1c,0.25,H03
+zero bit,decimal values,1c,0.25,H03
+zero bit,format specifier,1c,0.25,H03
+zero bit,reverse number,0,0.00,H03
+zero bit,bitcoin,0,0.00,H03
+zero bit,shirt value,0,0.00,H03
+zero bit,zero vector,0,0.00,H03
+zero bit,money values,0,0.00,H03
+zero bit,bit array,0,0.00,H03
+mram bit cell,memory,2b,0.50,G11
+mram bit cell,fe device,0,0.00,G11
+mram bit cell,mos transistor,2b,0.50,G11
+mram bit cell,os device,1d,0.25,G11
+mram bit cell,bit,2b,0.50,G11
+mram bit cell,bit cell,2b,0.50,G11
+mram bit cell,mr am cell,3,0.75,G11
+mram bit cell,fe transistor,2b,0.50,G11
+mram bit cell,mos device,2b,0.50,G11
+mram bit cell,mr am array,3,0.75,G11
+mram bit cell,mr cell array,2b,0.50,G11
+mram bit cell,am cell,2b,0.50,G11
+mram bit cell,am array,2b,0.50,G11
+mram bit cell,cell,1c,0.25,G11
+mram bit cell,am memory,2b,0.50,G11
+mram bit cell,mr cell,2b,0.50,G11
+mram bit cell,memory bit cell,2b,0.50,G11
+mram bit cell,bit cell array,2b,0.50,G11
+mram bit cell,bit memory cell,2b,0.50,G11
+mram bit cell,given bit cell,2a,0.50,G11
+mram bit cell,mram cell,3,0.75,G11
+mram bit cell,mram bit,3,0.75,G11
+mram bit cell,magnetoresistive random access memory chip,3,0.75,G11
+mram bit cell,magnetic random access memory,3,0.75,G11
+mram bit cell,magnetic ram,3,0.75,G11
+mram bit cell,universal memory,2b,0.50,G11
+mram bit cell,magnetic memory,2b,0.50,G11
+mram bit cell,ram,2b,0.50,G11
+mram bit cell,magnetic state,1d,0.25,G11
+mram bit cell,storing information,1d,0.25,G11
+mram bit cell,storage,1c,0.25,G11
+mram bit cell,memory device,1d,0.25,G11
+mram bit cell,register,1d,0.25,G11
+mram bit cell,given time,0,0.00,G11
+mram bit cell,bitcoin,0,0.00,G11
+mram bit cell,bit field,0,0.00,G11
+mram bit cell,cellulitis,0,0.00,G11
+mram bit cell,little bit,0,0.00,G11
+mram bit cell,processing,1c,0.25,H01
+mram bit cell,memory,2b,0.50,H01
+mram bit cell,bit,2b,0.50,H01
+mram bit cell,mr bit cell,2c,0.50,H01
+mram bit cell,magnetic bit cell,2b,0.50,H01
+mram bit cell,ram memory,2b,0.50,H01
+mram bit cell,devices ram,2b,0.50,H01
+mram bit cell,bit cell,2b,0.50,H01
+mram bit cell,magnetic bit,2b,0.50,H01
+mram bit cell,mr bit cells,2c,0.50,H01
+mram bit cell,devices,1c,0.25,H01
+mram bit cell,cells,2b,0.50,H01
+mram bit cell,ram,2b,0.50,H01
+mram bit cell,bit memory cell,2b,0.50,H01
+mram bit cell,mram bit,2b,0.50,H01
+mram bit cell,mram cell structure,2b,0.50,H01
+mram bit cell,magnetic random access memory,3,0.75,H01
+mram bit cell,non volatile random access memory,3,0.75,H01
+mram bit cell,magnetic ram,3,0.75,H01
+mram bit cell,conventional mram device,2b,0.50,H01
+mram bit cell,magnetic memory,2b,0.50,H01
+mram bit cell,magnetoresistive random access memory bit cell,3,0.75,H01
+mram bit cell,ram cell,2b,0.50,H01
+mram bit cell,data,1b,0.25,H01
+mram bit cell,magnetic state,1d,0.25,H01
+mram bit cell,magnetic storage elements,1c,0.25,H01
+mram bit cell,storage,1c,0.25,H01
+mram bit cell,magnetic tunnel junction,1c,0.25,H01
+mram bit cell,register,1d,0.25,H01
+mram bit cell,human cell structure,0,0.00,H01
+mram bit cell,bitcoin,0,0.00,H01
+mram bit cell,device cleaner,0,0.00,H01
+mram bit cell,bit field,0,0.00,H01
+mram bit cell,random dots,0,0.00,H01
+mram bit cell,little bit,0,0.00,H01
+mram bit cell,memory bit cell,2b,0.50,H04
+mram bit cell,bit cell array,2b,0.50,H04
+mram bit cell,given bit cell,2b,0.50,H04
+mram bit cell,mram cell,3,0.75,H04
+insert wedge,attachment,1c,0.25,B65
+insert wedge,wedge insert,4,1.00,B65
+insert wedge,insert wedge,4,1.00,B65
+insert wedge,inserted wedge,4,1.00,B65
+insert wedge,insert wedge abutment surface,2a,0.50,B65
+insert wedge,wedge control insert,3,0.75,B65
+insert wedge,rear wall insert wedge,2a,0.50,B65
+insert wedge,insert tapered wedges,2a,0.50,B65
+insert wedge,used for connecting relieving angles,2b,0.50,B65
+insert wedge,wedge,2b,0.50,B65
+insert wedge,loading a cargo compartment,1d,0.25,B65
+insert wedge,securing members,1d,0.25,B65
+insert wedge,directly secured flanges,1d,0.25,B65
+insert wedge,bundling tools,1d,0.25,B65
+insert wedge,pre formed sleeves,1d,0.25,B65
+insert wedge,control panel,1d,0.25,B65
+insert wedge,insert the symbol,0,0.00,B65
+insert wedge,insert query,0,0.00,B65
+insert wedge,insert wireless modules,0,0.00,B65
+insert wedge,gas fire insert,0,0.00,B65
+insert wedge,insert communication network,0,0.00,B65
+insert wedge,wedge pillow,0,0.00,B65
+insert wedge,wedge insert,4,1.00,F28
+insert wedge,connecting relieving angles,3,0.75,F28
+insert wedge,seating pins,2b,0.50,F28
+insert wedge,shelf angles connectors,3,0.75,F28
+insert wedge,locking strip,2b,0.50,F28
+insert wedge,secure arrangements for concrete members,3,0.75,F28
+insert wedge,interlocking openings,2b,0.50,F28
+insert wedge,concrete member attachement,3,0.75,F28
+insert wedge,spacing insert,2b,0.50,F28
+insert wedge,concrete slab,1c,0.25,F28
+insert wedge,fastener arms,1d,0.25,F28
+insert wedge,cement slab,1c,0.25,F28
+insert wedge,retention prongs,1d,0.25,F28
+insert wedge,cad,1d,0.25,F28
+insert wedge,spring clip,1d,0.25,F28
+insert wedge,insert key,0,0.00,F28
+insert wedge,insert query,0,0.00,F28
+insert wedge,insert button,0,0.00,F28
+insert wedge,arm muscles,0,0.00,F28
+insert wedge,insert javascript,0,0.00,F28
+insert wedge,pin code,0,0.00,F28
+connected battery,connected lithium,2a,0.50,H02
+connected battery,connected single,0,0.00,H02
+connected battery,coupled,1d,0.25,H02
+connected battery,connected secondary battery,2a,0.50,H02
+connected battery,secondary battery,2b,0.50,H02
+connected battery,arranged unit,1d,0.25,H02
+connected battery,connected lithium battery,2a,0.50,H02
+connected battery,connected single battery,2a,0.50,H02
+connected battery,lithium battery,2b,0.50,H02
+connected battery,connected storage,2b,0.50,H02
+connected battery,connected of storage,2b,0.50,H02
+connected battery,coupled batteries,3,0.75,H02
+connected battery,connected unit,1c,0.25,H02
+connected battery,arranged battery,2c,0.50,H02
+connected battery,connected of battery,3,0.75,H02
+connected battery,connected batteries,4,1.00,H02
+connected battery,batteries,2b,0.50,H02
+connected battery,connected of batteries,3,0.75,H02
+connected battery,coupled unit,1d,0.25,H02
+connected battery,battery,2b,0.50,H02
+connected battery,coupled battery,3,0.75,H02
+connected battery,storage,1c,0.25,H02
+connected battery,connected secondary,0,0.00,H02
+connected battery,series connected battery cells,2a,0.50,H02
+connected battery,connected battery cells,3,0.75,H02
+connected battery,series connected battery,2a,0.50,H02
+connected battery,battery module,2a,0.50,H02
+connected battery,connected power source,2c,0.50,H02
+connected battery,voltage supply,2c,0.50,H02
+connected battery,interconnected batteries,3,0.75,H02
+connected battery,power supply,2c,0.50,H02
+connected battery,arranged batteries,3,0.75,H02
+connected battery,battery circuit,2a,0.50,H02
+connected battery,cascaded battery cells,3,0.75,H02
+connected battery,power source,1c,0.25,H02
+connected battery,output battery voltage,1a,0.25,H02
+connected battery,connected graph,0,0.00,H02
+connected battery,remote connect,0,0.00,H02
+connected battery,connected sum,0,0.00,H02
+connected battery,connected vehicles,0,0.00,H02
+connected battery,connective tissue,0,0.00,H02
+connected battery,interconnect frame,0,0.00,H02
+connector contact,electrical contact,2b,0.50,G01
+connector contact,respective connector contact,3,0.75,G01
+connector contact,electrical,2b,0.50,G01
+connector contact,wire terminal,2b,0.50,G01
+connector contact,respective connector connection,2a,0.50,G01
+connector contact,connector contacts,4,1.00,G01
+connector contact,insulated terminal,1a,0.25,G01
+connector contact,connector wire,3,0.75,G01
+connector contact,probe,0,0.00,G01
+connector contact,electrical contacts,2b,0.50,G01
+connector contact,wire,2b,0.50,G01
+connector contact,connector terminal,3,0.75,G01
+connector contact,insulated wire,1a,0.25,G01
+connector contact,contact,2b,0.50,G01
+connector contact,connector connection,2b,0.50,G01
+connector contact,connector,2b,0.50,G01
+connector contact,respective of contact,0,0.00,G01
+connector contact,connectors contact,4,1.00,G01
+connector contact,contact connector,4,1.00,G01
+connector contact,plug connector contacts,3,0.75,G01
+connector contact,plug contact,2b,0.50,G01
+connector contact,contact plug connector,3,0.75,G01
+connector contact,connecting contact,4,1.00,G01
+connector contact,segmented connector contacts,3,0.75,G01
+connector contact,connector plug,2a,0.50,G01
+connector contact,coaxial connector,2c,0.50,G01
+connector contact,electrical contact element,2b,0.50,G01
+connector contact,mechanical disconnect system,1a,0.25,G01
+connector contact,electrical conduct,1c,0.25,G01
+connector contact,detect disconnection,1c,0.25,G01
+connector contact,substation,1c,0.25,G01
+connector contact,radio link disconnection,1a,0.25,G01
+connector contact,non connecting contact,1a,0.25,G01
+connector contact,phone contact,0,0.00,G01
+connector contact,contact number,0,0.00,G01
+connector contact,forged contacts,0,0.00,G01
+connector contact,contact force,0,0.00,G01
+connector contact,connector pens,0,0.00,G01
+connector contact,contact lense,0,0.00,G01
+connector contact,contacts,2b,0.50,H01
+connector contact,counterpart contact,2a,0.50,H01
+connector contact,connector leaf contact,3,0.75,H01
+connector contact,mating contact,3,0.75,H01
+connector contact,counterpart connector contact,2a,0.50,H01
+connector contact,counterpart connector contacts,2a,0.50,H01
+connector contact,connector spring,2a,0.50,H01
+connector contact,contact spring,2a,0.50,H01
+connector contact,leaf contact,2a,0.50,H01
+connector contact,leaf spring,2a,0.50,H01
+connector contact,connector contact spring,2a,0.50,H01
+connector contact,mating connector contact,2a,0.50,H01
+connector contact,mating connector contacts,2a,0.50,H01
+connector contact,contact,2b,0.50,H01
+connector contact,terminal,1c,0.25,H01
+connector contact,multi contact connector,2a,0.50,H01
+connector contact,terminal contact,2a,0.50,H01
+connector contact,plug contact,2a,0.50,H01
+connector contact,connector plug,2a,0.50,H01
+connector contact,spring contact,2a,0.50,H01
+connector contact,contact strip,2a,0.50,H01
+connector contact,electrical signals,1b,0.25,H01
+connector contact,current signal,1b,0.25,H01
+connector contact,pcb board,1d,0.25,H01
+connector contact,output voltage,1b,0.25,H01
+connector contact,longitudinal wires,1b,0.25,H01
+connector contact,high power,1b,0.25,H01
+connector contact,contact number,0,0.00,H01
+connector contact,contact lenses,0,0.00,H01
+connector contact,contact us,0,0.00,H01
+connector contact,contact certificate,0,0.00,H01
+connector contact,contact force,0,0.00,H01
+connector contact,multi contact connector,2a,0.50,G06
+connector contact,contact connector,2c,0.50,G06
+semi reflective,semi transparent reflective,3,0.75,G02
+semi reflective,semi reflective mirror,2a,0.50,G02
+semi reflective,transparent reflective,2a,0.50,C22
+semi reflective,thin reflective,2a,0.50,C22
+semi reflective,ag alloy,1c,0.25,C22
+semi reflective,transparent thin,1c,0.25,C22
+semi reflective,thin reflection,2a,0.50,C22
+semi reflective,silver reflection,2a,0.50,C22
+semi reflective,silver thin,1c,0.25,C22
+semi reflective,thin,2b,0.50,C22
+semi reflective,ag thin,1c,0.25,C22
+semi reflective,transparent alloy,1c,0.25,C22
+semi reflective,ag alloy thin,1c,0.25,C22
+semi reflective,thin alloy thin,1c,0.25,C22
+semi reflective,reflective,2b,0.50,C22
+semi reflective,protective,1c,0.25,C22
+semi reflective,thin alloy,1c,0.25,C22
+semi reflective,semi transparent reflective,2b,0.50,C22
+semi reflective,partially reflective,3,0.75,C22
+semi reflective,one way mirror,3,0.75,C22
+semi reflective,semi translucent,2b,0.50,C22
+semi reflective,two way mirror,3,0.75,C22
+semi reflective,partially reflecting,2b,0.50,C22
+semi reflective,half silvered mirror,3,0.75,C22
+semi reflective,partially refracted,2b,0.50,C22
+semi reflective,semi transparent mirror,3,0.75,C22
+semi reflective,light source,1c,0.25,C22
+semi reflective,layer,1b,0.25,C22
+semi reflective,properties of light,1c,0.25,C22
+semi reflective,coating,1b,0.25,C22
+semi reflective,alloy,1b,0.25,C22
+semi reflective,semi final cricket match,0,0.00,C22
+semi reflective,semi circle,0,0.00,C22
+semi reflective,semi final tennis match,0,0.00,C22
+semi reflective,semi permeable,0,0.00,C22
+semi reflective,semi final hockey match,0,0.00,C22
+semi reflective,refrective jacket,0,0.00,C22
+semi reflective,transmissive,2b,0.50,G11
+semi reflective,completely reflective,2b,0.50,G11
+semi reflective,fully transparent reflective,1a,0.25,G11
+semi reflective,fully transparent recording,1a,0.25,G11
+semi reflective,completely transparent recording,1a,0.25,G11
+semi reflective,completely cured reflective,1a,0.25,G11
+semi reflective,partially absorbing,2c,0.50,G11
+semi reflective,absorptive,1c,0.25,G11
+semi reflective,completely,0,0.00,G11
+semi reflective,fully transparent,1a,0.25,G11
+semi reflective,completely transparent reflective,2c,0.50,G11
+semi reflective,completely cured recording,0,0.00,G11
+semi reflective,absorbing,1d,0.25,G11
+semi reflective,semi transmissive,3,0.75,G11
+semi reflective,anti reflective,1a,0.25,G11
+semi reflective,fully,0,0.00,G11
+semi reflective,completely transparent,1a,0.25,G11
+semi reflective,fully cured recording,2b,0.50,G11
+semi reflective,magnetic,1d,0.25,G11
+semi reflective,fully reflective,2b,0.50,G11
+semi reflective,fully cured reflective,2b,0.50,G11
+semi reflective,partially reflective,3,0.75,G11
+semi reflective,semi reflective surface,3,0.75,G11
+semi reflective,luminescent,2a,0.50,H01
+semi reflective,organic el,2a,0.50,H01
+semi reflective,fully reflective,1a,0.25,H01
+semi reflective,light el,2a,0.50,H01
+semi reflective,partially reflective,3,0.75,H01
+semi reflective,partially transmissive,3,0.75,H01
+semi reflective,fully transmissive,1a,0.25,H01
+semi reflective,reflective,2b,0.50,H01
+semi reflective,organic,1d,0.25,H01
+semi reflective,organic emitting,2a,0.50,H01
+semi reflective,light emitting,2b,0.50,H01
+semi reflective,semi reflective surface,3,0.75,H01
+semi reflective,semi reflective layer,3,0.75,H01
+semi reflective,semi reflective layer,2a,0.50,H04
+semi reflective,reflective electrode,2b,0.50,C09
+semi reflective,reflective substrate,2b,0.50,C09
+semi reflective,reflecting electrode,2b,0.50,C09
+semi reflective,reflecting substrate,2b,0.50,C09
+semi reflective,transmissive,1c,0.25,C09
+semi reflective,transparent,1c,0.25,C09
+semi reflective,transparent transmissive,1c,0.25,C09
+semi reflective,reflective,2b,0.50,C09
+semi reflective,semi reflective mirror,2b,0.50,C09
+semi reflective,one way,2b,0.50,C09
+semi reflective,translucent element,2b,0.50,C09
+semi reflective,half silvered,3,0.75,C09
+semi reflective,translucidity property,2b,0.50,C09
+semi reflective,semi transparent,3,0.75,C09
+semi reflective,dichroic filters,2b,0.50,C09
+semi reflective,reciprocal,3,0.75,C09
+semi reflective,semi reflecting surface,2b,0.50,C09
+semi reflective,opacity,1d,0.25,C09
+semi reflective,transparent element,1a,0.25,C09
+semi reflective,transparency,1d,0.25,C09
+semi reflective,pellucidity element,1a,0.25,C09
+semi reflective,mirrored surface,1d,0.25,C09
+semi reflective,semi circle,0,0.00,C09
+semi reflective,semi final,0,0.00,C09
+semi reflective,semi viscous,0,0.00,C09
+semi reflective,semi detached house,0,0.00,C09
+semi reflective,semiconductor material,0,0.00,C09
+compact assembly,compact,1c,0.25,C03
+compact assembly,compacts assembly,4,1.00,C03
+compact assembly,compact the assembly,4,1.00,C03
+compact assembly,assembly,1c,0.25,C03
+compact assembly,compact,2b,0.50,A45
+compact assembly,compact arrangement,2b,0.50,A45
+compact assembly,small assembly,2b,0.50,A45
+compact assembly,portable compact assembly,3,0.75,A45
+compact assembly,package,1c,0.25,A45
+compact assembly,packaging,1c,0.25,A45
+compact assembly,close packed assembly,2b,0.50,A45
+compact assembly,portable assembly,2b,0.50,A45
+compact assembly,compressed assembly,2b,0.50,A45
+compact assembly,space saving assembly,2b,0.50,A45
+compact assembly,modular assembly,2b,0.50,A45
+compact assembly,compact package,3,0.75,A45
+compact assembly,tightly packed assembly,2b,0.50,A45
+compact assembly,compact unit,2b,0.50,A45
+compact assembly,package assembly,1b,0.25,A45
+compact assembly,small bag,1c,0.25,A45
+compact assembly,component assembly,1b,0.25,A45
+compact assembly,lightweight storage,1d,0.25,A45
+compact assembly,element assembly,1b,0.25,A45
+compact assembly,thin objects,1d,0.25,A45
+compact assembly,school assembly,0,0.00,A45
+compact assembly,compact disc,0,0.00,A45
+compact assembly,legislative assembly,0,0.00,A45
+compact assembly,pink compact powder,0,0.00,A45
+compact assembly,national assembly,0,0.00,A45
+compact assembly,assembly language,0,0.00,A45
+compact assembly,continuous arrangement,1c,0.25,C01
+compact assembly,combination,1d,0.25,C01
+compact assembly,novel system,1d,0.25,C01
+compact assembly,novel arrangement,1d,0.25,C01
+compact assembly,continuous system,1c,0.25,C01
+compact assembly,composite,2a,0.50,C01
+compact assembly,compact arrangement,3,0.75,C01
+compact assembly,laminate,2a,0.50,C01
+compact assembly,compact system,3,0.75,C01
+compact assembly,bonded assembly,3,0.75,C01
+compact assembly,press together,3,0.75,C01
+compact assembly,binded parts,3,0.75,C01
+compact assembly,small size,2a,0.50,C01
+compact assembly,assembled parts,1c,0.25,C01
+compact assembly,dense cluster,1c,0.25,C01
+compact assembly,arrangement,1c,0.25,C01
+compact assembly,loosely packed,1a,0.25,C01
+compact assembly,organisation,1c,0.25,C01
+compact assembly,thinly distributed,1a,0.25,C01
+compact assembly,money bond,0,0.00,C01
+compact assembly,compact powder,0,0.00,C01
+compact assembly,body parts,0,0.00,C01
+compact assembly,assembly language,0,0.00,C01
+compact assembly,legislative assembly,0,0.00,C01
+compact assembly,assembly map,0,0.00,C01
+drying temperature,preferred drying range,2b,0.50,A23
+drying temperature,optimum drying temperature,2b,0.50,A23
+drying temperature,optimum temperature,2b,0.50,A23
+drying temperature,pressure,1d,0.25,A23
+drying temperature,relative pressure,1d,0.25,A23
+drying temperature,drying,2b,0.50,A23
+drying temperature,dryer,1c,0.25,A23
+drying temperature,absolute temperature,1c,0.25,A23
+drying temperature,average temperature,2b,0.50,A23
+drying temperature,absolute pressure,1d,0.25,A23
+drying temperature,drying range,2b,0.50,A23
+drying temperature,optimum drying range,2b,0.50,A23
+drying temperature,relative temperature,2b,0.50,A23
+drying temperature,equilibrium of temperature,1c,0.25,A23
+drying temperature,temperature,2b,0.50,A23
+drying temperature,preferred drying temperature,2b,0.50,A23
+drying temperature,preferred temperature,2b,0.50,A23
+drying temperature,preferred temperature range,2b,0.50,A23
+drying temperature,product temperature,2a,0.50,A23
+drying temperature,temperature of temperature,1c,0.25,A23
+drying temperature,average of temperature,1c,0.25,A23
+drying temperature,drying,2b,0.50,C01
+drying temperature,situation,0,0.00,C01
+drying temperature,temperature environment,2b,0.50,C01
+drying temperature,temperature problem,1d,0.25,C01
+drying temperature,temperature,2b,0.50,C01
+drying temperature,predetermined drying,2b,0.50,C01
+drying temperature,point,0,0.00,C01
+drying temperature,thermal environment,2b,0.50,C01
+drying temperature,thermal problem,1d,0.25,C01
+drying temperature,drying range,2b,0.50,C01
+drying temperature,predetermined temperature,2c,0.50,C01
+drying temperature,drying conditions,2b,0.50,C01
+drying temperature,drying point,3,0.75,C01
+drying temperature,dehydrating temperature,3,0.75,C01
+drying temperature,temperature for drying,3,0.75,C01
+drying temperature,dehumidifying temperature,3,0.75,C01
+drying temperature,dehydration temperature,2b,0.50,C01
+drying temperature,desiccation point,3,0.75,C01
+drying temperature,heat to dry,3,0.75,C01
+drying temperature,drying agent,1d,0.25,C01
+drying temperature,optimum condition,1d,0.25,C01
+drying temperature,concentrated sulfuric acid,1d,0.25,C01
+drying temperature,optimum temperature,1d,0.25,C01
+drying temperature,calcium chloride,1d,0.25,C01
+drying temperature,normal boiling temperature,1d,0.25,C01
+drying temperature,weather conditions,0,0.00,C01
+drying temperature,dry ice,0,0.00,C01
+drying temperature,meeting point,0,0.00,C01
+drying temperature,freezing temperature,0,0.00,C01
+drying temperature,selection factor points,0,0.00,C01
+drying temperature,temperature stress,0,0.00,C01
+drying temperature,average drying,2b,0.50,F26
+drying temperature,heating temperature,2a,0.50,F26
+drying temperature,desired temperature,2b,0.50,F26
+drying temperature,specified temperature,2b,0.50,F26
+drying temperature,melting point,2b,0.50,F26
+drying temperature,solidification temperature,2b,0.50,F26
+drying temperature,drying,2b,0.50,F26
+drying temperature,temperature,2b,0.50,F26
+drying temperature,specified of temperature,2b,0.50,F26
+drying temperature,melting temperature,2b,0.50,F26
+drying temperature,value,1d,0.25,F26
+drying temperature,maximum drying,2b,0.50,F26
+drying temperature,maximum air,1c,0.25,F26
+drying temperature,drying time,2b,0.50,F26
+drying temperature,solidification point,1d,0.25,F26
+drying temperature,dry,2b,0.50,F26
+drying temperature,heating time,1d,0.25,F26
+drying temperature,range,1c,0.25,C08
+drying temperature,temperature ranging,2b,0.50,C08
+drying temperature,temperature range,2b,0.50,C08
+drying temperature,drying,2b,0.50,C08
+drying temperature,temperature,1c,0.25,C08
+drying temperature,suitable temperature,2b,0.50,C08
+drying temperature,high temperature,1c,0.25,C08
+drying temperature,suitable of temperature,1d,0.25,C08
+drying temperature,drying conditions,2b,0.50,C08
+drying temperature,solvent evaporation temperature,3,0.75,C08
+drying temperature,dehydrating temperature,3,0.75,C08
+drying temperature,water removal temperature,2b,0.50,C08
+drying temperature,dehumidifying temperature,3,0.75,C08
+drying temperature,solvent removal temperature,3,0.75,C08
+drying temperature,desiccation point,3,0.75,C08
+drying temperature,drying agent,1d,0.25,C08
+drying temperature,tray dryer,1b,0.25,C08
+drying temperature,concentrated sulfuric acid,1d,0.25,C08
+drying temperature,spray dryer,1b,0.25,C08
+drying temperature,calcium chloride,1d,0.25,C08
+drying temperature,fluidized bed dryer,1b,0.25,C08
+drying temperature,weather conditions,0,0.00,C08
+drying temperature,water plantation,0,0.00,C08
+drying temperature,meeting point,0,0.00,C08
+drying temperature,cultivation,0,0.00,C08
+drying temperature,selection factor points,0,0.00,C08
+drying temperature,water plants,0,0.00,C08
+provide in distal end portion,dispose in distal end portion,1a,0.25,E05
+provide in distal end portion,dispose in distal end,1a,0.25,E05
+provide in distal end portion,terminate in distal end,1a,0.25,E05
+provide in distal end portion,push in distal direction,2b,0.50,E05
+provide in distal end portion,provide distal end,3,0.75,E05
+provide in distal end portion,provide at distal ends,3,0.75,E05
+provide in distal end portion,provide with distal end,3,0.75,E05
+provide in distal end portion,provide at distal end,3,0.75,E05
+provide in distal end portion,provide in distal end portion,4,1.00,E05
+provide in distal end portion,provide at distal extremity,2b,0.50,E05
+provide in distal end portion,supply in distal end portion,3,0.75,E05
+provide in distal end portion,proximal end portion,2c,0.50,E05
+provide in distal end portion,give in distal end portion,3,0.75,E05
+provide in distal end portion,connect at forward end,2a,0.50,E05
+provide in distal end portion,distal portion,2b,0.50,E05
+provide in distal end portion,fore end,2b,0.50,E05
+provide in distal end portion,protection system,1d,0.25,E05
+provide in distal end portion,keys,1b,0.25,E05
+provide in distal end portion,wall panels,1d,0.25,E05
+provide in distal end portion,fittings,1b,0.25,E05
+provide in distal end portion,spring loaded hinge,1d,0.25,E05
+provide in distal end portion,locker box,1b,0.25,E05
+provide in distal end portion,provide feedback to a patient,0,0.00,E05
+provide in distal end portion,forward data,0,0.00,E05
+provide in distal end portion,lungs portion,0,0.00,E05
+provide in distal end portion,network portion,0,0.00,E05
+provide in distal end portion,distal end of the catheter,0,0.00,E05
+provide in distal end portion,fore head,0,0.00,E05
+alcohol resin,alcohol resins,4,1.00,C04
+alcohol resin,acetal,1b,0.25,C04
+alcohol resin,alcohol which resin,1d,0.25,C04
+alcohol resin,butyral compound,1b,0.25,C04
+alcohol resin,butyral which resin,1d,0.25,C04
+alcohol resin,alcohol,1b,0.25,C04
+alcohol resin,alcohol copolymer,3,0.75,C04
+alcohol resin,acetal compound,1b,0.25,C04
+alcohol resin,butyral,1b,0.25,C04
+alcohol resin,butyral resin,2a,0.50,C04
+alcohol resin,resin,2b,0.50,C04
+alcohol resin,acetal resin,2a,0.50,C04
+alcohol resin,ace resin,0,0.00,C04
+alcohol resin,alcohol compound,1b,0.25,C04
+alcohol resin,alcohol composition,2b,0.50,B29
+alcohol resin,chloride resin,2a,0.50,B29
+alcohol resin,ether,1b,0.25,B29
+alcohol resin,alcohol copolymer,2b,0.50,B29
+alcohol resin,acetal composition,1b,0.25,B29
+alcohol resin,acetal copolymer,1b,0.25,B29
+alcohol resin,polymer,1c,0.25,B29
+alcohol resin,ether polymer,1c,0.25,B29
+alcohol resin,chloride,1d,0.25,B29
+alcohol resin,alcohol polymer,2b,0.50,B29
+alcohol resin,chloride polymer,1a,0.25,B29
+alcohol resin,alcohol,2b,0.50,B29
+alcohol resin,butyral,1b,0.25,B29
+alcohol resin,ether copolymer,1c,0.25,B29
+alcohol resin,alcohol,2b,0.50,C08
+alcohol resin,methyl resin,1d,0.25,C08
+alcohol resin,alcohol resin copolymer,2a,0.50,C08
+alcohol resin,alcohol homopolymer copolymer,2a,0.50,C08
+alcohol resin,alcohol powder,2b,0.50,C08
+alcohol resin,furfural,2b,0.50,C08
+alcohol resin,xanthate,1d,0.25,C08
+alcohol resin,alcohol homopolymer,3,0.75,C08
+alcohol resin,methyl homopolymer,1d,0.25,C08
+alcohol resin,alcohol homopolymer resin,2a,0.50,C08
+alcohol resin,resin,2b,0.50,C08
+alcohol resin,alcohol polymer,3,0.75,C08
+alcohol resin,alcohol copolymer,2b,0.50,C08
+alcohol resin,alcohol based resin,3,0.75,C08
+alcohol resin,alcohol polychain,2b,0.50,C08
+alcohol resin,polyvinyl alcohol resin,2a,0.50,C08
+alcohol resin,phenolic resin,3,0.75,C08
+alcohol resin,pva resin,2a,0.50,C08
+alcohol resin,alcohol rosin,3,0.75,C08
+alcohol resin,alcoholic polymers,3,0.75,C08
+alcohol resin,polymer chain,1c,0.25,C08
+alcohol resin,synthetic polymer,1c,0.25,C08
+alcohol resin,multiple units,1c,0.25,C08
+alcohol resin,copolymer,1c,0.25,C08
+alcohol resin,homo polymers,1c,0.25,C08
+alcohol resin,homopolymer,1c,0.25,C08
+alcohol resin,alcohol drink,0,0.00,C08
+alcohol resin,alcohol abuse,0,0.00,C08
+alcohol resin,alcohol potion,0,0.00,C08
+alcohol resin,alcoholism,0,0.00,C08
+alcohol resin,phenolic antiseptic,0,0.00,C08
+alcohol resin,alcohol dependence,0,0.00,C08
+alcohol resin,chloride resin,1b,0.25,C09
+alcohol resin,alcohols,1b,0.25,C09
+alcohol resin,alcohol resins,4,1.00,C09
+alcohol resin,ester resin,1d,0.25,C09
+alcohol resin,ester resins,1d,0.25,C09
+alcohol resin,alcohol polymer,2b,0.50,C09
+alcohol resin,ester polymer,1d,0.25,C09
+alcohol resin,alcohol,1b,0.25,C09
+alcohol resin,chloride polymer,1d,0.25,C09
+alcohol resin,acetal resin,2a,0.50,C09
+alcohol resin,resin,1c,0.25,C09
+alcohol resin,chloride,1d,0.25,C09
+alcohol resin,alcohol copolymer,2b,0.50,C09
+alcohol resin,synthetic resin,2b,0.50,C09
+alcohol resin,alcohol polychain,2b,0.50,C09
+alcohol resin,organic resin,2b,0.50,C09
+alcohol resin,phenolic resin,3,0.75,C09
+alcohol resin,naturally occurring resins,2b,0.50,C09
+alcohol resin,alcohol rosin,3,0.75,C09
+alcohol resin,plant resins,2b,0.50,C09
+alcohol resin,polymer chain,1c,0.25,C09
+alcohol resin,natural rosins,1a,0.25,C09
+alcohol resin,multiple units,1c,0.25,C09
+alcohol resin,viscous substance,1c,0.25,C09
+alcohol resin,homo polymers,1c,0.25,C09
+alcohol resin,alcohol drink,0,0.00,C09
+alcohol resin,raisin is a dried grape,0,0.00,C09
+alcohol resin,alcohol potion,0,0.00,C09
+alcohol resin,alcohol free zone,0,0.00,C09
+alcohol resin,phenolic antiseptic,0,0.00,C09
+alcohol resin,alcohol price,0,0.00,C09
+wavy shaped,mold,1c,0.25,A45
+wavy shaped,shape of a wave,3,0.75,A45
+wavy shaped,wave like pattern,3,0.75,A45
+wavy shaped,wave like shape,3,0.75,A45
+wavy shaped,undulating lines,2b,0.50,A45
+wavy shaped,crest and trough shaped,2b,0.50,A45
+wavy shaped,curvy shape,2b,0.50,A45
+wavy shaped,other shapes,1c,0.25,A45
+wavy shaped,irregular form,1d,0.25,A45
+wavy shaped,different shapes,1b,0.25,A45
+wavy shaped,wave mode,1b,0.25,A45
+wavy shaped,unique shape,1b,0.25,A45
+wavy shaped,rounded peaks,1c,0.25,A45
+wavy shaped,wavy hair for women,0,0.00,A45
+wavy shaped,electromagnetic waves,0,0.00,A45
+wavy shaped,wavy hair for men,0,0.00,A45
+wavy shaped,river waves,0,0.00,A45
+wavy shaped,shaped beard,0,0.00,A45
+wavy shaped,wave board,0,0.00,A45
+wavy shaped,axially wavy,2a,0.50,A61
+wavy shaped,respective wavy,2a,0.50,A61
+wavy shaped,wavy,2a,0.50,A61
+wavy shaped,serpentine shaped,2b,0.50,A61
+wavy shaped,wavy shape,4,1.00,A61
+wavy shaped,axially wavy shaped,2a,0.50,A61
+wavy shaped,respective wavy shaped,3,0.75,A61
+wavy shaped,wave shaped,3,0.75,A61
+wavy shaped,curl shaped,3,0.75,A61
+wavy shaped,shape of a wave,3,0.75,A61
+wavy shaped,curly shaped,3,0.75,A61
+wavy shaped,wave like shape,3,0.75,A61
+wavy shaped,curved shape,3,0.75,A61
+wavy shaped,crest and trough shaped,2b,0.50,A61
+wavy shaped,curve shaped,3,0.75,A61
+wavy shaped,other shapes,1c,0.25,A61
+wavy shaped,stent,1c,0.25,A61
+wavy shaped,different shapes,1b,0.25,A61
+wavy shaped,frame member,1c,0.25,A61
+wavy shaped,unique shape,1b,0.25,A61
+wavy shaped,struts,1c,0.25,A61
+wavy shaped,wavy hair for women,0,0.00,A61
+wavy shaped,rectangle shape,0,0.00,A61
+wavy shaped,wavy hair for men,0,0.00,A61
+wavy shaped,square,0,0.00,A61
+wavy shaped,shaped beard,0,0.00,A61
+wavy shaped,triangle,0,0.00,A61
+wavy shaped,axially shaped,1c,0.25,A61
+wavy shaped,respective shaped,1c,0.25,A61
+anodize aluminum,operate,0,0.00,B41
+anodize aluminum,anodize anodizing,2b,0.50,B41
+anodize aluminum,oxidize aluminum,1b,0.25,B41
+anodize aluminum,anodize the aluminum,4,1.00,B41
+anodize aluminum,anodize the anodizing,2b,0.50,B41
+anodize aluminum,anodize aluminum anodizing,3,0.75,B41
+anodize aluminum,achieve aluminum,2b,0.50,B41
+anodize aluminum,anodize,2b,0.50,B41
+anodize aluminum,anodize surface,2b,0.50,B41
+anodize aluminum,anodize in electrolyte,1b,0.25,B41
+anodize aluminum,anodize in bath,1b,0.25,B41
+anodize aluminum,anodize aluminum,4,1.00,B41
+anodize aluminum,anodizing aluminum,4,1.00,B41
+anodize aluminum,eloxal process,3,0.75,B41
+anodize aluminum,anodized aluminum,4,1.00,B41
+anodize aluminum,electrolytic oxidation of aluminium,3,0.75,B41
+anodize aluminum,anodized coating on aluminum,3,0.75,B41
+anodize aluminum,an electrochemical process,2b,0.50,B41
+anodize aluminum,anodized aluminum alloys,2a,0.50,B41
+anodize aluminum,plug printing machine,1d,0.25,B41
+anodize aluminum,anodized glass,1a,0.25,B41
+anodize aluminum,transport device,1d,0.25,B41
+anodize aluminum,carriages,1d,0.25,B41
+anodize aluminum,sheet printer,1d,0.25,B41
+anodize aluminum,coating chambers,1c,0.25,B41
+anodize aluminum,anodized cooker,0,0.00,B41
+anodize aluminum,anodized cookware,0,0.00,B41
+anodize aluminum,hard anodized pressure cooker,0,0.00,B41
+anodize aluminum,aluminum foil,0,0.00,B41
+anodize aluminum,aluminum pressure cooker,0,0.00,B41
+anodize aluminum,aluminum glass,0,0.00,B41
+projectile impacts,projectiles lands,3,0.75,F42
+projectile impacts,projectiles,2b,0.50,F42
+projectile impacts,projectile falls,3,0.75,F42
+projectile impacts,opening,1b,0.25,F42
+projectile impacts,opening operation,1b,0.25,F42
+projectile impacts,closure operation,1b,0.25,F42
+projectile impacts,projectile,2b,0.50,F42
+projectile impacts,projectile lands,3,0.75,F42
+projectile impacts,target impact,3,0.75,F42
+projectile impacts,missile impact,3,0.75,F42
+projectile impacts,projectile penetration,3,0.75,F42
+projectile impacts,high velocity projectile,2b,0.50,F42
+projectile impacts,armor piercing bullets,2b,0.50,F42
+projectile impacts,bullet impacts,3,0.75,F42
+projectile impacts,impact velocity,2b,0.50,F42
+projectile impacts,high speed projectile,2b,0.50,F42
+projectile impacts,bullets,1c,0.25,F42
+projectile impacts,target,1d,0.25,F42
+projectile impacts,piercing bullets,1c,0.25,F42
+projectile impacts,bullet,1d,0.25,F42
+projectile impacts,armor plate,1c,0.25,F42
+projectile impacts,ricocheted,1b,0.25,F42
+projectile impacts,projectile ppt,0,0.00,F42
+projectile impacts,projection welding,0,0.00,F42
+projectile impacts,video projection,0,0.00,F42
+projectile impacts,target phrase,0,0.00,F42
+projectile impacts,image projection,0,0.00,F42
+move through environment,move in environment,3,0.75,G01
+move through environment,move within environment,3,0.75,G01
+move through environment,move to environment,2b,0.50,G01
+move through environment,traversal path,2a,0.50,G01
+move through environment,move throughout environment,4,1.00,G01
+move through environment,traversability graph,2a,0.50,G01
+move through environment,move through air,2a,0.50,G01
+move through environment,pose tracking data,2a,0.50,G01
+move through environment,move through atmosphere,3,0.75,G01
+move through environment,mission within environment,2c,0.50,G01
+move through environment,circumstances movement,2b,0.50,G01
+move through environment,environmental control,1d,0.25,G01
+move through environment,move,1b,0.25,G01
+move through environment,electronic equipment racks,1b,0.25,G01
+move through environment,environment,1c,0.25,G01
+move through environment,environmentally sealed,1a,0.25,G01
+move through environment,move through,1d,0.25,G01
+move through environment,environment hazard,0,0.00,G01
+move through environment,environment weather,0,0.00,G01
+move through environment,natural environment,0,0.00,G01
+move through environment,dry environment,0,0.00,G01
+move through environment,well planned move,0,0.00,G01
+move through environment,wet environment,0,0.00,G01
+move through environment,move in environment,3,0.75,A63
+move through environment,move within environment,3,0.75,A63
+move through environment,move to environment,2b,0.50,A63
+move through environment,move down the environment,2b,0.50,A63
+move through environment,living with the environment,2b,0.50,A63
+move through environment,move along the environment,2b,0.50,A63
+move through environment,environment friendly,2b,0.50,A63
+move through environment,move across the environment,2b,0.50,A63
+move through environment,surrounding environment,2b,0.50,A63
+move through environment,move throughout environment,2b,0.50,A63
+move through environment,wastes move through the environment,2a,0.50,A63
+move through environment,through a place,1b,0.25,A63
+move through environment,through water,1b,0.25,A63
+move through environment,went through,1b,0.25,A63
+move through environment,through air,1b,0.25,A63
+move through environment,moving slowly,1c,0.25,A63
+move through environment,move back,0,0.00,A63
+move through environment,environment day,0,0.00,A63
+move through environment,move down,0,0.00,A63
+move through environment,environment protection act,0,0.00,A63
+move through environment,moving truck,0,0.00,A63
+mounting region,outer surface,1c,0.25,A47
+mounting region,connection,1b,0.25,A47
+mounting region,recess,1c,0.25,A47
+mounting region,tip,1b,0.25,A47
+mounting region,distal end,1b,0.25,A47
+mounting region,distal surface,1b,0.25,A47
+mounting region,outer end,1d,0.25,A47
+mounting region,climbing region,2b,0.50,A47
+mounting region,mounting accessory,2a,0.50,A47
+mounting region,attaching region,2b,0.50,A47
+mounting region,fastening means,2a,0.50,A47
+mounting region,joining region,2b,0.50,A47
+mounting region,wall mount,2a,0.50,A47
+mounting region,clipping region,2b,0.50,A47
+mounting region,mounted assembly,2b,0.50,A47
+mounting region,function region,1b,0.25,A47
+mounting region,fixation members,1b,0.25,A47
+mounting region,function location,1b,0.25,A47
+mounting region,frame work,1d,0.25,A47
+mounting region,function point,1b,0.25,A47
+mounting region,supporting means,1b,0.25,A47
+mounting region,mounting everest peak,0,0.00,A47
+mounting region,mountain dew,0,0.00,A47
+mounting region,southern region,0,0.00,A47
+mounting region,geographic region,0,0.00,A47
+mounting region,northern region,0,0.00,A47
+mounting region,mount everest,0,0.00,A47
+mounting region,upper surface,1b,0.25,H01
+mounting region,upper portion,1b,0.25,H01
+mounting region,element mounting portion,2a,0.50,H01
+mounting region,main portion,1c,0.25,H01
+mounting region,top surface,1b,0.25,H01
+mounting region,element main face,1c,0.25,H01
+mounting region,mount portion,3,0.75,H01
+mounting region,mounting surface side,3,0.75,H01
+mounting region,main surface,1c,0.25,H01
+mounting region,mount surface,3,0.75,H01
+mounting region,mounting surface,3,0.75,H01
+mounting region,mounting portion,3,0.75,H01
+mounting region,element mounting surface,2a,0.50,H01
+mounting region,mount,2b,0.50,H01
+mounting region,mount side,3,0.75,H01
+mounting region,island,2c,0.50,H01
+mounting region,element main surface,1c,0.25,H01
+mounting region,element main portion,1c,0.25,H01
+mounting region,upper face,1b,0.25,H01
+mounting region,top face,1b,0.25,H01
+mounting region,main face,1b,0.25,H01
+mounting region,mounts,2b,0.50,H01
+mounting region,mounting side,3,0.75,H01
+mounting region,mounting,2b,0.50,H01
+mounting region,chip formation,2b,0.50,H01
+mounting region,mounting region,4,1.00,H01
+mounting region,mounting area,3,0.75,H01
+mounting region,housing,2c,0.50,H01
+mounting region,chip mounting regions,2a,0.50,H01
+mounting region,semiconductor structure body,2a,0.50,H01
+mounting region,ic processing,2b,0.50,H01
+mounting region,chip mounting area,3,0.75,H01
+mounting region,printed circuit board,1d,0.25,H01
+mounting region,transistor gate,1d,0.25,H01
+mounting region,electronic circuits,1b,0.25,H01
+mounting region,source voltage,1d,0.25,H01
+mounting region,printing,1d,0.25,H01
+mounting region,constant current,1d,0.25,H01
+mounting region,mounting bracket,0,0.00,H01
+mounting region,region wise,0,0.00,H01
+mounting region,mounting needle,0,0.00,H01
+mounting region,visible region,0,0.00,H01
+mounting region,large area,0,0.00,H01
+mounting region,row region,0,0.00,H01
+mounting region,space,1c,0.25,H04
+mounting region,mounting space,3,0.75,H04
+mounting region,reflector,0,0.00,H04
+mounting region,optical body,0,0.00,H04
+mounting region,light member,0,0.00,H04
+mounting region,recess,0,0.00,H04
+mounting region,housing,2b,0.50,H04
+mounting region,optical member,0,0.00,H04
+mounting region,light transmitting body,0,0.00,H04
+mounting region,cavity,2c,0.50,H04
+mounting region,light emitting member,0,0.00,H04
+mounting region,depression,2b,0.50,H04
+mounting region,light emitting body,0,0.00,H04
+mounting region,light transmitting member,0,0.00,H04
+beam formers,dipole antenna,2a,0.50,H01
+beam formers,dipoles antennas,2a,0.50,H01
+beam formers,circuits,1c,0.25,H01
+beam formers,adaptive shifters,2b,0.50,H01
+beam formers,antennas,2b,0.50,H01
+beam formers,antenna,2b,0.50,H01
+beam formers,processors,1c,0.25,H01
+beam formers,actuators,1c,0.25,H01
+beam formers,dipole antennas,2a,0.50,H01
+beam formers,dipoles antenna,2a,0.50,H01
+beam formers,phase elements,2b,0.50,H01
+beam formers,phase shifters,2b,0.50,H01
+beam formers,adaptive elements,2b,0.50,H01
+beam formers,amplitude,1c,0.25,H01
+beam formers,gain,1c,0.25,H01
+beam formers,laser light,2c,0.50,H01
+beam formers,beam forming units,3,0.75,H01
+beam formers,radiation generator,2c,0.50,H01
+beam formers,beamforming networks,3,0.75,H01
+beam formers,array antenna elements,2a,0.50,H01
+beam formers,transmission antenna elements,2a,0.50,H01
+beam formers,phased antenna array,2a,0.50,H01
+beam formers,adaptive beamformer,2a,0.50,H01
+beam formers,beam deform,1a,0.25,H01
+beam formers,beamforming matrices,1b,0.25,H01
+beam formers,electronic circuit,1b,0.25,H01
+beam formers,antenna element,1d,0.25,H01
+beam formers,optical fiber,1b,0.25,H01
+beam formers,phase shifter,1d,0.25,H01
+beam formers,diesel generator,0,0.00,H01
+beam formers,beam bridge,0,0.00,H01
+beam formers,python array,0,0.00,H01
+beam formers,beam load,0,0.00,H01
+beam formers,power generator,0,0.00,H01
+beam formers,beam size,0,0.00,H01
+beam formers,scenarios,0,0.00,H04
+beam formers,filters,1d,0.25,H04
+beam formers,adaptive filters,1d,0.25,H04
+beam formers,beams patterns,2a,0.50,H04
+beam formers,configurations,1d,0.25,H04
+beam formers,beam filters,3,0.75,H04
+beam formers,signals,1d,0.25,H04
+beam formers,results,0,0.00,H04
+beam formers,beams,2b,0.50,H04
+beam formers,beam patterns,2a,0.50,H04
+beam formers,beam formed,2a,0.50,H04
+beam formers,filtering,1d,0.25,H04
+beam formers,spatial filtering,3,0.75,H04
+beam formers,beam forming units,3,0.75,H04
+beam formers,signal processing technique,2b,0.50,H04
+beam formers,beamforming networks,3,0.75,H04
+beam formers,adaptive beamformers,2a,0.50,H04
+beam formers,transmission antenna elements,2a,0.50,H04
+beam formers,beam forming,4,1.00,H04
+beam formers,adaptive beamformer,2a,0.50,H04
+beam formers,image forming unit,1d,0.25,H04
+beam formers,beamforming matrices,1b,0.25,H04
+beam formers,forming tools,1d,0.25,H04
+beam formers,antenna element,1d,0.25,H04
+beam formers,plastically deform,1a,0.25,H04
+beam formers,phase shifters,1d,0.25,H04
+beam formers,supporting beam,0,0.00,H04
+beam formers,beam bridge,0,0.00,H04
+beam formers,former captain,0,0.00,H04
+beam formers,beam load,0,0.00,H04
+beam formers,former minister,0,0.00,H04
+beam formers,beam size,0,0.00,H04
+toilet training aid,toilet training,2b,0.50,A61
+toilet training aid,toilet training process,3,0.75,A61
+toilet training aid,golf training aid,1d,0.25,A61
+toilet training aid,provide training aid,2b,0.50,A61
+toilet training aid,training aid,2b,0.50,A61
+toilet training aid,swing training aid,1d,0.25,A61
+toilet training aid,toilet training tool,2b,0.50,A61
+toilet training aid,toilet training support,3,0.75,A61
+toilet training aid,toilet training device,2b,0.50,A61
+toilet training aid,toilet training assist,3,0.75,A61
+toilet training aid,toilet training part,2b,0.50,A61
+toilet training aid,toilet instruction aid,3,0.75,A61
+toilet training aid,toilet training component,2b,0.50,A61
+toilet training aid,bathing training aid,3,0.75,A61
+toilet training aid,cleaning device,1c,0.25,A61
+toilet training aid,heating effect,1b,0.25,A61
+toilet training aid,cleaning kit,1c,0.25,A61
+toilet training aid,pad,1b,0.25,A61
+toilet training aid,support,1b,0.25,A61
+toilet training aid,first aid,0,0.00,A61
+toilet training aid,toilet seat,0,0.00,A61
+toilet training aid,monetary aid,0,0.00,A61
+toilet training aid,toilet paper,0,0.00,A61
+toilet training aid,food aid,0,0.00,A61
+toilet training aid,toilet tissue,0,0.00,A61
+photolabile linkers,cleavable linkers,2a,0.50,A61
+photolabile linkers,organic linkers,2a,0.50,A61
+photolabile linkers,functional linkers,2a,0.50,A61
+photolabile linkers,acid labile linkers,2a,0.50,A61
+photolabile linkers,photolabile,2b,0.50,A61
+photolabile linkers,photolabile protecting,2a,0.50,A61
+photolabile linkers,photolabile protecting group,2b,0.50,A61
+photolabile linkers,photosentive linker,3,0.75,A61
+photolabile linkers,photoremovable linkers,3,0.75,A61
+photolabile linkers,linker,2b,0.50,A61
+photolabile linkers,photosensitive linkers,3,0.75,A61
+photolabile linkers,disulfide containing linkers,2a,0.50,A61
+photolabile linkers,photocleavable linkers,3,0.75,A61
+photolabile linkers,dimethyl linkers,2a,0.50,A61
+photolabile linkers,chemical modification to a molecule,1b,0.25,A61
+photolabile linkers,light,1c,0.25,A61
+photolabile linkers,high degrees of chemoselectivity,1b,0.25,A61
+photolabile linkers,cleave,1c,0.25,A61
+photolabile linkers,control spatial temporal and concentration,1b,0.25,A61
+photolabile linkers,compound,1c,0.25,A61
+photolabile linkers,linker in computer,0,0.00,A61
+photolabile linkers,linker error,0,0.00,A61
+photolabile linkers,linker in c,0,0.00,A61
+photolabile linkers,report linker,0,0.00,A61
+photolabile linkers,linker and loader,0,0.00,A61
+photolabile linkers,irradiant drug,0,0.00,A61
+listening time,time offset,2a,0.50,G01
+listening time,source,2b,0.50,G01
+listening time,pause,2b,0.50,G01
+listening time,pauses,2b,0.50,G01
+listening time,time,2b,0.50,G01
+listening time,value,1d,0.25,G01
+listening time,weighted sound pressure level,2a,0.50,G01
+listening time,listening duration,3,0.75,G01
+listening time,effective quiet level,2a,0.50,G01
+listening time,listening period,3,0.75,G01
+listening time,sampling epoch,2b,0.50,G01
+listening time,hearing time,3,0.75,G01
+listening time,rest time,3,0.75,G01
+listening time,attending period,2b,0.50,G01
+listening time,listen before talk,1d,0.25,G01
+listening time,clock,1c,0.25,G01
+listening time,lbt mode switching,1b,0.25,G01
+listening time,interval,1c,0.25,G01
+listening time,contention based channel access,1c,0.25,G01
+listening time,seconds,1b,0.25,G01
+listening time,story time,0,0.00,G01
+listening time,time of flight,0,0.00,G01
+listening time,listening capacity,0,0.00,G01
+listening time,offset area,0,0.00,G01
+listening time,entry time,0,0.00,G01
+listening time,time course,0,0.00,G01
+lock type,fastener,1c,0.25,B65
+lock type,type,1c,0.25,B65
+lock type,type lock,4,1.00,F41
+lock type,knob lock,2b,0.50,F41
+lock type,padlock,2b,0.50,F41
+lock type,deadbolt,2b,0.50,F41
+lock type,deadbolts,2b,0.50,F41
+lock type,cam lock,2b,0.50,F41
+lock type,mortise lock,2b,0.50,F41
+lock type,rim lock,2b,0.50,F41
+lock type,cabinets,1c,0.25,F41
+lock type,door lock,1d,0.25,F41
+lock type,doors,1c,0.25,F41
+lock type,cabinet lock,1d,0.25,F41
+lock type,security procedure,1d,0.25,F41
+lock type,locked gate,1d,0.25,F41
+lock type,hacker type,0,0.00,F41
+lock type,lock pick,0,0.00,F41
+lock type,blood type,0,0.00,F41
+lock type,locksmith,0,0.00,F41
+lock type,type message,0,0.00,F41
+lock type,typing,0,0.00,F41
+lock type,read,0,0.00,G06
+lock type,row lock,2a,0.50,G06
+lock type,lock,2b,0.50,G06
+lock type,row,0,0.00,G06
+lock type,type lock,2b,0.50,G06
+lock type,soft lock,2a,0.50,G06
+lock type,double lock type connector,2a,0.50,G06
+lock type,lockable object,2b,0.50,G06
+lock type,hard lock,2a,0.50,G06
+lock type,magnetic lock,2a,0.50,G06
+lock type,unlock type,1a,0.25,G06
+lock type,screen lock,1c,0.25,G06
+lock type,pc lock,1b,0.25,G06
+lock type,type c cable,0,0.00,G06
+lock type,communication types,0,0.00,G06
+lock type,row line,0,0.00,G06
+support carrier aggregation,support carrier,2b,0.50,H03
+support carrier aggregation,support a capability,1c,0.25,H03
+support carrier aggregation,multiple capability,1b,0.25,H03
+support carrier aggregation,perform carrier aggregation,2a,0.50,H03
+support carrier aggregation,operate between both aggregation,2b,0.50,H03
+support carrier aggregation,carrier aggregation,2b,0.50,H03
+support carrier aggregation,carrier,1c,0.25,H03
+support carrier aggregation,aggregation,1c,0.25,H03
+support carrier aggregation,functionality,1c,0.25,H03
+support carrier aggregation,support aggregation,2b,0.50,H03
+support carrier aggregation,support both carrier aggregation,3,0.75,H03
+support carrier aggregation,support between carrier aggregation,3,0.75,H03
+support carrier aggregation,operate both carrier aggregation,2b,0.50,H03
+support carrier aggregation,support multiple capability,1c,0.25,H03
+support carrier aggregation,perform aggregation,1c,0.25,H03
+support carrier aggregation,operate both aggregation,1c,0.25,H03
+support carrier aggregation,support an aggregation,2b,0.50,H03
+support carrier aggregation,support operation,2b,0.50,H03
+support carrier aggregation,operate both carrier,2b,0.50,H03
+support carrier aggregation,feature,1d,0.25,H03
+support carrier aggregation,capability,1d,0.25,H03
+support carrier aggregation,multiple feature,1d,0.25,H03
+support carrier aggregation,support both aggregation,2b,0.50,H03
+support carrier aggregation,perform both aggregation,2b,0.50,H03
+support carrier aggregation,support a aggregation,2b,0.50,H03
+support carrier aggregation,support functionality,2b,0.50,H03
+support carrier aggregation,support a feature,1c,0.25,H03
+support carrier aggregation,support multiple feature,1c,0.25,H03
+support carrier aggregation,support both carrier,1c,0.25,H03
+support carrier aggregation,support between carrier,2b,0.50,H03
+support carrier aggregation,support between both aggregation,2b,0.50,H03
+support carrier aggregation,operate between carrier,1c,0.25,H03
+support carrier aggregation,perform carrier,2b,0.50,H03
+support carrier aggregation,perform both carrier,2b,0.50,H03
+support carrier aggregation,operate between carrier aggregation,2b,0.50,H03
+support carrier aggregation,carrier aggregation system,2b,0.50,H03
+support carrier aggregation,use carrier aggregation,2a,0.50,H03
+support carrier aggregation,carrier aggregation operation,2b,0.50,H03
+support carrier aggregation,carrier aggregation rate,2b,0.50,H03
+support carrier aggregation,bandwidth aggregation,2b,0.50,H03
+support carrier aggregation,inter band carrier aggregation,2a,0.50,H03
+support carrier aggregation,frequency evaluation,2b,0.50,H03
+support carrier aggregation,support ca,3,0.75,H03
+support carrier aggregation,low spectrum,1b,0.25,H03
+support carrier aggregation,low frequency,1c,0.25,H03
+support carrier aggregation,signal,1c,0.25,H03
+support carrier aggregation,signalling cost,1c,0.25,H03
+support carrier aggregation,support structure,0,0.00,H03
+support carrier aggregation,support system,0,0.00,H03
+support carrier aggregation,carrier device,0,0.00,H03
+support carrier aggregation,carrier meals,0,0.00,H03
+support carrier aggregation,use method,0,0.00,H03
+support carrier aggregation,support vector machine,0,0.00,H03
+run on surface,run along surface,2b,0.50,A63
+run on surface,run to surface,2b,0.50,A63
+run on surface,run on plane,2b,0.50,A63
+run on surface,running surface,2b,0.50,A63
+run on surface,run on area,2b,0.50,A63
+run on surface,racing track,2a,0.50,A63
+run on surface,run on ground,2b,0.50,A63
+run on surface,ground surface,2b,0.50,A63
+run on surface,run on horizontal plane,2b,0.50,A63
+run on surface,running track,2b,0.50,A63
+run on surface,surface area,1b,0.25,A63
+run on surface,running shoes,1b,0.25,A63
+run on surface,area of a surface,1b,0.25,A63
+run on surface,athletics ground,1b,0.25,A63
+run on surface,area of a plane,1b,0.25,A63
+run on surface,sports event,1c,0.25,A63
+run on surface,surface book,0,0.00,A63
+run on surface,plant runner,0,0.00,A63
+run on surface,surface tension,0,0.00,A63
+run on surface,surface tension of string,0,0.00,A63
+run on surface,surface runoff,0,0.00,A63
+run on surface,run over surface,3,0.75,D01
+run on surface,run surface,1c,0.25,D01
+run on surface,run on plane,3,0.75,D01
+run on surface,sliding on surface,2a,0.50,D01
+run on surface,running on surface,4,1.00,D01
+run on surface,running over surface,3,0.75,D01
+run on surface,moving on surface,3,0.75,D01
+run on surface,drag on surface,2a,0.50,D01
+run on surface,incline,1c,0.25,D01
+run on surface,friction,1c,0.25,D01
+run on surface,outer portion,1c,0.25,D01
+run on surface,surface,1c,0.25,D01
+run on surface,top,1c,0.25,D01
+run on surface,distance,1b,0.25,D01
+run on surface,ozone surface,0,0.00,D01
+run on surface,coverage,0,0.00,D01
+run on surface,surface tension,0,0.00,D01
+run on surface,skin surface,0,0.00,D01
+run on surface,surface light,0,0.00,D01
+run on surface,statistics,0,0.00,D01
+run on surface,run over surface,3,0.75,B60
+run on surface,run to surface,3,0.75,B60
+run on surface,run along surface,3,0.75,E01
+run on surface,run surface,3,0.75,E01
+pressurizable container,container,2b,0.50,B05
+pressurizable container,container adapted,1c,0.25,B05
+pressurizable container,dispensing container,2b,0.50,B05
+pressurizable container,dispensing adapted,1d,0.25,B05
+pressurizable container,outer container bag,1d,0.25,B05
+pressurizable container,dispenser,1c,0.25,B05
+pressurizable container,pressurizable vessel,3,0.75,B05
+pressurizable container,vapor source,1d,0.25,A01
+pressurizable container,pressure vessel,2b,0.50,A01
+pressurizable container,pressurized vessel,2b,0.50,A01
+pressurizable container,pressurized container,4,1.00,A01
+pressurizable container,pressurized,2b,0.50,A01
+pressurizable container,canister,1c,0.25,A01
+pressurizable container,container,2b,0.50,A01
+pressurizable container,vessel,2b,0.50,A01
+pressurizable container,pressure container,2b,0.50,A01
+pressurizable container,housing,1c,0.25,A01
+pressurizable container,pressure,2b,0.50,A01
+pressurizable container,pressurizable chamber,3,0.75,A01
+pressurizable container,pressurizable,2b,0.50,A01
+pressurizable container,pressurizable fluid,2a,0.50,A01
+pressurizable container,pressurizable vessel,3,0.75,A01
+pressurizable container,pressurizable receptacle,2b,0.50,A01
+pressurizable container,pressurized containers,4,1.00,A01
+pressurizable container,pressurizable enclosure,2b,0.50,A01
+pressurizable container,pressurizable apparatus,3,0.75,A01
+pressurizable container,pressurizable storage,2b,0.50,A01
+pressurizable container,substance contained in pressure,3,0.75,A01
+pressurizable container,pressurizable packaging,2b,0.50,A01
+pressurizable container,liquid container,2b,0.50,A01
+pressurizable container,fluid pressure,1d,0.25,A01
+pressurizable container,pressure readings,1b,0.25,A01
+pressurizable container,food storage containers,1c,0.25,A01
+pressurizable container,calculated stress,1d,0.25,A01
+pressurizable container,work pressure,0,0.00,A01
+pressurizable container,office pressure,0,0.00,A01
+pressurizable container,pressurizable bandage ankle support,0,0.00,A01
+pressurizable container,flexible container,0,0.00,A01
+pressurizable container,containment reservoir,0,0.00,A47
+pressurizable container,container reservoir,2b,0.50,A47
+pressurizable container,substantially containing container,2b,0.50,A47
+pressurizable container,substantially containing reservoir,1d,0.25,A47
+pressurizable container,substantially storage container,2b,0.50,A47
+pressurizable container,brewing container,2c,0.50,A47
+pressurizable container,container,2b,0.50,A47
+pressurizable container,reservoir,1d,0.25,A47
+pressurizable container,containment container,2b,0.50,A47
+pressurizable container,substantially storage reservoir,1c,0.25,A47
+pressurizable container,standpipe,1d,0.25,A47
+pressurizable container,brewing chamber,1c,0.25,A47
+pressurizable container,chamber,1c,0.25,A47
+pressurizable container,pressurizable receptacle,2b,0.50,A47
+pressurizable container,pressurized container,4,1.00,A47
+pressurizable container,pressurizable enclosure,2b,0.50,A47
+pressurizable container,compressed container,2c,0.50,A47
+pressurizable container,pressurizable storage,2b,0.50,A47
+pressurizable container,pressurized products,2b,0.50,A47
+pressurizable container,pressurizable packaging,2b,0.50,A47
+pressurizable container,container lid,2b,0.50,A47
+pressurizable container,transportation container,1c,0.25,A47
+pressurizable container,vacuum pressure,1b,0.25,A47
+pressurizable container,shipping container,1c,0.25,A47
+pressurizable container,reaction vessel,1c,0.25,A47
+pressurizable container,food storage containers,1c,0.25,A47
+pressurizable container,mitigating pressure,1a,0.25,A47
+pressurizable container,work pressure,0,0.00,A47
+pressurizable container,barometric pressure,0,0.00,A47
+pressurizable container,office pressure,0,0.00,A47
+pressurizable container,blood pressure,0,0.00,A47
+pressurizable container,pressurizable bandage ankle support,0,0.00,A47
+pressurizable container,container tracking,0,0.00,A47
+pressurizable container,container,2b,0.50,F04
+pressurizable container,liquid tank,1b,0.25,F04
+pressurizable container,nozzle,1b,0.25,F04
+pressurizable container,sprayer,1b,0.25,F04
+pressurizable container,reservoir,2b,0.50,F04
+pressurizable container,pressurizable chamber,3,0.75,F04
+pressurizable container,pressurizable,2b,0.50,F04
+pressurizable container,pressurizable fluid,2a,0.50,F04
+water oil,membrane,1c,0.25,B01
+water oil,water,1c,0.25,B01
+water oil,produced water,1d,0.25,B01
+water oil,bitumen,2a,0.50,B01
+water oil,fluid,2b,0.50,B01
+water oil,water grease,2b,0.50,B01
+water oil,oil water,4,1.00,B01
+water oil,water wax,2b,0.50,B01
+water oil,oil water separation,2b,0.50,B01
+water oil,water saturated fats,2b,0.50,B01
+water oil,water oil emulsion,2b,0.50,B01
+water oil,water unsaturated fats,2b,0.50,B01
+water oil,water oil mixture,2b,0.50,B01
+water oil,fractional distillation,1d,0.25,B01
+water oil,separating membrane,1c,0.25,B01
+water oil,separation process,1d,0.25,B01
+water oil,filter screen,1c,0.25,B01
+water oil,liquid chromatography,1d,0.25,B01
+water oil,separator,1c,0.25,B01
+water oil,candle wax,0,0.00,B01
+water oil,soda water,0,0.00,B01
+water oil,fat individual,0,0.00,B01
+water oil,air conditioner,0,0.00,B01
+water oil,water droplet,0,0.00,B01
+water oil,air purifier,0,0.00,B01
