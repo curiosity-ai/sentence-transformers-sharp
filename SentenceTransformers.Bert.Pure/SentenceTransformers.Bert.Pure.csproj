@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>AnyCPU</Platforms>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>SentenceTransformers.Bert.Pure</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Authors>Curiosity GmbH, Othneil Drew</Authors>
+    <Copyright>(c) Copyright 2026 Curiosity GmbH - all right reserved, Copyright (c) 2021 Othneil Drew (Bert Tokenizers)</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>www.curiosity.ai</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/curiosity-ai/sentence-transformers-sharp</RepositoryUrl>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageId>SentenceTransformers.Bert.Pure</PackageId>
+    <Description>A 100% managed, dependency-free (no ONNX Runtime) BERT sentence encoder with built-in, real weight-space LoRA fine-tuning. Loads the original HuggingFace safetensors weights and runs the BertModel forward AND backward pass entirely in pure C#, so encoders such as all-MiniLM-L6-v2 and snowflake-arctic-embed-xs can be adapted to a domain with genuine low-rank adapters injected into the transformer's attention/MLP projections.</Description>
+    <PackageTags>BERT, MiniLM, Arctic, LoRA, Fine-tuning, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings, Sentence Transformers, Pure CSharp, No ONNX, AOT, Data Science, Artificial Intelligence, AI, Neural Networks, Deep Learning</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\vocab.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SentenceTransformers.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pure-managed SIMD primitives (TensorPrimitives). No native dependency. -->
+    <PackageReference Include="System.Numerics.Tensors" Version="10.0.3" />
+  </ItemGroup>
+</Project>

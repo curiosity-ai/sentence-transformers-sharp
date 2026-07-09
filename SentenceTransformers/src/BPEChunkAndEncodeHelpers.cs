@@ -134,13 +134,11 @@ public static class BPEChunkAndEncodeHelpers
         {
             if (sequentially)
             {
-                var one = new string[1];
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    one[0] = chunks[i];
-                    var v = await encoder.EncodeAsync(one, cancellationToken);
-                    encoded[i] = new EncodedChunk(one[0], v[0]);
+                    var v = await encoder.EncodeAsync(chunks[i], cancellationToken);
+                    encoded[i] = new EncodedChunk(chunks[i], v);
                     MaybeReportProgress(reportProgress, ref sw, i, chunks.Count);
                 }
             }
@@ -176,13 +174,11 @@ public static class BPEChunkAndEncodeHelpers
         {
             if (sequentially)
             {
-                var one = new string[1];
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    one[0] = chunks[i].Value;
-                    var v = await encoder.EncodeAsync(one, cancellationToken);
-                    encoded[i] = new EncodedChunkAligned(one[0], v[0], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
+                    var v = await encoder.EncodeAsync(chunks[i].Value, cancellationToken);
+                    encoded[i] = new EncodedChunkAligned(chunks[i].Value, v, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
                     MaybeReportProgress(reportProgress, ref sw, i, chunks.Count);
                 }
             }
@@ -223,13 +219,11 @@ public static class BPEChunkAndEncodeHelpers
         {
             if (sequentially)
             {
-                var one = new string[1];
                 for (int i = 0; i < chunks.Length; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    one[0] = chunks[i].Text;
-                    var v = await encoder.EncodeAsync(one, cancellationToken);
-                    encoded[i] = new TaggedEncodedChunk(chunks[i].Text, v[0], chunks[i].Tag);
+                    var v = await encoder.EncodeAsync(chunks[i].Text, cancellationToken);
+                    encoded[i] = new TaggedEncodedChunk(chunks[i].Text, v, chunks[i].Tag);
                     MaybeReportProgress(reportProgress, ref sw, i, chunks.Length);
                 }
             }
@@ -274,13 +268,11 @@ public static class BPEChunkAndEncodeHelpers
         {
             if (sequentially)
             {
-                var one = new string[1];
                 for (int i = 0; i < chunks.Length; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    one[0] = chunks[i].Text;
-                    var v = await encoder.EncodeAsync(one, cancellationToken);
-                    encoded[i] = new TaggedEncodedChunkAligned(chunks[i].Text, v[0], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
+                    var v = await encoder.EncodeAsync(chunks[i].Text, cancellationToken);
+                    encoded[i] = new TaggedEncodedChunkAligned(chunks[i].Text, v, chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
                     MaybeReportProgress(reportProgress, ref sw, i, chunks.Length);
                 }
             }

@@ -112,6 +112,13 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
         return results;
     }
 
+    /// <inheritdoc/>
+    public async Task<float[]> EncodeAsync(string sentence, CancellationToken cancellationToken = default)
+    {
+        var vectors = await EncodeAsync(new[] { sentence ?? string.Empty }, cancellationToken);
+        return vectors.Length > 0 ? vectors[0] : null;
+    }
+
     private async Task<float[][]> EncodeCoreAsync(string[] sentences, CancellationToken cancellationToken)
     {
         var numSentences = sentences.Length;

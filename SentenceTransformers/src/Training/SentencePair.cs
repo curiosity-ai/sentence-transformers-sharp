@@ -13,7 +13,10 @@ namespace SentenceTransformers.Training;
 /// their score is at or above the configured threshold. Pass <c>null</c> for datasets that only
 /// contain positive pairs.
 /// </param>
-public readonly record struct SentencePair(string Anchor, string Positive, float? Score = null);
+/// <param name="Negative">Optional hard negative: a text that should be pushed <em>away</em> from the
+/// anchor during contrastive training (a "triplet"). Null for pair-only datasets; the trainer can also
+/// mine negatives automatically when none are supplied.</param>
+public readonly record struct SentencePair(string Anchor, string Positive, float? Score = null, string Negative = null);
 
 /// <summary>
 /// A collection of <see cref="SentencePair"/> plus a deterministic train / validation splitter.

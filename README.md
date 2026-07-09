@@ -306,62 +306,87 @@ using var encoder = await SentenceEncoder.CreateAsync(
     modelDataUrl: SentenceEncoder.Quantizations.FullModelDataUrl);
 ```
 
-## Fine-tuning for your use case (LoRA-style adapters)
+## Fine-tuning for your use case (real weight-space LoRA)
 
-You can specialize **any** of the models above for a specific domain — support tickets, legal clauses,
-product descriptions, a particular language pair — by training a small **LoRA-style adapter** from a
-set of *related pairs* (a query and a relevant passage, two paraphrases, a question and its duplicate…).
-Nothing about the base model changes: the adapter is a tiny low-rank residual applied to the pooled
-embedding, so the exact same training code works for MiniLM, Arctic XS, Qwen3 and both Harrier models.
+You can specialize the **pure-C# encoders** — MiniLM, Arctic XS and Harrier Small — for a specific
+domain (support tickets, legal clauses, product descriptions, a particular language pair) by training a
+**real weight-space LoRA adapter** from a set of *related pairs* (a query and a relevant passage, two
+paraphrases, a question and its duplicate…). This is proper LoRA: small low-rank factors are injected
+*inside* the transformer's attention/MLP projections (`W + (α/r)·B·A`), and the loss is backpropagated
+through the whole (frozen) network. The forward **and backward** passes run entirely in pure C# — no ONNX
+Runtime, and no PyTorch/autodiff dependency. A shared tensor autograd engine (`SentenceTransformers.Training.Autograd`)
+powers both model families.
+
+> **MiniLM / Arctic XS** (`SentenceTransformers.Bert.Pure`, the `BertModel` architecture) read their
+> full-precision weights directly from the fp32 ONNX graphs already embedded in the MiniLM / Arctic
+> packages, so training is fully self-contained — no model download.
+>
+> **Harrier Small** (`SentenceTransformers.Harrier.Small.Pure`, a Gemma3 decoder) trains through the same
+> autograd engine and LoRA objectives via `Gemma3LoraTrainer` / `Gemma3LoraEncoder`; its bf16 weights are
+> downloaded on first use, and because it is a ~270M-param decoder each step is much heavier than the small
+> BERTs (keep the batch / sequence length modest). LoRA there targets q/k/v/o and the gate/up/down MLP
+> projections.
+>
+> The remaining ONNX-only models (Qwen3, Harrier Medium) are inference-only and are not trainable here.
 
 ```csharp
+using SentenceTransformers.Bert.Pure;
+using SentenceTransformers.Bert.Pure.Model;
+using SentenceTransformers.Bert.Pure.Training;
 using SentenceTransformers.Training;
 
-using var baseEncoder = new SentenceTransformers.MiniLM.SentenceEncoder();
+// Pure-C# MiniLM (weights fetched once from HuggingFace, or use SentenceEncoder.LoadFromOnnx to reuse
+// the weights embedded in the SentenceTransformers.MiniLM package with no download at all).
+using var baseEncoder = await SentenceEncoder.CreateMiniLMAsync();
 
 var dataset = new SentencePairDataset(new[]
 {
-    new SentencePair("how do I reset my password", "Use the ‘Forgot password’ link on the sign-in page."),
-    new SentencePair("cancel my subscription",      "Go to Billing → Manage plan → Cancel."),
-    // … a few hundred to a few thousand related pairs …
+    new SentencePair("how do I reset my password", "Use the ‘Forgot password’ link on the sign-in page.", 0.95f),
+    new SentencePair("cancel my subscription",      "Go to Billing → Manage plan → Cancel.",              0.95f),
+    // … a few hundred to a few thousand related (optionally scored) pairs …
 });
 
-// Splits into train/validation, trains with a contrastive InfoNCE objective, keeps the best adapter.
-var report = await LoraTrainer.TrainAsync(baseEncoder, dataset, new LoraTrainingOptions
+var report = await BertLoraTrainer.TrainAsync(baseEncoder, dataset, new BertLoraTrainingOptions
 {
-    Rank   = 16,   // low-rank bottleneck (more = more capacity)
-    Epochs = 20,
+    Objective = BertTrainingObjective.CoSent,     // pairwise ranking loss — directly targets STS Spearman
+    Rank      = 8,                                // LoRA rank
+    Targets   = LoraTargets.Attention,            // inject into Q, K, V and the attention output
+    Epochs    = 10,
 });
 
 report.Adapter.Save("support-faq.lora");
 
-// Use the fine-tuned encoder anywhere an ISentenceEncoder is expected:
-using var tuned = new AdaptedSentenceEncoder(baseEncoder, report.Adapter);
+// The tuned model is a drop-in ISentenceEncoder (the adapter is folded into the transformer at runtime):
+using var tuned = baseEncoder.WithAdapter(report.Adapter);
 float[][] vectors = await tuned.EncodeAsync(new[] { "I can't log in" });
 ```
 
-**How it works.** The base encoder is treated as a frozen black box — every unique sentence is embedded
-once and cached, then training only does cheap low-rank math on those vectors and optimizes the adapter
-with AdamW using *exact* analytic gradients (no autodiff, no ONNX Runtime training). The held-out
-validation set is scored with STS Spearman correlation and top-1 retrieval accuracy, and the best adapter
-is kept. Because the adapter operates purely on `ISentenceEncoder` output, a trained `.lora` file is a
-drop-in wrapper (`AdaptedSentenceEncoder`) around any model.
+**How it works.** A tiny tensor-level autograd engine records the BERT forward pass; the exact gradients
+for the injected LoRA factors are obtained by replaying the tape backward (verified against finite
+differences in the test-suite). Only the low-rank factors — and optionally a learned output-centering bias
+— are trainable; every base weight stays frozen, so the gradients for the frozen network are skipped (the
+LoRA efficiency win). The held-out validation set is scored with STS Spearman and top-1 retrieval accuracy
+and the best adapter is kept.
 
-**Two objectives** (`LoraTrainingOptions.Objective`):
+**Objectives** (`BertLoraTrainingOptions.Objective`):
 
-- `Contrastive` *(default)* — symmetric InfoNCE with in-batch negatives. Pulls each anchor towards its
-  positive and away from the other positives in the batch. Uses only pairs at or above
-  `PositiveScoreThreshold` (or all pairs when unscored). Best when the goal is **retrieval / nearest-neighbour**
-  separation.
-- `CosineRegression` — minimizes the mean squared error between each pair's adapted cosine similarity and
-  its gold `[0,1]` score, over **all** scored pairs (dissimilar ones included). It directly shapes the full
-  graded ordering, so it's the better choice when you care about **calibrated similarity scores** and the
-  STS Spearman metric. Requires every pair to carry a score.
+- `Contrastive` *(default)* — symmetric InfoNCE (MultipleNegativesRanking) with in-batch **and hard
+  negatives** (explicit triplets via `SentencePair.Negative`, plus optional mined negatives), with
+  false-negative masking. Best for **retrieval / nearest-neighbour** separation.
+- `CoSent` — the CoSENT pairwise-ranking loss over graded pairs. It optimizes the *ordering* that Spearman
+  measures and consistently beats plain cosine-MSE on STS. Best when you care about **graded similarity**.
+- `CosineRegression` — mean-squared error between adapted cosine and the gold `[0,1]` score.
+
+**Extras** (all optional): warmup + cosine LR schedule, a learned temperature (`LearnableTemperature`),
+multi-seed model selection (`NumSeeds`), a learned output-centering bias (`UseOutputBias`) and post-hoc
+ZCA whitening (`ApplyWhitening`) to counter embedding anisotropy, Matryoshka sub-dimension losses
+(`MatryoshkaDims`), asymmetric instruction prefixes (`QueryPrefix` / `DocumentPrefix`), and a choice of
+which projections carry adapters (`Targets`: `Attention`, `Mlp` or `All`).
 
 ### Training CLI + example dataset
 
-The `SentenceTransformers.LoraTraining` project is a ready-to-run console app that fine-tunes any model
-against one of two bundled example datasets (`--dataset`):
+The `SentenceTransformers.LoraTraining` project is a ready-to-run console app that fine-tunes MiniLM,
+Arctic XS or Harrier Small against one of two bundled example datasets (`--dataset`):
 
 - **`stsb`** — the English [STS Benchmark](https://github.com/PhilipMay/stsb-multi-mt), a broad
   general-English similarity set, downloaded on demand.
@@ -372,44 +397,23 @@ against one of two bundled example datasets (`--dataset`):
 ```bash
 cd SentenceTransformers.LoraTraining
 
-# General-English STS Benchmark (needs a one-time download):
+# General-English STS Benchmark (needs a one-time dataset download; model weights are embedded):
 dotnet run -c Release -- download
-dotnet run -c Release -- train --model minilm --epochs 30 --rank 32
+dotnet run -c Release -- train --model minilm --objective cosent --rank 8 --epochs 10 --output-bias
 dotnet run -c Release -- eval  --model minilm --adapter ./adapters/minilm-stsb.lora --split test
 
-# Domain-specific patent phrases (embedded, no download) — graded scores, so use regression:
-dotnet run -c Release -- train --model minilm --dataset patent --objective regression --rank 8 --lr 0.0003 --weight-decay 0.05 --epochs 10
-dotnet run -c Release -- eval  --model minilm --dataset patent --adapter ./adapters/minilm-patent.lora --split test
+# Domain-specific patent phrases (embedded, no download) — graded scores:
+dotnet run -c Release -- train --model arctic --dataset patent --objective cosent --rank 8 --whitening
+dotnet run -c Release -- eval  --model arctic --dataset patent --adapter ./adapters/arctic-patent.lora --split test
+
+# Harrier Small (Gemma3, pure C#) — bf16 weights downloaded on first use; heavier, so keep batch small:
+dotnet run -c Release -- train --model harrier-small --dataset patent --objective cosent --rank 8 --batch 8 --max-tokens 64
 ```
 
-`--model` accepts `minilm`, `arctic`, `qwen3`, `harrier-medium`, `harrier-small` or `harrier-small-pure`.
-Run `dotnet run -- help` for the full option list (objective, rank, α, learning rate, weight decay,
-temperature, batch size, validation fraction, positive-score threshold, …). Training reports per-epoch
-validation loss, retrieval accuracy and STS Spearman, and prints a base-vs-tuned summary at the end.
-
-The patent set is a good illustration of where adapters help most: MiniLM's out-of-the-box Spearman on
-these technical phrases is only ~0.56 (versus ~0.79 on general-English STS-B). With the `CosineRegression`
-objective a small adapter lifts held-out validation Spearman to **~0.60–0.63** — real domain adaptation on
-top of a frozen model. Two caveats worth knowing:
-
-- **Match the objective to the metric.** `CosineRegression` targets graded Spearman directly and beats the
-  contrastive objective there; `Contrastive` is better for pure retrieval separation. On the patent set,
-  regression takes validation Spearman from 0.56 to as high as ~0.63.
-- **The patent *test* split is deliberately distribution-shifted** (unseen phrases/CPC contexts), so an
-  adapter that fits the training distribution can overfit. Light regularization (small rank, higher
-  `--weight-decay`, fewer epochs — as in the command above) is what makes the gain carry over to the test
-  split rather than just the in-distribution validation. Gains are largest when the base model is weakest
-  on your domain; on tasks a model already handles well the headroom, and so the lift, is naturally smaller.
-
-With those same regularized regression settings the lift carries over to the held-out **test** split, and
-is largest for the model with the most headroom — **Arctic XS** starts weakest on patent phrases and gains
-the most:
-
-| Model (patent, regression, rank 8) | Base test Spearman | Tuned test Spearman |
-| --- | ---: | ---: |
-| MiniLM         | 0.541 | 0.545 |
-| Arctic XS      | 0.480 | **0.533** |
-| Harrier Small  | 0.555 | **0.597** |
+`--model` accepts `minilm`, `arctic` or `harrier-small`. Run `dotnet run -- help` for the full option list (objective,
+targets, rank, α, learning rate, warmup, temperature, mined negatives, learnable temperature, output bias,
+whitening, Matryoshka, query/doc prefixes, multi-seed, …). Training prints per-epoch validation retrieval
+accuracy and STS Spearman and a base-vs-tuned summary at the end.
 
 ## How it works
 

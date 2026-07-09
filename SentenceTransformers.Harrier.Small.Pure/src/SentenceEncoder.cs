@@ -220,6 +220,37 @@ namespace SentenceTransformers.Harrier.Small.Pure
             return results;
         }
 
+        /// <summary>Encodes a single input string into one embedding vector — cheaper than the batch overload
+        /// for a lone input (no intermediate arrays). Honors the vector cache.</summary>
+        public Task<float[]> EncodeAsync(string sentence, CancellationToken cancellationToken = default) =>
+            EncodeAsync(sentence, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = _defaultParallelOptions.MaxDegreeOfParallelism,
+                CancellationToken      = cancellationToken,
+            });
+
+        /// <summary>Single-sentence encode with explicit parallelism (fans one long document across cores).</summary>
+        public async Task<float[]> EncodeAsync(string sentence, ParallelOptions parallelOptions)
+        {
+            sentence ??= string.Empty;
+            var key = sentence.Hash128();
+            if (_vectorCache.TryGet(key, out var cached)) return cached;
+
+            var ids = _tokenizer.EncodeIds(sentence);
+            float[] vec;
+            if (ids.Length == 0)
+            {
+                vec = new float[EmbeddingDimension];
+            }
+            else
+            {
+                vec = await _model.ForwardAsync(ids, parallelOptions).ConfigureAwait(false);
+                if (Normalize) Ops.L2NormalizeInPlace(vec);
+            }
+            _vectorCache.Set(key, vec);
+            return vec;
+        }
+
         private async Task<float[][]> EncodeCoreAsync(string[] sentences, ParallelOptions parallelOptions)
         {
             if (sentences is null || sentences.Length == 0)
