@@ -57,9 +57,9 @@ public sealed class Gemma3LoraEncoder : ISentenceEncoder
         using (stream) return HarrierSmallPureTokenizer.FromStream(stream, 8192);
     }
 
-    public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+    public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
     {
-        if (sentences is null || sentences.Length == 0) return Array.Empty<float[]>();
+        if (sentences is null || sentences.Length == 0) return Task.FromResult(Array.Empty<float[]>());
         var results = new float[sentences.Length][];
         var keys = new UID128[sentences.Length];
         List<int> misses = null;
@@ -69,9 +69,9 @@ public sealed class Gemma3LoraEncoder : ISentenceEncoder
             if (_vectorCache.TryGet(keys[i], out var cached)) results[i] = cached;
             else (misses ??= new List<int>()).Add(i);
         }
-        if (misses is null) return results;
 
-        await Task.Run(() =>
+        // Encoding is CPU-bound managed work; run it on the caller's thread rather than faking async.
+        if (misses != null)
         {
             foreach (int idx in misses)
             {
@@ -80,8 +80,9 @@ public sealed class Gemma3LoraEncoder : ISentenceEncoder
                 results[idx] = v;
                 _vectorCache.Set(keys[idx], v);
             }
-        }, cancellationToken).ConfigureAwait(false);
-        return results;
+        }
+
+        return Task.FromResult(results);
     }
 
     private float[] EncodeOne(string sentence)

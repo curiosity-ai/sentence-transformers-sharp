@@ -88,9 +88,9 @@ public sealed class SentenceEncoder : ISentenceEncoder
     // ----- encoding -------------------------------------------------------------------------------
 
     /// <inheritdoc/>
-    public async Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
+    public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default)
     {
-        if (sentences is null || sentences.Length == 0) return Array.Empty<float[]>();
+        if (sentences is null || sentences.Length == 0) return Task.FromResult(Array.Empty<float[]>());
 
         var results = new float[sentences.Length][];
         var keys    = new UID128[sentences.Length];
@@ -102,9 +102,9 @@ public sealed class SentenceEncoder : ISentenceEncoder
             if (_vectorCache.TryGet(keys[i], out var cached)) results[i] = cached;
             else (misses ??= new List<int>()).Add(i);
         }
-        if (misses is null) return results;
 
-        await Task.Run(() =>
+        // Encoding is CPU-bound managed work; run it on the caller's thread rather than faking async.
+        if (misses != null)
         {
             foreach (int idx in misses)
             {
@@ -113,9 +113,9 @@ public sealed class SentenceEncoder : ISentenceEncoder
                 results[idx] = vec;
                 _vectorCache.Set(keys[idx], vec);
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }
 
-        return results;
+        return Task.FromResult(results);
     }
 
     /// <summary>Runs the frozen (un-adapted) base encoder regardless of any applied adapter — used to
