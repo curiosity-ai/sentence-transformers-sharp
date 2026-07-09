@@ -221,8 +221,7 @@ public static class Main
         }
 
 //Test that the encoder doesn't throw on large inputs
-        var testEncodingAVeryLargeString = await sentenceEncoder.EncodeAsync(new[]
-        {
+        var testEncodingAVeryLargeString = await sentenceEncoder.EncodeAsync(
             @"Paris, known as the 'City of Love' or the 'City of Lights,' is one of the most popular tourist destinations in the world.
 The city is famous for its exquisite architecture, charming cafes, and art museums.
 The Eiffel Tower, Notre-Dame Cathedral, and the Louvre Museum are just some of the iconic landmarks that draw millions of visitors to Paris each year.
@@ -265,8 +264,7 @@ Airplanes revolutionized travel and made the world a smaller place.
 Airplanes are capable of transporting passengers to far-flung destinations in a matter of hours, making travel faster and more accessible than ever before.
 Air travel is also safer than it has ever been, with modern aircraft equipped with advanced safety features and technology.
 In addition, airlines offer a variety of classes and amenities, from economy class to first-class cabins, providing passengers with a comfortable and luxurious travel experience.
-With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life."
-        });
+With thousands of flights departing from airports around the world each day, air travel is an essential part of modern life.");
 
 
 //var encodedChunks = sentenceEncoder.ChunkAndEncode(

@@ -53,6 +53,15 @@ public class BertPureTests
     }
 
     [Fact]
+    public async Task SingleEncode_MatchesBatch()
+    {
+        using var enc = SentenceEncoder.LoadFromOnnx(MiniLmOnnx(), BertConfig.MiniLM, 256);
+        var single = await enc.EncodeAsync("how do I reset my password");
+        var batch  = await enc.EncodeAsync(new[] { "how do I reset my password" });
+        Assert.Equal(batch[0], single);
+    }
+
+    [Fact]
     public void Adapter_SaveLoad_RoundTrips()
     {
         var cfg = BertConfig.MiniLM;

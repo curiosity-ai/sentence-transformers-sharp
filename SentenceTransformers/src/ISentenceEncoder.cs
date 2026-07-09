@@ -68,6 +68,21 @@ public interface ISentenceEncoder: IDisposable
     public Task<float[][]> EncodeAsync(string[] sentences, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Encodes a single input string into one embedding vector — a convenience over
+    /// <see cref="EncodeAsync(string[], CancellationToken)"/> so callers don't wrap a lone string in an
+    /// array (and read back <c>[0]</c>). The default implementation delegates to the batch overload;
+    /// encoders with a cheaper single-item path override it.
+    /// </summary>
+    /// <param name="sentence">Text to embed (must fit in <see cref="MaxChunkLength"/> tokens).</param>
+    /// <param name="cancellationToken">Token used to terminate the inference run early.</param>
+    /// <returns>The embedding vector for <paramref name="sentence"/>.</returns>
+    public async Task<float[]> EncodeAsync(string sentence, CancellationToken cancellationToken = default)
+    {
+        var vectors = await EncodeAsync(new[] { sentence ?? string.Empty }, cancellationToken);
+        return vectors.Length > 0 ? vectors[0] : null;
+    }
+
+    /// <summary>
     /// Splits <paramref name="text"/> into token-bounded chunks and encodes each chunk to an embedding.
     /// </summary>
     /// <param name="text">Source text. May be longer than <see cref="MaxChunkLength"/>.</param>
@@ -101,14 +116,11 @@ public interface ISentenceEncoder: IDisposable
         {
             if (sequentially)
             {
-                var oneChunk = new string[1];
-
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    oneChunk[0] = chunks[i];
-                    var oneVector = await EncodeAsync(oneChunk, cancellationToken: cancellationToken);
-                    encodedChunks[i] = new EncodedChunk(oneChunk[0], oneVector[0]);
+                    var oneVector = await EncodeAsync(chunks[i], cancellationToken: cancellationToken);
+                    encodedChunks[i] = new EncodedChunk(chunks[i], oneVector);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
@@ -175,14 +187,11 @@ public interface ISentenceEncoder: IDisposable
         {
             if (sequentially)
             {
-                var oneChunk = new string[1];
-
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    oneChunk[0] = chunks[i].Value;
-                    var oneVector = await EncodeAsync(oneChunk, cancellationToken: cancellationToken);
-                    encodedChunks[i] = new EncodedChunkAligned(oneChunk[0], oneVector[0], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
+                    var oneVector = await EncodeAsync(chunks[i].Value, cancellationToken: cancellationToken);
+                    encodedChunks[i] = new EncodedChunkAligned(chunks[i].Value, oneVector, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
@@ -260,14 +269,11 @@ public interface ISentenceEncoder: IDisposable
         {
             if (sequentially)
             {
-                var oneChunk = new string[1];
-
                 for (int i = 0; i < chunks.Length; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    oneChunk[0] = chunks[i].Text;
-                    var oneVector = await EncodeAsync(oneChunk, cancellationToken: cancellationToken);
-                    encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector[0], chunks[i].Tag);
+                    var oneVector = await EncodeAsync(chunks[i].Text, cancellationToken: cancellationToken);
+                    encodedChunks[i] = new TaggedEncodedChunk(chunks[i].Text, oneVector, chunks[i].Tag);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {
@@ -344,14 +350,11 @@ public interface ISentenceEncoder: IDisposable
         {
             if (sequentially)
             {
-                var oneChunk = new string[1];
-
                 for (int i = 0; i < chunks.Length; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    oneChunk[0] = chunks[i].Text;
-                    var oneVector = await EncodeAsync(oneChunk, cancellationToken: cancellationToken);
-                    encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, oneVector[0], chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
+                    var oneVector = await EncodeAsync(chunks[i].Text, cancellationToken: cancellationToken);
+                    encodedChunks[i] = new TaggedEncodedChunkAligned(chunks[i].Text, oneVector, chunks[i].Tag, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
                     {

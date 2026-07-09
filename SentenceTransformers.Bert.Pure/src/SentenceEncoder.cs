@@ -118,6 +118,18 @@ public sealed class SentenceEncoder : ISentenceEncoder
         return Task.FromResult(results);
     }
 
+    /// <inheritdoc/>
+    public Task<float[]> EncodeAsync(string sentence, CancellationToken cancellationToken = default)
+    {
+        sentence ??= string.Empty;
+        var key = sentence.Hash128();
+        if (_vectorCache.TryGet(key, out var cached)) return Task.FromResult(cached);
+        cancellationToken.ThrowIfCancellationRequested();
+        var vec = EncodeOne(sentence);
+        _vectorCache.Set(key, vec);
+        return Task.FromResult(vec);
+    }
+
     /// <summary>Runs the frozen (un-adapted) base encoder regardless of any applied adapter — used to
     /// compare a tuned adapter against its baseline.</summary>
     public float[] EncodeBase(string sentence) => EncodeOne(sentence ?? string.Empty, useAdapter: false);
