@@ -82,6 +82,7 @@ async Task<int> RunTrainAsync(List<string> a)
         MinedNegativesPerAnchor = int.Parse(GetOption(a, "--mined-negatives", "0"), CultureInfo.InvariantCulture),
         NumSeeds                = int.Parse(GetOption(a, "--seeds", "1"), CultureInfo.InvariantCulture),
         Seed                    = int.Parse(GetOption(a, "--seed", "42"), CultureInfo.InvariantCulture),
+        Patience                = int.Parse(GetOption(a, "--patience", "0"), CultureInfo.InvariantCulture),
         LearnableTemperature    = GetFlag(a, "--learnable-temp"),
         UseOutputBias           = GetFlag(a, "--output-bias"),
         ApplyWhitening          = GetFlag(a, "--whitening"),
@@ -194,6 +195,7 @@ async Task<int> RunTrainGemmaAsync(List<string> a, string model)
         MinedNegativesPerAnchor = int.Parse(GetOption(a, "--mined-negatives", "0"), CultureInfo.InvariantCulture),
         NumSeeds                = int.Parse(GetOption(a, "--seeds", "1"), CultureInfo.InvariantCulture),
         Seed                    = int.Parse(GetOption(a, "--seed", "42"), CultureInfo.InvariantCulture),
+        Patience                = int.Parse(GetOption(a, "--patience", "0"), CultureInfo.InvariantCulture),
         LearnableTemperature    = GetFlag(a, "--learnable-temp"),
         UseOutputBias           = GetFlag(a, "--output-bias"),
         ApplyWhitening          = GetFlag(a, "--whitening"),
@@ -341,6 +343,7 @@ TRAIN OPTIONS
   --query-prefix <str>    Instruction prefix prepended to anchors (queries).
   --doc-prefix <str>      Prefix prepended to positives/negatives (documents).
   --seeds <int>           Train N seeds and keep the best by validation metric (default 1).
+  --patience <int>        Early-stop a seed after N epochs with no validation improvement (0 = off).
   --max-tokens <int>      Truncate training sequences (default 128).
   --val-frac <float>      Validation fraction (default 0.1).
   --pos-threshold <float> Min score for a pair to count as positive for contrastive (default 0.6).

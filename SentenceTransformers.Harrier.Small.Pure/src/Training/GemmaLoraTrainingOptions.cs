@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace SentenceTransformers.Harrier.Small.Pure.Training;
 
 /// <summary>Which loss the Gemma LoRA trainer optimizes (see <c>SentenceTransformers.Training.LoraLosses</c>).</summary>
@@ -52,7 +54,16 @@ public sealed class GemmaLoraTrainingOptions
     public int Seed     { get; set; } = 42;
     public int NumSeeds { get; set; } = 1;
 
+    /// <summary>Early stopping: stop a seed after this many epochs with no validation improvement (0 = off).
+    /// The best adapter seen is always returned regardless.</summary>
+    public int Patience { get; set; } = 0;
+
+    /// <summary>Optional structured progress callback invoked once per epoch.</summary>
     public Action<GemmaEpochMetrics> OnEpoch { get; set; }
+
+    /// <summary>Optional logger; when set, the trainer logs baseline, per-epoch metrics, mining, early
+    /// stopping, whitening and the final summary. Null disables logging.</summary>
+    public ILogger Logger { get; set; }
 }
 
 public readonly record struct GemmaEpochMetrics(int Seed, int Epoch, float TrainLoss, float ValidationAccuracy, float ValidationSpearman, bool IsBest);

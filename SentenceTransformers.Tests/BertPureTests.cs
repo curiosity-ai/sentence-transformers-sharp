@@ -85,6 +85,52 @@ public class BertPureTests
     }
 
     [Fact]
+    public async Task Trainer_EarlyStops_AndLogs()
+    {
+        (string a, string b, float s)[] data =
+        {
+            ("how do I reset my password", "steps to recover a forgotten password", 0.95f),
+            ("cancel my subscription", "how to end my membership plan", 0.9f),
+            ("the weather is sunny today", "it is a bright clear day outside", 0.9f),
+            ("a dog runs in the park", "a canine is running across the field", 0.88f),
+            ("i love this movie", "this film is fantastic and enjoyable", 0.9f),
+            ("update my billing address", "change the address on my invoice", 0.9f),
+            ("reset password", "the cat sleeps on the sofa", 0.05f),
+            ("cancel subscription", "a rocket launched into space", 0.05f),
+            ("sunny weather", "quarterly financial report", 0.05f),
+            ("dog in the park", "install the software update", 0.05f),
+            ("i love this movie", "the train arrives at noon", 0.05f),
+            ("billing address", "photosynthesis in plants", 0.05f),
+        };
+        var ds = new SentencePairDataset(Enumerable.Range(0, 4).SelectMany(_ => data).Select(d => new SentencePair(d.a, d.b, d.s)).ToList());
+
+        var log = new CapturingLogger();
+        int lastEpoch = 0;
+        using var enc = SentenceEncoder.LoadFromOnnx(MiniLmOnnx(), BertConfig.MiniLM, 32);
+        var options = new BertLoraTrainingOptions
+        {
+            Objective = BertTrainingObjective.CoSent, Rank = 8, Alpha = 16,
+            Epochs = 20, Patience = 2, BatchSize = 16, LearningRate = 1e-3f, Temperature = 0.05f,
+            ValidationFraction = 0.25f, MaxTokens = 32, Seed = 1,
+            Logger = log, OnEpoch = m => lastEpoch = Math.Max(lastEpoch, m.Epoch),
+        };
+        await BertLoraTrainer.TrainAsync(enc, ds, options);
+
+        Assert.True(lastEpoch < options.Epochs, $"expected early stop before {options.Epochs} epochs, ran {lastEpoch}");
+        Assert.Contains(log.Messages, m => m.Contains("early stopping"));
+        Assert.Contains(log.Messages, m => m.Contains("training done"));
+    }
+
+    private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        public readonly List<string> Messages = new();
+        public IDisposable BeginScope<TState>(TState state) => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+            => Messages.Add(formatter(state, exception));
+    }
+
+    [Fact]
     public async Task Trainer_ImprovesGradedSpearman()
     {
         // Paraphrase pairs (high score) + unrelated pairs (low score): a low-rank adapter should raise the

@@ -36,5 +36,7 @@
   <ItemGroup>
     <!-- Pure-managed SIMD primitives (TensorPrimitives). No native dependency. -->
     <PackageReference Include="System.Numerics.Tensors" Version="10.0.3" />
+    <!-- Optional ILogger training progress reporting. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.9" />
   </ItemGroup>
 </Project>

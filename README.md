@@ -308,6 +308,9 @@ using var encoder = await SentenceEncoder.CreateAsync(
 
 ## Fine-tuning for your use case (real weight-space LoRA)
 
+> 📖 **See [LORA.md](LORA.md)** for the full guide: how it works internally, every option, negative-sample
+> handling, stop conditions, and library + CLI training walkthroughs.
+
 You can specialize the **pure-C# encoders** — MiniLM, Arctic XS and Harrier Small — for a specific
 domain (support tickets, legal clauses, product descriptions, a particular language pair) by training a
 **real weight-space LoRA adapter** from a set of *related pairs* (a query and a relevant passage, two
