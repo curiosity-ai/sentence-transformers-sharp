@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using SentenceTransformers.Bert.Pure.Model;
 
 namespace SentenceTransformers.Bert.Pure.Training;
@@ -89,7 +90,18 @@ public sealed class BertLoraTrainingOptions
     /// metric (results are seed-sensitive; the frozen weights make extra seeds relatively cheap).</summary>
     public int NumSeeds { get; set; } = 1;
 
+    /// <summary>Early stopping: stop a seed's training after this many epochs with no improvement in the
+    /// validation metric (Spearman when scored, else retrieval accuracy). 0 disables it (run all epochs).
+    /// The best adapter seen is always the one returned, regardless of this setting.</summary>
+    public int Patience { get; set; } = 0;
+
+    // ----- progress reporting -----
+    /// <summary>Optional structured progress callback invoked once per epoch.</summary>
     public Action<BertEpochMetrics> OnEpoch { get; set; }
+
+    /// <summary>Optional logger; when set, the trainer logs the baseline, per-epoch metrics, hard-negative
+    /// mining, early stopping, whitening and the final summary. Null disables logging.</summary>
+    public ILogger Logger { get; set; }
 }
 
 /// <summary>Metrics captured at the end of a training epoch.</summary>

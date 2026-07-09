@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using Microsoft.Extensions.Logging;
 using SentenceTransformers.Bert.Pure.Model;
 using SentenceTransformers.Training;
 using Tensor = SentenceTransformers.Training.Autograd.Tensor;
@@ -35,6 +36,10 @@ public static class BertLoraTrainer
         var baseRetr = await EmbeddingEvaluation.RetrievalAsync(baseEncoder, validation, minScore: 0.6f, ct);
         float baselineSpearman = haveScores ? await EmbeddingEvaluation.SpearmanAsync(baseEncoder, validation, ct) : float.NaN;
 
+        options.Logger?.LogInformation(
+            "BERT LoRA training: {Pairs} train pairs, objective {Objective}, rank {Rank}, targets {Targets}, {Seeds} seed(s), up to {Epochs} epochs. Baseline retrieval acc {Acc:0.000}, spearman {Spear:0.000}.",
+            train.Count, options.Objective, options.Rank, options.Targets, Math.Max(1, options.NumSeeds), options.Epochs, baseRetr.Accuracy, baselineSpearman);
+
         LoraAdapter best = null;
         float bestPrimary = float.NegativeInfinity;
         float bestAcc = float.NaN, bestSpear = float.NaN;
@@ -52,6 +57,7 @@ public static class BertLoraTrainer
         // Optional post-hoc whitening fitted from the tuned training embeddings.
         if (options.ApplyWhitening && best != null)
         {
+            options.Logger?.LogInformation("Fitting post-hoc ZCA whitening transform ...");
             using var tuned = baseEncoder.WithAdapter(best);
             WhiteningFitter.Fit(tuned, train, best, ct);
             // Re-evaluate with whitening applied.
@@ -59,6 +65,10 @@ public static class BertLoraTrainer
             bestAcc   = (await EmbeddingEvaluation.RetrievalAsync(tunedW, validation, minScore: 0.6f, ct)).Accuracy;
             bestSpear = haveScores ? await EmbeddingEvaluation.SpearmanAsync(tunedW, validation, ct) : float.NaN;
         }
+
+        options.Logger?.LogInformation(
+            "BERT LoRA training done. Tuned retrieval acc {BaseAcc:0.000} -> {Acc:0.000}, spearman {BaseSpear:0.000} -> {Spear:0.000}.",
+            baseRetr.Accuracy, bestAcc, baselineSpearman, bestSpear);
 
         return new BertLoraTrainingReport(best, allMetrics, baseRetr.Accuracy, baselineSpearman, bestAcc, bestSpear);
     }
@@ -99,6 +109,7 @@ public static class BertLoraTrainer
         var metrics = new List<BertEpochMetrics>();
         LoraAdapter bestSeed = null;
         float bestPrimary = float.NegativeInfinity, bestAcc = float.NaN, bestSpear = float.NaN;
+        int sinceImprovement = 0;
 
         List<string>[] minedNeg = null;
 
@@ -107,7 +118,10 @@ public static class BertLoraTrainer
             ct.ThrowIfCancellationRequested();
 
             if (contrastive && options.MinedNegativesPerAnchor > 0 && (epoch - 1) % Math.Max(1, options.MineEveryEpochs) == 0)
+            {
+                options.Logger?.LogDebug("seed {Seed} epoch {Epoch}: mining {K} hard negative(s) per anchor", seed, epoch, options.MinedNegativesPerAnchor);
                 minedNeg = MineNegatives(baseEncoder, adapter, rt, examples, options, Ids, ct);
+            }
 
             var order = Enumerable.Range(0, examples.Count).ToArray();
             Shuffle(order, rng);
@@ -131,11 +145,21 @@ public static class BertLoraTrainer
             float valSpear = haveScores ? await EmbeddingEvaluation.SpearmanAsync(tuned, validation, ct) : float.NaN;
             float primary  = haveScores ? valSpear : valAcc;
             bool isBest = primary > bestPrimary;
-            if (isBest) { bestPrimary = primary; bestSeed = Clone(adapter); bestAcc = valAcc; bestSpear = valSpear; }
+            if (isBest) { bestPrimary = primary; bestSeed = Clone(adapter); bestAcc = valAcc; bestSpear = valSpear; sinceImprovement = 0; }
+            else sinceImprovement++;
 
             var m = new BertEpochMetrics(seed, epoch, (float)(epochLoss / Math.Max(1, batches)), float.NaN, valAcc, valSpear, isBest);
             metrics.Add(m);
             options.OnEpoch?.Invoke(m);
+            options.Logger?.LogInformation(
+                "seed {Seed} epoch {Epoch}/{Epochs}  loss {Loss:0.0000}  val_acc {Acc:0.000}  val_spearman {Spear:0.000}{Best}",
+                seed, epoch, options.Epochs, m.TrainLoss, valAcc, valSpear, isBest ? "  *best" : "");
+
+            if (options.Patience > 0 && sinceImprovement >= options.Patience)
+            {
+                options.Logger?.LogInformation("seed {Seed}: early stopping at epoch {Epoch} (no improvement for {Patience} epoch(s)).", seed, epoch, options.Patience);
+                break;
+            }
         }
 
         return (bestSeed ?? Clone(adapter), metrics, bestAcc, bestSpear);
