@@ -37,16 +37,32 @@ internal readonly record struct BpeToken(int Id, string Source, int Start, int L
 /// The vocabulary is a plain <see cref="Dictionary{TKey, TValue}"/> keyed by the surface string
 /// (ordinal comparer); a <see cref="Dictionary{TKey, TValue}.AlternateLookup{TAlternateKey}"/> over
 /// <see cref="ReadOnlySpan{T}"/> lets callers probe it without materialising a string.
+///
+/// The merge table is <b>not</b> keyed by the merge strings. Every merge's left, right and merged
+/// (<c>left+right</c>) forms are themselves vocabulary tokens, so a <c>(string, string) -&gt; rank</c>
+/// map would retain ~1M string objects duplicating the vocab (two per merge) and hash two strings per
+/// probe. Instead each merge is keyed by its two token <b>ids</b> packed into a <see cref="long"/>
+/// (<see cref="PackPair"/>), with the rank and the merged token's id stored as the value
+/// (<see cref="MergeInfo"/>). The BPE loop therefore works entirely in integer ids: no per-symbol
+/// string is materialised and no strings are concatenated as symbols merge.
 /// </summary>
 internal sealed class GemmaBpe
 {
     private readonly Dictionary<string, int> _vocab;
     private readonly Dictionary<string, int>.AlternateLookup<ReadOnlySpan<char>> _vocabSpan;
-    private readonly Dictionary<(string, string), int> _mergeRanks;
+    private readonly Dictionary<long, MergeInfo> _merges;
     private readonly int[] _byteToId;            // 256 entries: id of "<0xNN>" or -1
     private readonly string[] _idToToken;        // reverse map (id -> surface form) for display
     private readonly AddedTokenTrie _added;
     private readonly int _unkId;
+
+    /// <summary>The value stored for each merge: its priority <see cref="Rank"/> (lower merges first)
+    /// and <see cref="NewId"/>, the vocabulary id of the merged <c>left+right</c> token.</summary>
+    private readonly record struct MergeInfo(int Rank, int NewId);
+
+    /// <summary>Packs an ordered pair of token ids into a single <see cref="long"/> merge-table key.
+    /// Ids fit in 18 bits (max 262,143), so the two never overlap in the 64-bit key.</summary>
+    private static long PackPair(int leftId, int rightId) => ((long)(uint)leftId << 32) | (uint)rightId;
 
     public int BosId { get; }
     public int EosId { get; }
@@ -56,7 +72,7 @@ internal sealed class GemmaBpe
 
     private GemmaBpe(
         Dictionary<string, int> vocab,
-        Dictionary<(string, string), int> mergeRanks,
+        Dictionary<long, MergeInfo> merges,
         int[] byteToId,
         string[] idToToken,
         AddedTokenTrie added,
@@ -67,7 +83,7 @@ internal sealed class GemmaBpe
     {
         _vocab = vocab;
         _vocabSpan = vocab.GetAlternateLookup<ReadOnlySpan<char>>();
-        _mergeRanks = mergeRanks;
+        _merges = merges;
         _byteToId = byteToId;
         _idToToken = idToToken;
         _added = added;
@@ -102,18 +118,38 @@ internal sealed class GemmaBpe
             vocab[prop.Name] = id;
             if (id > maxId) maxId = id;
         }
+        var vocabSpan = vocab.GetAlternateLookup<ReadOnlySpan<char>>();
 
         // --- merges (ordered; index == rank) ---
+        // Keyed by packed (leftId, rightId) rather than the surface strings: left, right and the
+        // merged left+right form are all vocab tokens, so we store ids and never retain the merge
+        // strings (which would duplicate the vocab). The merged string is only needed to resolve its
+        // id, which we do through a pooled buffer + the span lookup, so no concat string is allocated.
         var mergesEl = model.GetProperty("merges");
-        var mergeRanks = new Dictionary<(string, string), int>(mergesEl.GetArrayLength());
+        var merges = new Dictionary<long, MergeInfo>(mergesEl.GetArrayLength());
+        char[] concat = new char[64];
         int rank = 0;
         foreach (var m in mergesEl.EnumerateArray())
         {
             // Newer tokenizer.json stores each merge as a two-element array [left, right].
             string left = m[0].GetString()!;
             string right = m[1].GetString()!;
-            mergeRanks.TryAdd((left, right), rank);
             rank++;
+            if (!vocab.TryGetValue(left, out int leftId) || !vocab.TryGetValue(right, out int rightId))
+            {
+                continue; // a side that isn't a vocab token can never form this merge; skip it
+            }
+            int need = left.Length + right.Length;
+            if (concat.Length < need)
+            {
+                concat = new char[Math.Max(need, concat.Length * 2)];
+            }
+            left.CopyTo(concat);
+            right.CopyTo(0, concat, left.Length, right.Length);
+            if (vocabSpan.TryGetValue(concat.AsSpan(0, need), out int mergedId))
+            {
+                merges.TryAdd(PackPair(leftId, rightId), new MergeInfo(rank - 1, mergedId));
+            }
         }
 
         // --- byte-fallback table ---
@@ -163,7 +199,7 @@ internal sealed class GemmaBpe
             }
         }
 
-        return new GemmaBpe(vocab, mergeRanks, byteToId, idToToken, trie, unkId, bos, eos, pad);
+        return new GemmaBpe(vocab, merges, byteToId, idToToken, trie, unkId, bos, eos, pad);
     }
 
     /// <summary>Tokenizes <paramref name="text"/>. When <paramref name="addSpecialTokens"/> is true the
@@ -244,23 +280,25 @@ internal sealed class GemmaBpe
     /// reference <paramref name="source"/> directly via <paramref name="charOffset"/>.</summary>
     private void Bpe(string source, char[] buffer, int bufferLen, int charOffset, List<BpeToken> output)
     {
-        // Split the segment into Unicode-scalar symbols (so astral characters stay intact).
-        // sym/symStart/symLen describe each symbol; next/prev form a doubly linked list; active marks
-        // symbols not yet merged away.
-        var sym = new List<string>(bufferLen);
+        // Split the segment into Unicode-scalar symbols (so astral characters stay intact) and resolve
+        // each to its vocabulary id up front (-1 when the scalar is not a vocab token; such symbols
+        // can never merge and fall through to byte-fallback at emit time). symId/symStart/symLen
+        // describe each symbol; next/prev form a doubly linked list; active marks symbols not yet
+        // merged away. Working in ids means no per-symbol string is materialised.
+        var symId = new List<int>(bufferLen);
         var symStart = new List<int>(bufferLen);   // char offset within the segment
         var symLen = new List<int>(bufferLen);     // char length (1, or 2 for a surrogate pair)
         int idx = 0;
         while (idx < bufferLen)
         {
             int cl = char.IsHighSurrogate(buffer[idx]) && idx + 1 < bufferLen && char.IsLowSurrogate(buffer[idx + 1]) ? 2 : 1;
-            sym.Add(new string(buffer, idx, cl));
+            symId.Add(_vocabSpan.TryGetValue(buffer.AsSpan(idx, cl), out int id) ? id : -1);
             symStart.Add(idx);
             symLen.Add(cl);
             idx += cl;
         }
 
-        int count = sym.Count;
+        int count = symId.Count;
         if (count == 0)
         {
             return;
@@ -290,9 +328,15 @@ internal sealed class GemmaBpe
             {
                 return;
             }
-            if (_mergeRanks.TryGetValue((sym[left], sym[right]), out int r))
+            int leftId = symId[left];
+            int rightId = symId[right];
+            if (leftId < 0 || rightId < 0)
             {
-                heap.Enqueue(new PendingMerge(left, right, sym[left], sym[right]), (r, left));
+                return; // an unknown symbol can't be either side of a merge
+            }
+            if (_merges.TryGetValue(PackPair(leftId, rightId), out var info))
+            {
+                heap.Enqueue(new PendingMerge(left, right, leftId, rightId, info.NewId), (info.Rank, left));
             }
         }
 
@@ -303,16 +347,16 @@ internal sealed class GemmaBpe
 
         while (heap.TryDequeue(out var pm, out _))
         {
-            // Validate the merge is still current (positions/symbols unchanged since enqueue).
+            // Validate the merge is still current (positions/symbols unchanged since enqueue). A symbol's
+            // id changes only when it absorbs a neighbour, so comparing ids detects any staleness.
             if (!active[pm.Left] || next[pm.Left] != pm.Right || !active[pm.Right]
-                || !string.Equals(sym[pm.Left], pm.LeftSym, StringComparison.Ordinal)
-                || !string.Equals(sym[pm.Right], pm.RightSym, StringComparison.Ordinal))
+                || symId[pm.Left] != pm.LeftId || symId[pm.Right] != pm.RightId)
             {
                 continue;
             }
 
-            // Merge right into left.
-            sym[pm.Left] = pm.LeftSym + pm.RightSym;
+            // Merge right into left: the merged symbol takes the precomputed merged-token id.
+            symId[pm.Left] = pm.NewId;
             symLen[pm.Left] += symLen[pm.Right];
             active[pm.Right] = false;
             int rr = next[pm.Right];
@@ -334,22 +378,24 @@ internal sealed class GemmaBpe
             {
                 continue;
             }
-            string s = sym[i];
+            int id = symId[i];
             int sStart = charOffset + symStart[i];
             int sLen = symLen[i];
 
-            if (_vocab.TryGetValue(s, out int id))
+            if (id >= 0)
             {
                 output.Add(new BpeToken(id, source, sStart, sLen));
             }
             else
             {
-                EmitByteFallback(source, s, sStart, sLen, output);
+                // id < 0 means an unmerged scalar not in the vocab; its chars sit contiguously in the
+                // normalized buffer, so byte-fallback reads them straight from there.
+                EmitByteFallback(source, buffer.AsSpan(symStart[i], symLen[i]), sStart, sLen, output);
             }
         }
     }
 
-    private void EmitByteFallback(string source, string s, int start, int length, List<BpeToken> output)
+    private void EmitByteFallback(string source, ReadOnlySpan<char> s, int start, int length, List<BpeToken> output)
     {
         // UTF-8 for a single BPE symbol is bounded (a symbol is normally 1-2 UTF-16 code units, so
         // at most 4 UTF-8 bytes). Use a small stack buffer; spill to the heap only for the unusual
@@ -366,8 +412,8 @@ internal sealed class GemmaBpe
         }
     }
 
-    /// <summary>An entry in the merge priority queue. The symbol strings are captured at enqueue time
+    /// <summary>An entry in the merge priority queue. The paired token ids are captured at enqueue time
     /// and re-checked on dequeue so a merge that has since been invalidated (because one side absorbed
-    /// another symbol first) is silently dropped.</summary>
-    private readonly record struct PendingMerge(int Left, int Right, string LeftSym, string RightSym);
+    /// another symbol first) is silently dropped. <see cref="NewId"/> is the merged token's id.</summary>
+    private readonly record struct PendingMerge(int Left, int Right, int LeftId, int RightId, int NewId);
 }
