@@ -215,6 +215,19 @@ namespace BERTTokenizers.Base
 
         public virtual List<TokenizedTokenAligned> TokenizeRawAligned(ReadOnlySpan<char> text)
         {
+            return TokenizeRawAligned(text, progress: null);
+        }
+
+        /// <summary>
+        /// Tokenizes <paramref name="text"/> with character alignment, reporting incremental progress
+        /// through <paramref name="progress"/> as it works through the document. Progress is reported
+        /// per word but throttled to at most ~200 updates (roughly every 0.5% of the source) so a
+        /// consumer's callback is not invoked once per token; a final 100% update is always sent.
+        /// Pass <c>null</c> for <paramref name="progress"/> to skip reporting entirely.
+        /// </summary>
+        public virtual List<TokenizedTokenAligned> TokenizeRawAligned(ReadOnlySpan<char> text, IProgress<TokenizeProgress> progress)
+        {
+            var totalChars        = text.Length;
             var alignedRemoved    = RemoveRepeatedSpecialCharsWithAlignment(text);
             var unidecoderRemoved = Unidecoder.FastUnidecodeWithAlignment(alignedRemoved.text, alignedRemoved.alignment);
 
@@ -226,10 +239,45 @@ namespace BERTTokenizers.Base
                 AlignmentListPool.Return(alignedRemoved.alignment);
             }
 
-            var result = TokenizeSentenceAligned(unidecoderRemoved.text, unidecoderRemoved.alignment)
-               .SelectMany(TokenizeSubwordsAligned)
-               .Select(ti => new TokenizedTokenAligned(ti.Token.Value, ti.Original.Value, ti.Token.Start, ti.Token.ApproximateEnd))
-               .ToList();
+            var result = new List<TokenizedTokenAligned>();
+
+            if (progress is null)
+            {
+                foreach (var word in TokenizeSentenceAligned(unidecoderRemoved.text, unidecoderRemoved.alignment))
+                {
+                    foreach (var ti in TokenizeSubwordsAligned(word))
+                    {
+                        result.Add(new TokenizedTokenAligned(ti.Token.Value, ti.Original.Value, ti.Token.Start, ti.Token.ApproximateEnd));
+                    }
+                }
+            }
+            else
+            {
+                // Report at most ~200 times, whenever the consumed-character bucket advances. A word's
+                // ApproximateEnd can wobble slightly between neighbours (it is an approximation after
+                // alignment), so clamp the reported position to be monotonically non-decreasing.
+                var lastBucket = -1;
+                var maxChars   = 0;
+                foreach (var word in TokenizeSentenceAligned(unidecoderRemoved.text, unidecoderRemoved.alignment))
+                {
+                    foreach (var ti in TokenizeSubwordsAligned(word))
+                    {
+                        result.Add(new TokenizedTokenAligned(ti.Token.Value, ti.Original.Value, ti.Token.Start, ti.Token.ApproximateEnd));
+                    }
+
+                    var charsProcessed = Math.Min(word.ApproximateEnd, totalChars);
+                    if (charsProcessed > maxChars) maxChars = charsProcessed;
+
+                    var bucket = totalChars > 0 ? (int)((long)maxChars * 200 / totalChars) : 200;
+                    if (bucket != lastBucket)
+                    {
+                        lastBucket = bucket;
+                        progress.Report(new TokenizeProgress(maxChars, totalChars, result.Count));
+                    }
+                }
+
+                progress.Report(new TokenizeProgress(totalChars, totalChars, result.Count));
+            }
 
             AlignmentListPool.Return(unidecoderRemoved.alignment);
 
@@ -482,40 +530,45 @@ namespace BERTTokenizers.Base
                 return tokens;
             }
 
+            // Single forward pass over the text: advance one character at a time and, at each
+            // position, check whether any delimiter matches there. The earliest matching position
+            // wins, and among delimiters matching at that position the first one in array order wins
+            // — identical to the previous per-delimiter IndexOf/min logic, but O(n) instead of O(n²).
+            // (The old version re-scanned the whole remaining text for every delimiter on every word,
+            // so delimiters that rarely/never occur — e.g. "\r\n" in an LF-only document — turned this
+            // into a quadratic scan.)
             var start = 0;
+            var i     = 0;
 
-            while (true)
+            while (i < text.Length)
             {
-                var minNextSeparator = int.MaxValue;
-                var nextStart        = 0;
-
+                var matchedLen = 0;
                 foreach (var s in space_delimiters)
                 {
-                    var nextSeparator = text.AsSpan(start).IndexOf(s);
-                    if (nextSeparator < 0) continue;
-
-                    if (nextSeparator < minNextSeparator)
+                    if (text.AsSpan(i).StartsWith(s.AsSpan()))
                     {
-                        minNextSeparator = nextSeparator;
-                        nextStart        = s.Length;
+                        matchedLen = s.Length;
+                        break;
                     }
                 }
 
-                if (minNextSeparator < int.MaxValue)
+                if (matchedLen == 0)
                 {
-                    tokens.Add(new AlignedString(text.AsSpan(start, minNextSeparator).ToString(), alignment[start], alignment[start], alignment[start] + minNextSeparator, text));
-                    start += minNextSeparator + nextStart;
+                    i++;
                     continue;
                 }
-                else
-                {
-                    if (start < text.Length)
-                    {
-                        tokens.Add(new AlignedString(text.AsSpan(start).ToString(), alignment[start], alignment[start], alignment[start] + (text.Length - start), text));
-                    }
-                    break;
-                }
+
+                var wordLen = i - start;
+                tokens.Add(new AlignedString(text.AsSpan(start, wordLen).ToString(), alignment[start], alignment[start], alignment[start] + wordLen, text));
+                i    += matchedLen;
+                start = i;
             }
+
+            if (start < text.Length)
+            {
+                tokens.Add(new AlignedString(text.AsSpan(start).ToString(), alignment[start], alignment[start], alignment[start] + (text.Length - start), text));
+            }
+
             return tokens;
         }
 

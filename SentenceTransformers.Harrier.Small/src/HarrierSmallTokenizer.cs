@@ -208,6 +208,17 @@ namespace SentenceTransformers.Harrier.Small
             return result;
         }
 
+        /// <summary>
+        /// Progress-reporting overload. This tokenizer performs a single opaque HuggingFace encode, so
+        /// progress is reported once at completion (100%); pass <c>null</c> to skip it.
+        /// </summary>
+        public override List<TokenizedTokenAligned> TokenizeRawAligned(ReadOnlySpan<char> text, IProgress<TokenizeProgress> progress)
+        {
+            var result = TokenizeRawAligned(text);
+            progress?.Report(new TokenizeProgress(text.Length, text.Length, result.Count));
+            return result;
+        }
+
         public override List<string> Untokenize(List<TokenizedToken> tokens)
         {
             if (tokens is null || tokens.Count == 0)
