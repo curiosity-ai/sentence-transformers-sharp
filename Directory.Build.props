@@ -1,5 +1,11 @@
 <Project>
 
+  <!-- Optional, gitignored, per-machine overrides. Create Local.build.props next to this file
+       (see the template in CLAUDE.md) to flip UseNuGetSentenceTransformers to false for your
+       local checkout, so IDE builds (Rider / Visual Studio) and plain dotnet builds use project
+       references and the debugger can step into the core library. -->
+  <Import Project="$(MSBuildThisFileDirectory)Local.build.props" Condition="Exists('$(MSBuildThisFileDirectory)Local.build.props')" />
+
   <!--
     Selects how projects in this repo reference the core SentenceTransformers library.
 

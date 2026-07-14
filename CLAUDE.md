@@ -28,6 +28,20 @@ Rules:
 - Keep the pinned `SentenceTransformers` package version identical across all `.csproj` files. When bumping, update every project in the same commit (versions are CalVer, published from `.devops/azure-pipelines.yml`; check the latest on nuget.org).
 - When core-library changes are needed by a consumer, first merge to `main` (CI publishes a new core package), then bump the pinned `Version` in the consuming projects.
 
+## Debugging into the core library (Rider / Visual Studio)
+
+The IDE restores and builds with the `Directory.Build.props` default (`true`), so the debugger cannot step into `SentenceTransformers` sources out of the box — it resolves the compiled NuGet package. To switch your local checkout to project references (whole solution, IDE and CLI alike), create a gitignored `Local.build.props` next to `Directory.Build.props`:
+
+```xml
+<Project>
+  <PropertyGroup>
+    <UseNuGetSentenceTransformers>false</UseNuGetSentenceTransformers>
+  </PropertyGroup>
+</Project>
+```
+
+Directory.Build.props imports it automatically when present. After creating or deleting the file, let the IDE re-restore (Rider: right-click the solution → Restore NuGet Packages, or just rebuild). Do not commit it — CI must keep building with the package default.
+
 ## Building
 
 ```bash
