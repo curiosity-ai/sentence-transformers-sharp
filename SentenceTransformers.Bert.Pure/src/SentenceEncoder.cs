@@ -67,7 +67,20 @@ public sealed class SentenceEncoder : ISentenceEncoder
         var path = weightsPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Bert.Pure", CacheFileName(weightsUrl));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await DownloadFileAsync(weightsUrl, path, reportProgress, ct).ConfigureAwait(false);
-        var model = await BertModel.LoadAsync(path, config, ct).ConfigureAwait(false);
+        BertModel model;
+        try
+        {
+            model = await BertModel.LoadAsync(path, config, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ArgumentOutOfRangeException)
+        {
+            // A corrupt cached weights file (e.g. a truncated download left behind by an older
+            // package version or an interrupted process) fails while parsing/reading tensors.
+            // Delete it, download once more and retry before giving up.
+            try { File.Delete(path); } catch { /* ignore */ }
+            await DownloadFileAsync(weightsUrl, path, reportProgress, ct).ConfigureAwait(false);
+            model = await BertModel.LoadAsync(path, config, ct).ConfigureAwait(false);
+        }
         return new SentenceEncoder(model, new BertWordPieceTokenizer(), maxTokens, adapter);
     }
 

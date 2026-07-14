@@ -87,8 +87,23 @@ namespace SentenceTransformers.Harrier.Small.Pure
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Pure", "harrier-small.safetensors");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-            await DownloadFileAsync(weightsUrl ?? DefaultWeightsUrl, path, reportProgress, parallelOptions?.CancellationToken ?? default).ConfigureAwait(false);
-            return await LoadAsync(path, quantization: quantization, parallelOptions: parallelOptions).ConfigureAwait(false);
+            var resolvedUrl = weightsUrl ?? DefaultWeightsUrl;
+            var ct = parallelOptions?.CancellationToken ?? default;
+
+            await DownloadFileAsync(resolvedUrl, path, reportProgress, ct).ConfigureAwait(false);
+            try
+            {
+                return await LoadAsync(path, quantization: quantization, parallelOptions: parallelOptions).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or ArgumentOutOfRangeException)
+            {
+                // A corrupt cached weights file (e.g. a truncated download left behind by an older
+                // package version or an interrupted process) fails while parsing/reading tensors.
+                // Delete it, download once more and retry before giving up.
+                try { File.Delete(path); } catch { /* ignore */ }
+                await DownloadFileAsync(resolvedUrl, path, reportProgress, ct).ConfigureAwait(false);
+                return await LoadAsync(path, quantization: quantization, parallelOptions: parallelOptions).ConfigureAwait(false);
+            }
         }
 
         /// <summary>Creates an encoder from an existing safetensors file on disk. Loading (including the

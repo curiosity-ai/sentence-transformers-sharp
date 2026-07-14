@@ -85,6 +85,26 @@ internal sealed class SafeTensors
         }
 
         long dataStart = 8 + (long)headerLen;
+
+        // Guard against a truncated file (e.g. an interrupted download cached under the final
+        // name): the header parses fine but the data section is short, which would otherwise fail
+        // deep inside Bytes() with a cryptic ArgumentOutOfRangeException. Surface a clear,
+        // catchable error so callers can re-download.
+        long maxEnd = 0;
+        foreach (var e in entries.Values)
+        {
+            if (e.End > maxEnd)
+            {
+                maxEnd = e.End;
+            }
+        }
+        if (dataStart + maxEnd > bytes.Length)
+        {
+            throw new InvalidDataException(
+                $"'{path}' is truncated: the header declares {dataStart + maxEnd} bytes but the file is only {bytes.Length}. " +
+                "The cached weights file is incomplete - delete it and download again.");
+        }
+
         return new SafeTensors(bytes, dataStart, entries);
     }
 
