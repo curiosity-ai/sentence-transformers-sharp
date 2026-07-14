@@ -22,7 +22,7 @@
 
 
   <ItemGroup>
-    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+    <PackageReference Include="SentenceTransformers" Version="26.7.2589" />
   </ItemGroup>
 
   <ItemGroup>
