@@ -21,8 +21,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small.Pure\SentenceTransformers.Harrier.Small.Pure.csproj" />
-    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
-    <PackageReference Include="SentenceTransformers" Version="26.7.2593" ExcludeAssets="all" />
+    <PackageReference Include="SentenceTransformers" Version="26.7.2593" Condition="'$(UseNuGetSentenceTransformers)' == 'true'" />
+    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" Condition="'$(UseNuGetSentenceTransformers)' != 'true'" />
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Harrier.Medium\SentenceTransformers.Harrier.Medium.csproj" />

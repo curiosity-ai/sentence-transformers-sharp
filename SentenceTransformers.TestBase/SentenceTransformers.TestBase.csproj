@@ -23,7 +23,7 @@
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
-    <PackageReference Include="SentenceTransformers" Version="26.7.2593" ExcludeAssets="all" />
+    <PackageReference Include="SentenceTransformers" Version="26.7.2593" Condition="'$(UseNuGetSentenceTransformers)' == 'true'" />
+    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" Condition="'$(UseNuGetSentenceTransformers)' != 'true'" />
   </ItemGroup>
 </Project>

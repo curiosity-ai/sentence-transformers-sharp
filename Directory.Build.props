@@ -1,0 +1,21 @@
+<Project>
+
+  <!--
+    Selects how projects in this repo reference the core SentenceTransformers library.
+
+    true  (default): reference the published SentenceTransformers NuGet package everywhere.
+                     This is what CI uses to build and publish the model packages.
+    false          : reference SentenceTransformers.csproj as a ProjectReference everywhere,
+                     so local changes to the core library are picked up without publishing.
+                     Build with: dotnet build -p:UseNuGetSentenceTransformers=false
+
+    The value must be identical for the whole build graph (it is consumed by the model
+    packages AND the internal test/benchmark/training projects); setting it per-project
+    does not work because MSBuild properties do not flow into referenced projects.
+    See CLAUDE.md for details.
+  -->
+  <PropertyGroup>
+    <UseNuGetSentenceTransformers Condition="'$(UseNuGetSentenceTransformers)' == ''">true</UseNuGetSentenceTransformers>
+  </PropertyGroup>
+
+</Project>

@@ -11,35 +11,22 @@ Guidance for Claude Code (and other contributors) when working in this repositor
 
 ## Referencing the core SentenceTransformers library
 
-**Always use a NuGet `PackageReference` to the published `SentenceTransformers` package — never a `ProjectReference` to `SentenceTransformers.csproj` — in every consuming project that is published:**
+How projects reference the core library is controlled by the `UseNuGetSentenceTransformers` property, which defaults to `true` in `Directory.Build.props`. Every consuming project (model packages **and** internal test/benchmark/training projects) carries the same conditional pair:
 
 ```xml
-<PackageReference Include="SentenceTransformers" Version="26.7.2589" />
+<PackageReference Include="SentenceTransformers" Version="26.7.2593" Condition="'$(UseNuGetSentenceTransformers)' == 'true'" />
+<ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" Condition="'$(UseNuGetSentenceTransformers)' != 'true'" />
 ```
 
-Do **not** add:
-
-```xml
-<!-- WRONG — do not use -->
-<ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
-```
+- **Default (`true`)**: everything references the published `SentenceTransformers` NuGet package. This is what CI uses, so published model `.nupkg`s depend on the pinned package version.
+- **Local core development (`false`)**: build with `dotnet build -p:UseNuGetSentenceTransformers=false` (works for `dotnet test`/`run` too) and everything references `SentenceTransformers.csproj` directly, so local core changes are picked up without publishing.
 
 Rules:
 
-- This applies to all model packages, but not to the internal test/benchmark/training projects.
-- Keep the `SentenceTransformers` package version identical across all `.csproj` files. When bumping, update every project in the same commit (versions are CalVer, published from `.devops/azure-pipelines.yml`; check the latest on nuget.org).
-- When core-library changes are needed by a consumer, first merge and publish the core `SentenceTransformers` package (CI on `main` publishes it), then bump the pinned `Version` in the consuming projects.
-
-## Internal test/benchmark/training projects
-
-The internal projects (`SentenceTransformers.Test*`, `SentenceTransformers.Benchmark*`, `SentenceTransformers.LoraTraining`) use a `ProjectReference` to the core `SentenceTransformers.csproj` (so local core changes are picked up without publishing) **and** `ProjectReference`s to the model projects. Because the model projects pull the `SentenceTransformers` NuGet package in transitively, every internal project must also carry this line to suppress the package's assets — otherwise the build fails with `CS1704` (two assemblies with the same simple name):
-
-```xml
-<ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
-<PackageReference Include="SentenceTransformers" Version="26.7.2589" ExcludeAssets="all" />
-```
-
-The direct `PackageReference` overrides the transitive one from the model projects, and `ExcludeAssets="all"` keeps its compile/runtime assets out of the build, so only the project-built core assembly is used. Keep its `Version` in sync with the pin used by the model packages (same-version rule above). This works because the assemblies are not strong-named, so the runtime binds by simple name and ignores the version difference between the locally built core and the version the model packages were compiled against.
+- The property must be identical for the whole build graph, which is why it can only be set globally (`Directory.Build.props` default or `-p:` on the command line). Do **not** hardcode it inside an individual `.csproj`: MSBuild properties do not flow into referenced projects, so the model projects would still resolve the package, it would flow transitively into the internal project alongside the project-built core, and the build fails with `CS1704` (two assemblies with the same simple name `SentenceTransformers`).
+- Do not replace the conditional pair with a plain `<PackageReference Include="SentenceTransformers" ExcludeAssets="all" />` next to a `ProjectReference`: it compiles, and `dotnet test` even passes (xunit probes the output folder by simple name), but console apps crash at startup with `FileNotFoundException: Could not load file or assembly 'SentenceTransformers, Version=…'` — NuGet unifies the project and the package under one identity, the package node wins, and its excluded assets leave `deps.json` without any runtime entry for `SentenceTransformers.dll`.
+- Keep the pinned `SentenceTransformers` package version identical across all `.csproj` files. When bumping, update every project in the same commit (versions are CalVer, published from `.devops/azure-pipelines.yml`; check the latest on nuget.org).
+- When core-library changes are needed by a consumer, first merge to `main` (CI publishes a new core package), then bump the pinned `Version` in the consuming projects.
 
 ## Building
 
