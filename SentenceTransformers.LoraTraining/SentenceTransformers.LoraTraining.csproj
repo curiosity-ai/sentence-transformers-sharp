@@ -18,7 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="SentenceTransformers" Version="26.7.2593" Condition="'$(UseNuGetSentenceTransformers)' == 'true'" />
+    <PackageReference Include="SentenceTransformers" Version="26.7.2594" Condition="'$(UseNuGetSentenceTransformers)' == 'true'" />
     <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" Condition="'$(UseNuGetSentenceTransformers)' != 'true'" />
     <ProjectReference Include="..\SentenceTransformers.Bert.Pure\SentenceTransformers.Bert.Pure.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small.Pure\SentenceTransformers.Harrier.Small.Pure.csproj" />

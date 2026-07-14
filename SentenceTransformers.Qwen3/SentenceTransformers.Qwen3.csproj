@@ -23,7 +23,7 @@
   <ItemGroup>
     <!-- Default (UseNuGetSentenceTransformers=true, set in Directory.Build.props): use the published package.
          Build with -p:UseNuGetSentenceTransformers=false to develop against the local core project. -->
-    <PackageReference Include="SentenceTransformers" Version="26.7.2593" Condition="'$(UseNuGetSentenceTransformers)' == 'true'" />
+    <PackageReference Include="SentenceTransformers" Version="26.7.2594" Condition="'$(UseNuGetSentenceTransformers)' == 'true'" />
     <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" Condition="'$(UseNuGetSentenceTransformers)' != 'true'" />
   </ItemGroup>
 
