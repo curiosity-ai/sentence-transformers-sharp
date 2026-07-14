@@ -32,7 +32,7 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.27.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.27.1" />
     <PackageReference Include="System.Numerics.Tensors" Version="10.0.9" />
-    <PackageReference Include="Tokenizers.HuggingFace" Version="2.21.4" />
+    <PackageReference Include="Tokenizers.HuggingFace" Version="3.23.1" />
   </ItemGroup>
 
   <ItemGroup>
