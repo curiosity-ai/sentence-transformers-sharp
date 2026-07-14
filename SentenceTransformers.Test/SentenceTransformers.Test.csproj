@@ -14,8 +14,8 @@
   <ItemGroup>
     <PackageReference Include="HNSW" Version="26.6.1848" />
     <PackageReference Include="Microsoft.ML" Version="5.0.0" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.2" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.27.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.27.1" />
   </ItemGroup>
 
 
