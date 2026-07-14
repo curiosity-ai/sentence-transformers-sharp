@@ -24,4 +24,21 @@
     <UseNuGetSentenceTransformers Condition="'$(UseNuGetSentenceTransformers)' == ''">true</UseNuGetSentenceTransformers>
   </PropertyGroup>
 
+  <!-- Fail with a clear message when the NuGet restore outputs are stale: if the last restore ran
+       in package mode (project.assets.json references the SentenceTransformers package) but the
+       current build evaluates in project-reference mode, the compiler would otherwise get BOTH
+       assemblies and die with MSB3243 / CS1704 / CS0006. This happens because IDE "Clean" does not
+       delete obj/project.assets.json after Local.build.props is created or deleted. -->
+  <Target Name="ValidateSentenceTransformersReferenceMode"
+          AfterTargets="ResolvePackageAssets"
+          BeforeTargets="CoreCompile"
+          Condition="'$(UseNuGetSentenceTransformers)' != 'true' AND '$(MSBuildProjectName)' != 'SentenceTransformers'">
+    <ItemGroup>
+      <_StaleSentenceTransformersPackageAsset Include="@(ResolvedCompileFileDefinitions)"
+                                              Condition="'%(ResolvedCompileFileDefinitions.NuGetPackageId)' == 'SentenceTransformers'" />
+    </ItemGroup>
+    <Error Condition="'@(_StaleSentenceTransformersPackageAsset)' != ''"
+           Text="Stale NuGet restore: UseNuGetSentenceTransformers is '$(UseNuGetSentenceTransformers)' but obj/project.assets.json was restored in package mode. Run ./setup-local-dev.sh (or setup-local-dev.ps1), or delete all obj/ folders and restore again." />
+  </Target>
+
 </Project>

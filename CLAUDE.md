@@ -30,17 +30,18 @@ Rules:
 
 ## Debugging into the core library (Rider / Visual Studio)
 
-The IDE restores and builds with the `Directory.Build.props` default (`true`), so the debugger cannot step into `SentenceTransformers` sources out of the box — it resolves the compiled NuGet package. To switch your local checkout to project references (whole solution, IDE and CLI alike), create a gitignored `Local.build.props` next to `Directory.Build.props`:
+The IDE restores and builds with the `Directory.Build.props` default (`true`), so the debugger cannot step into `SentenceTransformers` sources out of the box — it resolves the compiled NuGet package. To switch your local checkout to project references (whole solution, IDE and CLI alike), run the setup script from the repo root:
 
-```xml
-<Project>
-  <PropertyGroup>
-    <UseNuGetSentenceTransformers>false</UseNuGetSentenceTransformers>
-  </PropertyGroup>
-</Project>
+```bash
+./setup-local-dev.sh      # macOS / Linux
+./setup-local-dev.ps1     # Windows
 ```
 
-Directory.Build.props imports it automatically when present. After creating or deleting the file, let the IDE re-restore (Rider: right-click the solution → Restore NuGet Packages, or just rebuild). Do not commit it — CI must keep building with the package default.
+It writes a gitignored `Local.build.props` (which `Directory.Build.props` imports automatically) setting `UseNuGetSentenceTransformers` to `false`, deletes all `bin/`/`obj/` folders, and restores + builds the solution. Afterwards re-sync the solution in the IDE (Rider: right-click the solution → Restore NuGet Packages, or rebuild).
+
+Deleting the `obj/` folders is not optional: IDE "Clean" does **not** delete NuGet's `obj/project.assets.json`, and assets restored in the other mode make the compiler see both the package and the project assembly at once (MSB3243 / CS1704 / CS0006 "Metadata file …/obj/…/ref/SentenceTransformers.dll could not be found"). A guard target in `Directory.Build.props` turns this state into an explicit "Stale NuGet restore" build error pointing at the script.
+
+To go back to the NuGet-package default, delete `Local.build.props`, delete the `bin/`/`obj/` folders again, and restore. Do not commit `Local.build.props` — CI must keep building with the package default.
 
 ## Building
 
