@@ -12,7 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="HNSW" Version="26.1.63669" />
+    <PackageReference Include="HNSW" Version="26.6.1848" />
     <PackageReference Include="Microsoft.ML" Version="5.0.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.2" />
@@ -20,10 +20,10 @@
 
 
   <ItemGroup>
-    <ProjectReference Include="..\SentenceTransformers.MiniLMForTest\SentenceTransformers.MiniLMForTest.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
-    <PackageReference Include="SentenceTransformers" Version="26.7.2589" ExcludeAssets="all" />
+    <PackageReference Include="SentenceTransformers" Version="26.7.2593" ExcludeAssets="all" />
   </ItemGroup>
 </Project>

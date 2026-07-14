@@ -25,7 +25,7 @@
     <PackageReference Include="Microsoft.ML" Version="5.0.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.2" />
-    <PackageReference Include="Mosaik.Core" Version="25.10.62118" />
+    <PackageReference Include="Mosaik.Core" Version="26.6.2351" />
     <!-- Pure-managed SIMD primitives (TensorPrimitives) for the shared autograd/LoRA training engine. -->
     <PackageReference Include="System.Numerics.Tensors" Version="10.0.3" />
   </ItemGroup>

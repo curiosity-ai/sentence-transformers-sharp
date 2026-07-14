@@ -17,7 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
-    <PackageReference Include="SentenceTransformers" Version="26.7.2589" ExcludeAssets="all" />
+    <PackageReference Include="SentenceTransformers" Version="26.7.2593" ExcludeAssets="all" />
     <ProjectReference Include="..\SentenceTransformers.MiniLM\SentenceTransformers.MiniLM.csproj" />
     <ProjectReference Include="..\SentenceTransformers.ArcticXs\SentenceTransformers.ArcticXs.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Qwen3\SentenceTransformers.Qwen3.csproj" />

@@ -22,7 +22,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="SentenceTransformers" Version="26.7.2589" />
+    <PackageReference Include="SentenceTransformers" Version="26.7.2593" />
   </ItemGroup>
 
   <ItemGroup>
