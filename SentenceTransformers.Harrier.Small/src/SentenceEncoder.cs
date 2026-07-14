@@ -115,16 +115,44 @@ namespace SentenceTransformers.Harrier.Small
             // If user left both null, use the default pair.
             var resolvedDataUrl = modelDataUrl ?? (modelUrl is null ? DefaultModelDataUrl : null);
 
-            await DownloadModelAsync(resolvedModelUrl, path, reportProgress, cancellationToken);
+            // ONNX runtime expects the external data file to live next to the .onnx file
+            // with the exact name referenced in the model's external_data entry.
+            string dataPath = null;
             if (!string.IsNullOrEmpty(resolvedDataUrl))
             {
-                // ONNX runtime expects the external data file to live next to the .onnx file
-                // with the exact name referenced in the model's external_data entry.
                 var dataFileName = Path.GetFileName(new Uri(resolvedDataUrl).LocalPath);
-                var dataPath = Path.Combine(Path.GetDirectoryName(path)!, dataFileName);
-                await DownloadModelAsync(resolvedDataUrl, dataPath, reportProgress, cancellationToken);
+                dataPath = Path.Combine(Path.GetDirectoryName(path)!, dataFileName);
             }
-            return new SentenceEncoder(sessionOptions, path);
+
+            await DownloadAllAsync();
+
+            try
+            {
+                return new SentenceEncoder(sessionOptions, path);
+            }
+            catch (OnnxRuntimeException)
+            {
+                // A corrupt cached model (e.g. a truncated download left behind by an older
+                // package version or an interrupted process) fails inside ONNX Runtime with
+                // errors like "Deserialize tensor ... out of bounds". Delete the cached files
+                // and download them once more before giving up.
+                File.Delete(path);
+                if (dataPath is not null)
+                {
+                    File.Delete(dataPath);
+                }
+                await DownloadAllAsync();
+                return new SentenceEncoder(sessionOptions, path);
+            }
+
+            async Task DownloadAllAsync()
+            {
+                await DownloadModelAsync(resolvedModelUrl, path, reportProgress, cancellationToken);
+                if (dataPath is not null)
+                {
+                    await DownloadModelAsync(resolvedDataUrl, dataPath, reportProgress, cancellationToken);
+                }
+            }
         }
 
         // Toggle if you want to match "no normalization" behavior. The model already L2-normalizes
@@ -460,7 +488,9 @@ namespace SentenceTransformers.Harrier.Small
 
         /// <summary>
         /// Downloads a file from <paramref name="modelUrl"/> to <paramref name="localPath"/>.
-        /// Only one download runs at a time. On failure, any partial file at <paramref name="localPath"/> is deleted.
+        /// Only one download runs at a time. The file is downloaded to a temporary sibling
+        /// (<c>*.download</c>) and only moved to <paramref name="localPath"/> once complete, so an
+        /// interrupted download can never leave a truncated file under the final name.
         /// Re-used for both the .onnx graph and its accompanying .onnx_data file.
         /// </summary>
         /// <param name="reportProgress">Optional progress callback. Receives a <see cref="DownloadProgress"/>
@@ -480,6 +510,11 @@ namespace SentenceTransformers.Harrier.Small
             }
 
             var fileName = Path.GetFileName(localPath);
+            // A file at localPath must always be complete: ONNX Runtime fails on truncated
+            // weights with hard-to-diagnose "Deserialize tensor ... out of bounds" errors, and
+            // the File.Exists check above would keep serving the broken file forever. Stream to
+            // a temp path and move into place only after the download finished.
+            var tempPath = localPath + ".download";
             // Declared in the outer scope so the Report local function (below) can read it across
             // the try block. Captured locally in the loop, refreshed when the response changes.
             long? totalBytes = null;
@@ -497,7 +532,7 @@ namespace SentenceTransformers.Harrier.Small
                     // the remaining bytes, so capture it here.
                     totalBytes = response.Content.Headers.ContentLength;
 
-                    await using var fileStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
+                    await using var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
                     var totalBytesRead = 0L;
                     var finished = false;
                     var lastReportTicks = 0L;
@@ -521,6 +556,13 @@ namespace SentenceTransformers.Harrier.Small
                                     Report(totalBytesRead);
                                 }
                             }
+                            if (totalBytes is long expected && totalBytesRead < expected)
+                            {
+                                // The server ended the stream early without an error. Throw so the
+                                // retry below resumes (via a Range request when supported) instead
+                                // of accepting a truncated file as complete.
+                                throw new IOException($"Download of '{fileName}' ended prematurely: received {totalBytesRead} of {expected} bytes.");
+                            }
                             finished = true;
                             Report(totalBytesRead); // final 100% notification
                         }
@@ -528,7 +570,6 @@ namespace SentenceTransformers.Harrier.Small
                         {
                             if (ex is TaskCanceledException)
                             {
-                                try { File.Delete(localPath); } catch { /* ignore */ }
                                 throw new OperationCanceledException("Model download was cancelled.", ex, cancellationToken);
                             }
                             await Task.Delay(5000, cancellationToken);
@@ -541,6 +582,7 @@ namespace SentenceTransformers.Harrier.Small
                             {
                                 totalBytesRead = 0;
                                 fileStream.Position = 0;
+                                fileStream.SetLength(0);
                             }
                             response.Dispose();
                             response = await _downloadClient.SendAsync(newRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -558,10 +600,14 @@ namespace SentenceTransformers.Harrier.Small
                 {
                     response?.Dispose();
                 }
+
+                // The fileStream is disposed when the inner block above exits, so the temp file is
+                // fully flushed here. Only now does the file appear under its final name.
+                File.Move(tempPath, localPath, overwrite: true);
             }
             catch (Exception)
             {
-                File.Delete(localPath);
+                try { File.Delete(tempPath); } catch { /* ignore */ }
                 throw;
             }
             finally

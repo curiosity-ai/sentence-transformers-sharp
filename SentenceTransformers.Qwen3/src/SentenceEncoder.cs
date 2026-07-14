@@ -55,8 +55,22 @@ namespace SentenceTransformers.Qwen3
         {
             var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Qwen3", "qwen3-model.onnx");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await DownloadModelAsync(modelUrl ?? DefaultModelUrl, path, reportProgress, cancellationToken);
-            return new SentenceEncoder(sessionOptions, path);
+            var resolvedModelUrl = modelUrl ?? DefaultModelUrl;
+            await DownloadModelAsync(resolvedModelUrl, path, reportProgress, cancellationToken);
+            try
+            {
+                return new SentenceEncoder(sessionOptions, path);
+            }
+            catch (OnnxRuntimeException)
+            {
+                // A corrupt cached model (e.g. a truncated download left behind by an older
+                // package version or an interrupted process) fails inside ONNX Runtime with
+                // errors like "Deserialize tensor ... out of bounds". Delete the cached file
+                // and download it once more before giving up.
+                File.Delete(path);
+                await DownloadModelAsync(resolvedModelUrl, path, reportProgress, cancellationToken);
+                return new SentenceEncoder(sessionOptions, path);
+            }
         }
 
         // Quantization calibration constants from electroglyph ONNX README.
@@ -378,7 +392,9 @@ namespace SentenceTransformers.Qwen3
 
         /// <summary>
         /// Downloads the ONNX model from <paramref name="modelUrl"/> to <paramref name="localPath"/>.
-        /// Only one download runs at a time. On failure, any partial file at <paramref name="localPath"/> is deleted.
+        /// Only one download runs at a time. The file is downloaded to a temporary sibling
+        /// (<c>*.download</c>) and only moved to <paramref name="localPath"/> once complete, so an
+        /// interrupted download can never leave a truncated file under the final name.
         /// </summary>
         /// <param name="reportProgress">Optional progress callback. Receives a <see cref="DownloadProgress"/>
         /// at most twice per second while bytes are flowing. Set to <c>null</c> to skip reporting.</param>
@@ -397,6 +413,11 @@ namespace SentenceTransformers.Qwen3
             }
 
             var fileName = Path.GetFileName(localPath);
+            // A file at localPath must always be complete: ONNX Runtime fails on truncated
+            // weights with hard-to-diagnose "Deserialize tensor ... out of bounds" errors, and
+            // the File.Exists check above would keep serving the broken file forever. Stream to
+            // a temp path and move into place only after the download finished.
+            var tempPath = localPath + ".download";
             // Declared in the outer scope so the Report local function (below) can read it across
             // the try block. Refreshed when the response changes on a ranged retry.
             long? totalBytes = null;
@@ -412,7 +433,7 @@ namespace SentenceTransformers.Qwen3
                     var supportsRange = response.Headers.AcceptRanges.Contains("bytes");
                     totalBytes = response.Content.Headers.ContentLength;
 
-                    await using var fileStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
+                    await using var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
                     var totalBytesRead = 0L;
                     var finished = false;
                     var lastReportTicks = 0L;
@@ -435,6 +456,13 @@ namespace SentenceTransformers.Qwen3
                                     Report(totalBytesRead);
                                 }
                             }
+                            if (totalBytes is long expected && totalBytesRead < expected)
+                            {
+                                // The server ended the stream early without an error. Throw so the
+                                // retry below resumes (via a Range request when supported) instead
+                                // of accepting a truncated file as complete.
+                                throw new IOException($"Download of '{fileName}' ended prematurely: received {totalBytesRead} of {expected} bytes.");
+                            }
                             finished = true;
                             Report(totalBytesRead); // final 100% notification
                         }
@@ -442,7 +470,6 @@ namespace SentenceTransformers.Qwen3
                         {
                             if (ex is TaskCanceledException)
                             {
-                                try { File.Delete(localPath); } catch { /* ignore */ }
                                 throw new OperationCanceledException("Model download was cancelled.", ex, cancellationToken);
                             }
                             await Task.Delay(5000, cancellationToken);
@@ -455,6 +482,7 @@ namespace SentenceTransformers.Qwen3
                             {
                                 totalBytesRead = 0;
                                 fileStream.Position = 0;
+                                fileStream.SetLength(0);
                             }
                             response.Dispose();
                             response = await _downloadClient.SendAsync(newRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -470,10 +498,14 @@ namespace SentenceTransformers.Qwen3
                 {
                     response?.Dispose();
                 }
+
+                // The fileStream is disposed when the inner block above exits, so the temp file is
+                // fully flushed here. Only now does the file appear under its final name.
+                File.Move(tempPath, localPath, overwrite: true);
             }
             catch (Exception)
             {
-                File.Delete(localPath);
+                try { File.Delete(tempPath); } catch { /* ignore */ }
                 throw;
             }
             finally

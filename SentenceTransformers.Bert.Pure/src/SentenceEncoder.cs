@@ -226,6 +226,8 @@ public sealed class SentenceEncoder : ISentenceEncoder
                     if (reportProgress != null && total is > 0)
                         reportProgress(new DownloadProgress(read, total, (float)read / total.Value, Path.GetFileName(localPath)));
                 }
+                if (total is long expected && read < expected)
+                    throw new IOException($"Download of '{Path.GetFileName(localPath)}' ended prematurely: received {read} of {expected} bytes.");
             }
             File.Move(tmp, localPath, overwrite: true);
         }

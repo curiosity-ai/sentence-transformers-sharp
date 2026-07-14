@@ -324,7 +324,9 @@ namespace SentenceTransformers.Harrier.Small.Pure
 
         /// <summary>
         /// Downloads a file from <paramref name="url"/> to <paramref name="localPath"/> with resume support.
-        /// Only one download runs at a time process-wide. On failure, any partial file is deleted.
+        /// Only one download runs at a time process-wide. The file is downloaded to a temporary sibling
+        /// (<c>*.download</c>) and only moved to <paramref name="localPath"/> once complete, so an
+        /// interrupted download can never leave a truncated file under the final name.
         /// </summary>
         public static async Task DownloadFileAsync(string url, string localPath, Action<DownloadProgress> reportProgress = null, CancellationToken cancellationToken = default)
         {
@@ -342,6 +344,9 @@ namespace SentenceTransformers.Harrier.Small.Pure
             }
 
             var fileName = Path.GetFileName(localPath);
+            // A file at localPath must always be complete — the File.Exists check above would keep
+            // serving a truncated file forever. Stream to a temp path and move into place at the end.
+            var tempPath = localPath + ".download";
             long? totalBytes = null;
 
             await _oneDownloadAtATime.WaitAsync(cancellationToken);
@@ -355,7 +360,7 @@ namespace SentenceTransformers.Harrier.Small.Pure
                     var supportsRange = response.Headers.AcceptRanges.Contains("bytes");
                     totalBytes = response.Content.Headers.ContentLength;
 
-                    await using var fileStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
+                    await using var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, true);
                     var totalBytesRead = 0L;
                     var finished = false;
                     var lastReportTicks = 0L;
@@ -378,6 +383,13 @@ namespace SentenceTransformers.Harrier.Small.Pure
                                     Report(totalBytesRead);
                                 }
                             }
+                            if (totalBytes is long expected && totalBytesRead < expected)
+                            {
+                                // The server ended the stream early without an error. Throw so the
+                                // retry below resumes (via a Range request when supported) instead
+                                // of accepting a truncated file as complete.
+                                throw new IOException($"Download of '{fileName}' ended prematurely: received {totalBytesRead} of {expected} bytes.");
+                            }
                             finished = true;
                             Report(totalBytesRead);
                         }
@@ -385,7 +397,6 @@ namespace SentenceTransformers.Harrier.Small.Pure
                         {
                             if (ex is TaskCanceledException)
                             {
-                                try { File.Delete(localPath); } catch { /* ignore */ }
                                 throw new OperationCanceledException("Weights download was cancelled.", ex, cancellationToken);
                             }
                             await Task.Delay(5000, cancellationToken);
@@ -398,6 +409,7 @@ namespace SentenceTransformers.Harrier.Small.Pure
                             {
                                 totalBytesRead = 0;
                                 fileStream.Position = 0;
+                                fileStream.SetLength(0);
                             }
                             response.Dispose();
                             response = await _downloadClient.SendAsync(newRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -413,10 +425,14 @@ namespace SentenceTransformers.Harrier.Small.Pure
                 {
                     response?.Dispose();
                 }
+
+                // The fileStream is disposed when the inner block above exits, so the temp file is
+                // fully flushed here. Only now does the file appear under its final name.
+                File.Move(tempPath, localPath, overwrite: true);
             }
             catch (Exception)
             {
-                try { File.Delete(localPath); } catch { /* ignore */ }
+                try { File.Delete(tempPath); } catch { /* ignore */ }
                 throw;
             }
             finally
