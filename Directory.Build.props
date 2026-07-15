@@ -1,44 +1,10 @@
 <Project>
 
-  <!-- Optional, gitignored, per-machine overrides. Create Local.build.props next to this file
-       (see the template in CLAUDE.md) to flip UseNuGetSentenceTransformers to false for your
-       local checkout, so IDE builds (Rider / Visual Studio) and plain dotnet builds use project
-       references and the debugger can step into the core library. -->
-  <Import Project="$(MSBuildThisFileDirectory)Local.build.props" Condition="Exists('$(MSBuildThisFileDirectory)Local.build.props')" />
-
-  <!--
-    Selects how projects in this repo reference the core SentenceTransformers library.
-
-    true  (default): reference the published SentenceTransformers NuGet package everywhere.
-                     This is what CI uses to build and publish the model packages.
-    false          : reference SentenceTransformers.csproj as a ProjectReference everywhere,
-                     so local changes to the core library are picked up without publishing.
-                     Build with: dotnet build -p:UseNuGetSentenceTransformers=false
-
-    The value must be identical for the whole build graph (it is consumed by the model
-    packages AND the internal test/benchmark/training projects); setting it per-project
-    does not work because MSBuild properties do not flow into referenced projects.
-    See CLAUDE.md for details.
-  -->
-  <PropertyGroup>
-    <UseNuGetSentenceTransformers Condition="'$(UseNuGetSentenceTransformers)' == ''">true</UseNuGetSentenceTransformers>
-  </PropertyGroup>
-
-  <!-- Fail with a clear message when the NuGet restore outputs are stale: if the last restore ran
-       in package mode (project.assets.json references the SentenceTransformers package) but the
-       current build evaluates in project-reference mode, the compiler would otherwise get BOTH
-       assemblies and die with MSB3243 / CS1704 / CS0006. This happens because IDE "Clean" does not
-       delete obj/project.assets.json after Local.build.props is created or deleted. -->
-  <Target Name="ValidateSentenceTransformersReferenceMode"
-          AfterTargets="ResolvePackageAssets"
-          BeforeTargets="CoreCompile"
-          Condition="'$(UseNuGetSentenceTransformers)' != 'true' AND '$(MSBuildProjectName)' != 'SentenceTransformers'">
-    <ItemGroup>
-      <_StaleSentenceTransformersPackageAsset Include="@(ResolvedCompileFileDefinitions)"
-                                              Condition="'%(ResolvedCompileFileDefinitions.NuGetPackageId)' == 'SentenceTransformers'" />
-    </ItemGroup>
-    <Error Condition="'@(_StaleSentenceTransformersPackageAsset)' != ''"
-           Text="Stale NuGet restore: UseNuGetSentenceTransformers is '$(UseNuGetSentenceTransformers)' but obj/project.assets.json was restored in package mode. Run ./setup-local-dev.sh (or setup-local-dev.ps1), or delete all obj/ folders and restore again." />
-  </Target>
+  <!-- All projects in this repo reference the core SentenceTransformers library via a plain
+       <ProjectReference>. That gives IDE/debugger step-into for free during development, and at
+       pack time the .NET SDK automatically rewrites the project reference into a NuGet package
+       dependency in each model package's .nupkg (versioned to the core build from the same run,
+       i.e. the shared CalVer version CI stamps via /p:Version). No package-vs-project switching
+       is needed. See CLAUDE.md and https://markheath.net/post/multiple-nuget-single-repo -->
 
 </Project>

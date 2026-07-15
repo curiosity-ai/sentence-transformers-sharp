@@ -11,37 +11,23 @@ Guidance for Claude Code (and other contributors) when working in this repositor
 
 ## Referencing the core SentenceTransformers library
 
-How projects reference the core library is controlled by the `UseNuGetSentenceTransformers` property, which defaults to `true` in `Directory.Build.props`. Every consuming project (model packages **and** internal test/benchmark/training projects) carries the same conditional pair:
+Every consuming project (model packages **and** internal test/benchmark/training projects) references the core library with a single plain project reference:
 
 ```xml
-<PackageReference Include="SentenceTransformers" Version="26.7.2593" Condition="'$(UseNuGetSentenceTransformers)' == 'true'" />
-<ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" Condition="'$(UseNuGetSentenceTransformers)' != 'true'" />
+<ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
 ```
 
-- **Default (`true`)**: everything references the published `SentenceTransformers` NuGet package. This is what CI uses, so published model `.nupkg`s depend on the pinned package version.
-- **Local core development (`false`)**: build with `dotnet build -p:UseNuGetSentenceTransformers=false` (works for `dotnet test`/`run` too) and everything references `SentenceTransformers.csproj` directly, so local core changes are picked up without publishing.
+That is all that is needed, because SDK-style projects do the right thing in both directions:
+
+- **Development / debugging**: everything is a project reference, so the IDE and CLI build core from source and the debugger steps straight into `SentenceTransformers` sources. No setup, no per-machine overrides.
+- **Publishing**: when a model package is packed (`dotnet pack`, or `-p:GeneratePackageOnBuild=true` as CI does), the SDK automatically rewrites the `SentenceTransformers` project reference into a **NuGet package dependency** in the produced `.nupkg` — it does *not* bundle core's DLL. The dependency version is core's package version from the same build, i.e. the shared CalVer version CI stamps via `/p:Version=$(targetVersion)` (that property is passed on the command line, so it flows into the referenced core project too). All packages published from one CI run therefore reference each other at one consistent version.
+
+This is the built-in SDK behaviour described in <https://markheath.net/post/multiple-nuget-single-repo>; it replaces the old `UseNuGetSentenceTransformers` package-vs-project switch (and its `Local.build.props`, setup scripts, and stale-restore guard), which existed only to emulate this by hand.
 
 Rules:
 
-- The property must be identical for the whole build graph, which is why it can only be set globally (`Directory.Build.props` default or `-p:` on the command line). Do **not** hardcode it inside an individual `.csproj`: MSBuild properties do not flow into referenced projects, so the model projects would still resolve the package, it would flow transitively into the internal project alongside the project-built core, and the build fails with `CS1704` (two assemblies with the same simple name `SentenceTransformers`).
-- Do not replace the conditional pair with a plain `<PackageReference Include="SentenceTransformers" ExcludeAssets="all" />` next to a `ProjectReference`: it compiles, and `dotnet test` even passes (xunit probes the output folder by simple name), but console apps crash at startup with `FileNotFoundException: Could not load file or assembly 'SentenceTransformers, Version=…'` — NuGet unifies the project and the package under one identity, the package node wins, and its excluded assets leave `deps.json` without any runtime entry for `SentenceTransformers.dll`.
-- Keep the pinned `SentenceTransformers` package version identical across all `.csproj` files. When bumping, update every project in the same commit (versions are CalVer, published from `.devops/azure-pipelines.yml`; check the latest on nuget.org).
-- When core-library changes are needed by a consumer, first merge to `main` (CI publishes a new core package), then bump the pinned `Version` in the consuming projects.
-
-## Debugging into the core library (Rider / Visual Studio)
-
-The IDE restores and builds with the `Directory.Build.props` default (`true`), so the debugger cannot step into `SentenceTransformers` sources out of the box — it resolves the compiled NuGet package. To switch your local checkout to project references (whole solution, IDE and CLI alike), run the setup script from the repo root:
-
-```bash
-./setup-local-dev.sh      # macOS / Linux
-./setup-local-dev.ps1     # Windows
-```
-
-It writes a gitignored `Local.build.props` (which `Directory.Build.props` imports automatically) setting `UseNuGetSentenceTransformers` to `false`, deletes all `bin/`/`obj/` folders, and restores + builds the solution. Afterwards re-sync the solution in the IDE (Rider: right-click the solution → Restore NuGet Packages, or rebuild).
-
-Deleting the `obj/` folders is not optional: IDE "Clean" does **not** delete NuGet's `obj/project.assets.json`, and assets restored in the other mode make the compiler see both the package and the project assembly at once (MSB3243 / CS1704 / CS0006 "Metadata file …/obj/…/ref/SentenceTransformers.dll could not be found"). A guard target in `Directory.Build.props` turns this state into an explicit "Stale NuGet restore" build error pointing at the script.
-
-To go back to the NuGet-package default, delete `Local.build.props`, delete the `bin/`/`obj/` folders again, and restore. Do not commit `Local.build.props` — CI must keep building with the package default.
+- Core (`SentenceTransformers`) must stay packable (it produces `PackageId=SentenceTransformers`). That is what makes the SDK emit a package *dependency* rather than copy the DLL into each model package.
+- The whole build graph must be versioned together. CI already does this: one shared CalVer version is stamped across every package in a run. Do not try to pin a model package to a different core version than the rest of the run.
 
 ## Building
 

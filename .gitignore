@@ -292,5 +292,3 @@ __pycache__/
 #macos
 .DS_Store
 **/.DS_Store
-# Per-machine MSBuild overrides (e.g. UseNuGetSentenceTransformers=false for local core debugging)
-Local.build.props
