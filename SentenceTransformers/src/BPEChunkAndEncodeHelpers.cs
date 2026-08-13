@@ -34,9 +34,11 @@ public static class BPEChunkAndEncodeHelpers
     /// <param name="chunkOverlap">Tokens of overlap kept between consecutive chunks. Out-of-range values default to <c>chunkLength / 5</c>.</param>
     /// <param name="maxChunks">Hard cap on chunks produced.</param>
     /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
-    public static List<string> ChunkTokens(TokenizerBase tokenizer, string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
+    /// <param name="prefix">Optional text that will lead every chunk when it is encoded. The chunks themselves
+    /// stay prefix-free, but the room the prefix takes comes out of <paramref name="chunkLength"/>.</param>
+    public static List<string> ChunkTokens(TokenizerBase tokenizer, string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null, ChunkPrefix prefix = null)
     {
-        var aligned = ChunkTokensAligned(tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress);
+        var aligned = ChunkTokensAligned(tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress, prefix);
         var result = new List<string>(aligned.Count);
         for (int i = 0; i < aligned.Count; i++)
         {
@@ -49,13 +51,17 @@ public static class BPEChunkAndEncodeHelpers
     /// offsets back into <paramref name="text"/>, so callers can recover the original substring via
     /// <see cref="AlignedChunkHelpers.FromOriginal(AlignedString)"/>.</summary>
     /// <inheritdoc cref="ChunkTokens"/>
-    public static List<AlignedString> ChunkTokensAligned(TokenizerBase tokenizer, string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
+    public static List<AlignedString> ChunkTokensAligned(TokenizerBase tokenizer, string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null, ChunkPrefix prefix = null)
     {
         if (tokenizer is null) throw new ArgumentNullException(nameof(tokenizer));
         if (string.IsNullOrEmpty(text)) return new List<AlignedString>();
 
         var maxTokens = tokenizer.MaxTokens;
         if (chunkLength <= 0 || chunkLength > maxTokens) chunkLength = maxTokens;
+
+        // The prefix leads every chunk, so it comes out of each chunk's budget - not out of the last one
+        chunkLength = ChunkPrefix.EffectiveChunkLength(prefix, chunkLength);
+
         if (chunkOverlap < 0 || chunkOverlap >= chunkLength) chunkOverlap = chunkLength / 5;
 
         reportProgress?.Invoke(0.001f);
@@ -122,12 +128,12 @@ public static class BPEChunkAndEncodeHelpers
     /// <summary>Splits <paramref name="text"/> into BPE-token-bounded chunks and encodes each chunk to an embedding using
     /// <paramref name="encoder"/>.</summary>
     /// <inheritdoc cref="ISentenceEncoder.ChunkAndEncodeAsync"/>
-    public static async Task<EncodedChunk[]> ChunkAndEncodeAsync(ISentenceEncoder encoder, string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
+    public static async Task<EncodedChunk[]> ChunkAndEncodeAsync(ISentenceEncoder encoder, string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default, ChunkPrefix prefix = null)
     {
         ClampChunkArgs(encoder, ref chunkLength, ref chunkOverlap);
 
         var sw = ValueStopwatch.StartNew();
-        var chunks = ChunkTokens(encoder.Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress is object ? p => reportProgress(p * 0.5f) : null);
+        var chunks = ChunkTokens(encoder.Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress is object ? p => reportProgress(p * 0.5f) : null, prefix);
         var encoded = new EncodedChunk[chunks.Count];
 
         try
@@ -137,14 +143,14 @@ public static class BPEChunkAndEncodeHelpers
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var v = await encoder.EncodeAsync(chunks[i], cancellationToken);
+                    var v = await encoder.EncodeAsync(ChunkPrefix.Apply(prefix, chunks[i]), cancellationToken);
                     encoded[i] = new EncodedChunk(chunks[i], v);
                     MaybeReportProgress(reportProgress, ref sw, i, chunks.Count);
                 }
             }
             else
             {
-                var vectors = await encoder.EncodeAsync(chunks.ToArray(), cancellationToken);
+                var vectors = await encoder.EncodeAsync(chunks.Select(c => ChunkPrefix.Apply(prefix, c)).ToArray(), cancellationToken);
                 for (int i = 0; i < encoded.Length; i++)
                 {
                     encoded[i] = new EncodedChunk(chunks[i], vectors[i]);
@@ -162,12 +168,12 @@ public static class BPEChunkAndEncodeHelpers
 
     /// <summary>Aligned variant of <see cref="ChunkAndEncodeAsync"/>: each result carries offsets into <paramref name="text"/>.</summary>
     /// <inheritdoc cref="ISentenceEncoder.ChunkAndEncodeAlignedAsync"/>
-    public static async Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(ISentenceEncoder encoder, string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
+    public static async Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(ISentenceEncoder encoder, string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default, ChunkPrefix prefix = null)
     {
         ClampChunkArgs(encoder, ref chunkLength, ref chunkOverlap);
 
         var sw = ValueStopwatch.StartNew();
-        var chunks = ChunkTokensAligned(encoder.Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress is object ? p => reportProgress(p * 0.5f) : null);
+        var chunks = ChunkTokensAligned(encoder.Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress is object ? p => reportProgress(p * 0.5f) : null, prefix);
         var encoded = new EncodedChunkAligned[chunks.Count];
 
         try
@@ -177,14 +183,14 @@ public static class BPEChunkAndEncodeHelpers
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var v = await encoder.EncodeAsync(chunks[i].Value, cancellationToken);
+                    var v = await encoder.EncodeAsync(ChunkPrefix.Apply(prefix, chunks[i].Value), cancellationToken);
                     encoded[i] = new EncodedChunkAligned(chunks[i].Value, v, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
                     MaybeReportProgress(reportProgress, ref sw, i, chunks.Count);
                 }
             }
             else
             {
-                var vectors = await encoder.EncodeAsync(chunks.Select(c => c.Value).ToArray(), cancellationToken);
+                var vectors = await encoder.EncodeAsync(chunks.Select(c => ChunkPrefix.Apply(prefix, c.Value)).ToArray(), cancellationToken);
                 for (int i = 0; i < encoded.Length; i++)
                 {
                     encoded[i] = new EncodedChunkAligned(chunks[i].Value, vectors[i], chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);

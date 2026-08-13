@@ -93,8 +93,11 @@ public interface ISentenceEncoder: IDisposable
     /// <param name="keepResultsOnCancellation">When true and the operation is cancelled, return the chunks that finished encoding instead of throwing.</param>
     /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
     /// <param name="cancellationToken">Cancellation token for the encoding loop.</param>
+    /// <param name="prefix">Optional <see cref="ChunkPrefix"/> put in front of every chunk before it is encoded
+    /// (a title in front of each chunk of its body). The chunks reported back stay prefix-free; the room the
+    /// prefix takes comes out of <paramref name="chunkLength"/>.</param>
     /// <returns>Array of <see cref="EncodedChunk"/>, one per produced chunk, in source order.</returns>
-    public async Task<EncodedChunk[]> ChunkAndEncodeAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
+    public async Task<EncodedChunk[]> ChunkAndEncodeAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default, ChunkPrefix prefix = null)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -108,7 +111,7 @@ public interface ISentenceEncoder: IDisposable
 
         var sw = ValueStopwatch.StartNew();
 
-        var chunks = ChunkTokens(text, chunkLength, chunkOverlap, maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null);
+        var chunks = ChunkTokens(text, chunkLength, chunkOverlap, maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null, prefix: prefix);
 
         var encodedChunks = new EncodedChunk[chunks.Count];
 
@@ -119,7 +122,7 @@ public interface ISentenceEncoder: IDisposable
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var oneVector = await EncodeAsync(chunks[i], cancellationToken: cancellationToken);
+                    var oneVector = await EncodeAsync(ChunkPrefix.Apply(prefix, chunks[i]), cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunk(chunks[i], oneVector);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
@@ -131,7 +134,7 @@ public interface ISentenceEncoder: IDisposable
             }
             else
             {
-                var vectors = await EncodeAsync(chunks.ToArray(), cancellationToken: cancellationToken);
+                var vectors = await EncodeAsync(chunks.Select(c => ChunkPrefix.Apply(prefix, c)).ToArray(), cancellationToken: cancellationToken);
 
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
@@ -166,7 +169,7 @@ public interface ISentenceEncoder: IDisposable
     /// via <see cref="AlignedChunkHelpers.FromOriginal(EncodedChunkAligned)"/>.
     /// </summary>
     /// <inheritdoc cref="ChunkAndEncodeAsync"/>
-    public async Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
+    public async Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default, ChunkPrefix prefix = null)
     {
         if (chunkLength <= 0 || chunkLength > MaxChunkLength)
         {
@@ -178,7 +181,7 @@ public interface ISentenceEncoder: IDisposable
             chunkOverlap = chunkLength / 5;
         }
 
-        var chunks = ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null);
+        var chunks = ChunkTokensAligned(text, chunkLength, chunkOverlap, maxChunks, reportProgress: reportProgress is object ? p => reportProgress(p * 0.5f) : null, prefix: prefix);
 
         var encodedChunks = new EncodedChunkAligned[chunks.Count];
         var sw            = ValueStopwatch.StartNew();
@@ -190,7 +193,7 @@ public interface ISentenceEncoder: IDisposable
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var oneVector = await EncodeAsync(chunks[i].Value, cancellationToken: cancellationToken);
+                    var oneVector = await EncodeAsync(ChunkPrefix.Apply(prefix, chunks[i].Value), cancellationToken: cancellationToken);
                     encodedChunks[i] = new EncodedChunkAligned(chunks[i].Value, oneVector, chunks[i].Start, chunks[i].LastStart, chunks[i].ApproximateEnd, text);
 
                     if (reportProgress is object && (sw.GetElapsedTime() > TimeSpan.FromMilliseconds(300)))
@@ -202,7 +205,7 @@ public interface ISentenceEncoder: IDisposable
             }
             else
             {
-                var vectors = await EncodeAsync(chunks.Select(v => v.Value).ToArray(), cancellationToken: cancellationToken);
+                var vectors = await EncodeAsync(chunks.Select(v => ChunkPrefix.Apply(prefix, v.Value)).ToArray(), cancellationToken: cancellationToken);
 
                 for (int i = 0; i < encodedChunks.Length; i++)
                 {
@@ -406,10 +409,15 @@ public interface ISentenceEncoder: IDisposable
     /// <param name="chunkOverlap">Tokens of overlap kept between consecutive chunks.</param>
     /// <param name="maxChunks">Hard cap on the number of chunks returned.</param>
     /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
+    /// <param name="prefix">Optional text that will lead every chunk when it is encoded. The chunks themselves
+    /// stay prefix-free, but the room the prefix takes comes out of <paramref name="chunkLength"/>.</param>
     /// <returns>The chunks as untokenized strings, in source order.</returns>
-    public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
+    public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null, ChunkPrefix prefix = null)
     {
         reportProgress?.Invoke(0.001f);
+
+        // The prefix leads every chunk, so it comes out of each chunk's budget - not out of the last one
+        chunkLength = ChunkPrefix.EffectiveChunkLength(prefix, chunkLength);
 
         checked //Ensure the max text substring length computed is not overflowing
         {
@@ -425,8 +433,10 @@ public interface ISentenceEncoder: IDisposable
     /// <see cref="AlignedChunkHelpers.FromOriginal(AlignedString)"/>.
     /// </summary>
     /// <inheritdoc cref="ChunkTokens"/>
-    public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
+    public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null, ChunkPrefix prefix = null)
     {
+        chunkLength = ChunkPrefix.EffectiveChunkLength(prefix, chunkLength);
+
         checked //Ensure the max text substring length computed is not overflowing
         {
             reportProgress?.Invoke(0.001f);

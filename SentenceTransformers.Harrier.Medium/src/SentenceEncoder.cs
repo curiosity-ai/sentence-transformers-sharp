@@ -372,16 +372,16 @@ namespace SentenceTransformers.Harrier.Medium
         /// <param name="chunkOverlap">Tokens of overlap between consecutive chunks.</param>
         /// <param name="maxChunks">Hard cap on the number of chunks returned.</param>
         /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
-        public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
-            => BPEChunkAndEncodeHelpers.ChunkTokens(Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress);
+        public List<string> ChunkTokens(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null, ChunkPrefix prefix = null)
+            => BPEChunkAndEncodeHelpers.ChunkTokens(Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress, prefix);
 
         /// <summary>
         /// Aligned variant of <see cref="ChunkTokens"/>: each chunk carries offsets back into
         /// <paramref name="text"/>.
         /// </summary>
         /// <inheritdoc cref="ChunkTokens"/>
-        public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null)
-            => BPEChunkAndEncodeHelpers.ChunkTokensAligned(Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress);
+        public List<AlignedString> ChunkTokensAligned(string text, int chunkLength = 500, int chunkOverlap = 100, int maxChunks = int.MaxValue, Action<float> reportProgress = null, ChunkPrefix prefix = null)
+            => BPEChunkAndEncodeHelpers.ChunkTokensAligned(Tokenizer, text, chunkLength, chunkOverlap, maxChunks, reportProgress, prefix);
 
         /// <summary>
         /// Splits <paramref name="text"/> into BPE-token-bounded chunks and encodes each chunk to
@@ -395,16 +395,16 @@ namespace SentenceTransformers.Harrier.Medium
         /// <param name="keepResultsOnCancellation">When true and cancelled, returns the chunks already encoded.</param>
         /// <param name="reportProgress">Optional progress callback receiving values in <c>[0,1]</c>.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
-        public Task<EncodedChunk[]> ChunkAndEncodeAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
-            => BPEChunkAndEncodeHelpers.ChunkAndEncodeAsync(this, text, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
+        public Task<EncodedChunk[]> ChunkAndEncodeAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default, ChunkPrefix prefix = null)
+            => BPEChunkAndEncodeHelpers.ChunkAndEncodeAsync(this, text, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken, prefix);
 
         /// <summary>
         /// Aligned variant of <see cref="ChunkAndEncodeAsync"/>: each result also carries offsets
         /// back into <paramref name="text"/>.
         /// </summary>
         /// <inheritdoc cref="ChunkAndEncodeAsync"/>
-        public Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default)
-            => BPEChunkAndEncodeHelpers.ChunkAndEncodeAlignedAsync(this, text, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken);
+        public Task<EncodedChunkAligned[]> ChunkAndEncodeAlignedAsync(string text, int chunkLength = -1, int chunkOverlap = 100, bool sequentially = true, int maxChunks = int.MaxValue, bool keepResultsOnCancellation = false, Action<float> reportProgress = null, CancellationToken cancellationToken = default, ChunkPrefix prefix = null)
+            => BPEChunkAndEncodeHelpers.ChunkAndEncodeAlignedAsync(this, text, chunkLength, chunkOverlap, sequentially, maxChunks, keepResultsOnCancellation, reportProgress, cancellationToken, prefix);
 
         /// <summary>
         /// Chunks <paramref name="text"/> using BPE offsets, then for each chunk runs
