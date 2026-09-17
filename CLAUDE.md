@@ -6,8 +6,17 @@ Guidance for Claude Code (and other contributors) when working in this repositor
 
 - `SentenceTransformers/` — the core library, published to NuGet as the `SentenceTransformers` package (tokenizers, ONNX inference, autograd/LoRA training engine).
 - `SentenceTransformers.<Model>/` (MiniLM, ArcticXs, Qwen3, Harrier.Small, Harrier.Medium, Harrier.Small.Pure, Bert.Pure, MiniLMForTest) — per-model wrapper packages, each published as its own NuGet package.
-- `SentenceTransformers.Test*/`, `SentenceTransformers.Benchmark*/`, `SentenceTransformers.LoraTraining/` — internal test, benchmark, and training projects (not published).
+- `SentenceTransformers.Test*/`, `SentenceTransformers.Benchmark*/`, `SentenceTransformers.LoraTraining/`, `SentenceTransformers.Quantize/` — internal test, benchmark, training, and model-conversion projects (not published).
 - `.devops/azure-pipelines.yml` — CI: builds and publishes all packages with a shared CalVer version (`yy.M.<buildId>`).
+
+## Ternary weights
+
+`SentenceTransformers/src/Ternary/` implements the `.stq` container: ternary `{-1, 0, +1}` weights
+with FP16 group scales in a Hadamard-rotated basis, following the scheme PrismML use for Bonsai.
+`SentenceTransformers.Quantize` is the converter/validator CLI, and
+`SentenceEncoder.LoadTernaryAsync` is the runtime entry point. See `TERNARY.md` — in particular §4,
+which records why post-training ternarization of the released Harrier Small weights does not produce
+a usable model, so that finding is not rediscovered.
 
 ## Referencing the core SentenceTransformers library
 

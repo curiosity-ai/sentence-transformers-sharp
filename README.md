@@ -306,6 +306,34 @@ using var encoder = await SentenceEncoder.CreateAsync(
     modelDataUrl: SentenceEncoder.Quantizations.FullModelDataUrl);
 ```
 
+## Ternary (1.58-bit) weights
+
+> 📖 **See [TERNARY.md](TERNARY.md)** for the format spec, the converter and validator, the runtime,
+> and the measured results.
+
+The `.stq` container stores weights as `{-1, 0, +1}` trits with an FP16 scale per group of 128, in a
+fixed Walsh-Hadamard rotated basis — the same scheme PrismML use for the Bonsai models, including
+both of their packings (1.75 and 2.125 bits/weight). `SentenceTransformers.Quantize` converts a
+checkpoint and validates it; `SentenceEncoder.LoadTernaryAsync` runs it.
+
+```bash
+# convert, then check it against the original before shipping it
+dotnet run --project SentenceTransformers.Quantize -c Release -- \
+  convert  --input harrier-oss-v1-270m.safetensors --output harrier-small-tq1_0.stq --band tq1_0
+dotnet run --project SentenceTransformers.Quantize -c Release -- \
+  validate --ternary harrier-small-tq1_0.stq --original harrier-oss-v1-270m.safetensors
+```
+
+```csharp
+using var encoder = await SentenceEncoder.LoadTernaryAsync("harrier-small-tq1_0.stq");
+```
+
+Read [TERNARY.md §4](TERNARY.md) before converting a checkpoint: the released Harrier Small weights
+compress 9.11× (511 MB → 56 MB) but do **not** survive whole-model ternarization, because
+round-to-nearest post-training quantization cannot reach three levels on this model's projections.
+Ternary is for weights trained for it, which is how Bonsai does it. The embedding table is the
+exception and ternarizes well on its own.
+
 ## Fine-tuning for your use case (real weight-space LoRA)
 
 > 📖 **See [LORA.md](LORA.md)** for the full guide: how it works internally, every option, negative-sample

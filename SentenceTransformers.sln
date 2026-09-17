@@ -38,6 +38,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.LoraTr
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Bert.Pure", "SentenceTransformers.Bert.Pure\SentenceTransformers.Bert.Pure.csproj", "{BDA7E314-193B-4B1E-8B51-8314B204D05C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Quantize", "SentenceTransformers.Quantize\SentenceTransformers.Quantize.csproj", "{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -216,6 +218,18 @@ Global
 		{BDA7E314-193B-4B1E-8B51-8314B204D05C}.Release|x64.Build.0 = Release|Any CPU
 		{BDA7E314-193B-4B1E-8B51-8314B204D05C}.Release|x86.ActiveCfg = Release|Any CPU
 		{BDA7E314-193B-4B1E-8B51-8314B204D05C}.Release|x86.Build.0 = Release|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Debug|x64.Build.0 = Debug|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Debug|x86.Build.0 = Debug|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Release|x64.ActiveCfg = Release|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Release|x64.Build.0 = Release|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Release|x86.ActiveCfg = Release|Any CPU
+		{F7AC5BE9-CDA1-41F3-B35C-4638B6D7106F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

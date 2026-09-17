@@ -6,6 +6,7 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using SentenceTransformers;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
+using SentenceTransformers.Ternary;
 
 namespace SentenceTransformers.Harrier.Small.Pure.Model;
 
@@ -31,9 +32,10 @@ internal sealed class Gemma3Model
 {
     private readonly Gemma3Config _cfg;
 
-    // Token embedding kept in its native bfloat16 storage (335 MB) - rows are widened one token at a
-    // time, so there is no need to materialize the full 167M-parameter table as float32.
-    private readonly ushort[] _embedTokens;
+    // Token embedding read one row at a time, so the full 167M-parameter table is never materialized
+    // as float32. Either the checkpoint's native bfloat16 storage (335 MB) or, when loaded from an
+    // .stq file, the ternary table (~37 MB). See ITokenEmbedding.
+    private readonly ITokenEmbedding _embedTokens;
     private readonly float _embedScale;
 
     private readonly Layer[] _layers;
@@ -62,7 +64,7 @@ internal sealed class Gemma3Model
         public required IWeightMatrix DownProj;
     }
 
-    private Gemma3Model(Gemma3Config cfg, ushort[] embedTokens, Layer[] layers, float[] finalNorm, bool int8Attention)
+    private Gemma3Model(Gemma3Config cfg, ITokenEmbedding embedTokens, Layer[] layers, float[] finalNorm, bool int8Attention)
     {
         _cfg = cfg;
         _embedTokens = embedTokens;
@@ -81,7 +83,7 @@ internal sealed class Gemma3Model
         // Some exports prefix every tensor with "model."; tolerate both.
         string prefix = st.Contains("embed_tokens.weight") ? "" : "model.";
 
-        var embed = st.ReadRaw16(prefix + "embed_tokens.weight");
+        var embed = new BFloat16Embedding(st.ReadRaw16(prefix + "embed_tokens.weight"), cfg.HiddenSize);
 
         // The attention/MLP projections dominate weight size and compute, so they carry the chosen
         // quantization (built on Parallel.ForAsync, never blocking); the tiny per-channel norm vectors
@@ -123,6 +125,79 @@ internal sealed class Gemma3Model
         return new Gemma3Model(cfg, embed, layers, finalNorm, int8Attention: quantization != Quantization.None);
     }
 
+    /// <summary>
+    /// Loads the model from an <c>.stq</c> ternary checkpoint (see
+    /// <see cref="SentenceTransformers.Ternary.TernaryFormat"/>) instead of the original
+    /// safetensors. Every tensor arrives already quantized, so unlike <see cref="LoadAsync"/> this
+    /// path does no quantization work at load time and never materializes a float32 copy of the
+    /// weights: the peak memory is roughly the size of the file.
+    ///
+    /// <para>The forward pass is identical - the ternary weights sit behind the same
+    /// <see cref="IWeightMatrix"/> and <see cref="ITokenEmbedding"/> abstractions, and each ternary
+    /// projection applies its own activation rotation internally.</para>
+    /// </summary>
+    public static async Task<Gemma3Model> LoadTernaryAsync(string ternaryPath, Gemma3Config cfg, ParallelOptions parallelOptions)
+    {
+        var file = await TernaryModelFile.LoadAsync(ternaryPath, parallelOptions.CancellationToken).ConfigureAwait(false);
+
+        if (file.Metadata.TryGetValue("architecture", out var arch) && arch != TernaryArchitecture)
+        {
+            throw new InvalidDataException(
+                $"'{ternaryPath}' holds a '{arch}' model; this package runs '{TernaryArchitecture}'.");
+        }
+
+        string prefix = file.Contains("embed_tokens.weight") ? "" : "model.";
+
+        var embedInfo = file.Info(prefix + "embed_tokens.weight");
+        if (embedInfo.Shape is not [var vocab, var hidden] || hidden != cfg.HiddenSize)
+        {
+            throw new InvalidDataException(
+                $"'{ternaryPath}' has an embedding table of shape [{string.Join(", ", embedInfo.Shape)}]; expected [*, {cfg.HiddenSize}].");
+        }
+        if (vocab != cfg.VocabSize)
+        {
+            throw new InvalidDataException($"'{ternaryPath}' has a {vocab}-token vocabulary; expected {cfg.VocabSize}.");
+        }
+
+        ITokenEmbedding embed = TernaryFormat.IsTernary(embedInfo.Band)
+            ? new TernaryEmbedding(file, embedInfo)
+            : new FloatEmbedding(file.ReadFloat(prefix + "embed_tokens.weight"), cfg.HiddenSize);
+
+        Task<IWeightMatrix> Proj(string p, string name, int outDim, int inDim)
+            => TernaryWeights.CreateAsync(file, file.Info(p + name), outDim, inDim, parallelOptions);
+
+        var layers = new Layer[cfg.NumLayers];
+        for (int i = 0; i < cfg.NumLayers; i++)
+        {
+            string p = $"{prefix}layers.{i}.";
+            layers[i] = new Layer
+            {
+                InputLayerNorm           = file.ReadFloat(p + "input_layernorm.weight"),
+                PostAttentionLayerNorm   = file.ReadFloat(p + "post_attention_layernorm.weight"),
+                PreFeedforwardLayerNorm  = file.ReadFloat(p + "pre_feedforward_layernorm.weight"),
+                PostFeedforwardLayerNorm = file.ReadFloat(p + "post_feedforward_layernorm.weight"),
+                QProj                    = await Proj(p, "self_attn.q_proj.weight", cfg.QProjOut,         cfg.HiddenSize).ConfigureAwait(false),
+                KProj                    = await Proj(p, "self_attn.k_proj.weight", cfg.KvProjOut,        cfg.HiddenSize).ConfigureAwait(false),
+                VProj                    = await Proj(p, "self_attn.v_proj.weight", cfg.KvProjOut,        cfg.HiddenSize).ConfigureAwait(false),
+                OProj                    = await Proj(p, "self_attn.o_proj.weight", cfg.HiddenSize,       cfg.QProjOut).ConfigureAwait(false),
+                QNorm                    = file.ReadFloat(p + "self_attn.q_norm.weight"),
+                KNorm                    = file.ReadFloat(p + "self_attn.k_norm.weight"),
+                GateProj                 = await Proj(p, "mlp.gate_proj.weight",    cfg.IntermediateSize, cfg.HiddenSize).ConfigureAwait(false),
+                UpProj                   = await Proj(p, "mlp.up_proj.weight",      cfg.IntermediateSize, cfg.HiddenSize).ConfigureAwait(false),
+                DownProj                 = await Proj(p, "mlp.down_proj.weight",    cfg.HiddenSize,       cfg.IntermediateSize).ConfigureAwait(false),
+            };
+        }
+
+        var finalNorm = file.ReadFloat(prefix + "norm.weight");
+
+        // Ternary weights always imply a quantized activation path, so the int8 attention kernel is on
+        // for the same reason it is under Int8/Int4: K is read at one byte per element.
+        return new Gemma3Model(cfg, embed, layers, finalNorm, int8Attention: true);
+    }
+
+    /// <summary>Value the converter writes into the file's <c>architecture</c> metadata field.</summary>
+    public const string TernaryArchitecture = "gemma3-text";
+
     internal static ArrayPool<float> _pooledArray = ArrayPool<float>.Create(512000, 24);
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -161,13 +236,8 @@ internal sealed class Gemma3Model
             // --- token embedding (+ sqrt(hidden) scale) ---
             for (int p = 0; p < seq; p++)
             {
-                int tok = tokenIds[p];
-                int srcBase = tok * h;
-                int dstBase = p * h;
-                for (int i = 0; i < h; i++)
-                {
-                    hidden[dstBase + i] = FloatConversions.BFloat16ToSingle(_embedTokens[srcBase + i]) * _embedScale;
-                }
+                parallelOptions.CancellationToken.ThrowIfCancellationRequested();
+                _embedTokens.Lookup(tokenIds[p], hidden.AsSpan(p * h, h), _embedScale);
             }
 
             // --- rotary tables ---

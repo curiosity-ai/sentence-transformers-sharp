@@ -27,6 +27,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="SentenceTransformers.Tests" />
+    <!-- The converter reuses this package's safetensors reader and inspects the loaded model. -->
+    <InternalsVisibleTo Include="SentenceTransformers.Quantize" />
   </ItemGroup>
 
   <ItemGroup>
