@@ -1,7 +1,9 @@
 using System.Buffers;
 using System.Numerics.Tensors;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using SentenceTransformers;
 using SentenceTransformers.Stq;
 
@@ -35,8 +37,11 @@ internal sealed class StqMatrix : IWeightMatrix
 {
     private readonly StqBand _band;
     private readonly byte[] _codes;          // [outDim * rowBytes]
-    private readonly float[] _scales;        // [outDim * groups]
-    private readonly int[] _groupSum;        // [outDim * groups], sum of the group's trits
+    // Both are stored group-major - [g * outDim + o], not [o * groups + g] - so a tile's four output
+    // channels are contiguous for one group and load as a single Vector128. In row-major order they
+    // are strided by `groups`, which would need a gather per group and undo the point of the tile.
+    private readonly float[] _scales;        // [groups * outDim]
+    private readonly int[] _groupSum;        // [groups * outDim], sum of the group's codes
     private readonly HadamardRotation _rotation; // null when the tensor is stored unrotated
     private readonly int _groupSize;
     private readonly int _groups;
@@ -89,8 +94,9 @@ internal sealed class StqMatrix : IWeightMatrix
         int rowBytes = groups * groupBytes;
 
         var codes = file.Codes(info).ToArray();
-        var scales = file.Scales(info);
-        var groupSum = new int[(long)outDim * groups];
+        var rowMajorScales = file.Scales(info);
+        var scales = new float[(long)groups * outDim];
+        var groupSum = new int[(long)groups * outDim];
         var band = info.Band;
 
         await ParallelExecution.ForAsync(0, outDim, parallelOptions, (o, _) =>
@@ -104,7 +110,8 @@ internal sealed class StqMatrix : IWeightMatrix
                 {
                     sum += group[i];
                 }
-                groupSum[o * groups + g] = sum;
+                groupSum[(long)g * outDim + o] = sum;
+                scales[(long)g * outDim + o] = rowMajorScales[(long)o * groups + g];
             }
             return ValueTask.CompletedTask;
         }).ConfigureAwait(false);
@@ -245,6 +252,9 @@ internal sealed class StqMatrix : IWeightMatrix
     /// <summary>Output channels computed together per tile.</summary>
     private const int TileOut = 4;
 
+    /// <summary>Positions computed together per tile, so each weight load is reused four times.</summary>
+    private const int TilePos = 4;
+
     /// <summary>
     /// When true (the default) and the caller asked for a single thread, the kernel runs its loops
     /// directly instead of through <see cref="ParallelExecution.ForAsync"/>.
@@ -298,86 +308,115 @@ internal sealed class StqMatrix : IWeightMatrix
         ForwardProfile.StageStop(ForwardProfile.Stage.UnpackWeights, unpackTs);
 
         long dotTs = ForwardProfile.StageStart();
-        int groups = _groups, gs = _groupSize;
-        int width = Vector256<byte>.Count;
         ref byte uaRef = ref MemoryMarshal.GetArrayDataReference(ua);
         ref sbyte wRef = ref MemoryMarshal.GetReference(w);
 
-        for (int s = 0; s < seq; s += 2)
+        // Four positions at a time: every weight vector loaded in the inner loop is used against four
+        // activations, which is the reuse the Int8 kernel gets and the two-position version did not.
+        int s = 0;
+        for (; s + TilePos <= seq; s += TilePos)
         {
-            bool two = s + 1 < seq;
-            int sb0 = s * inDim;
-            int sb1 = two ? sb0 + inDim : sb0;
-
-            float f00 = 0, f01 = 0, f02 = 0, f03 = 0;
-            float f10 = 0, f11 = 0, f12 = 0, f13 = 0;
-
-            for (int g = 0; g < groups; g++)
-            {
-                int gStart = g * gs;
-                var a00 = Vector256<int>.Zero; var a01 = Vector256<int>.Zero;
-                var a02 = Vector256<int>.Zero; var a03 = Vector256<int>.Zero;
-                var a10 = Vector256<int>.Zero; var a11 = Vector256<int>.Zero;
-                var a12 = Vector256<int>.Zero; var a13 = Vector256<int>.Zero;
-
-                for (int c = 0; c < gs; c += width)
-                {
-                    int off = gStart + c;
-                    var w0 = Vector256.LoadUnsafe(ref wRef, (nuint)off);
-                    var w1 = Vector256.LoadUnsafe(ref wRef, (nuint)(inDim + off));
-                    var w2 = Vector256.LoadUnsafe(ref wRef, (nuint)(2 * inDim + off));
-                    var w3 = Vector256.LoadUnsafe(ref wRef, (nuint)(3 * inDim + off));
-
-                    var av0 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb0 + off));
-                    a00 = Vnni.DotAccumulate(a00, av0, w0);
-                    a01 = Vnni.DotAccumulate(a01, av0, w1);
-                    a02 = Vnni.DotAccumulate(a02, av0, w2);
-                    a03 = Vnni.DotAccumulate(a03, av0, w3);
-
-                    if (two)
-                    {
-                        var av1 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb1 + off));
-                        a10 = Vnni.DotAccumulate(a10, av1, w0);
-                        a11 = Vnni.DotAccumulate(a11, av1, w1);
-                        a12 = Vnni.DotAccumulate(a12, av1, w2);
-                        a13 = Vnni.DotAccumulate(a13, av1, w3);
-                    }
-                }
-
-                int gi = g;
-                float sc0 = _scales[(o0) * groups + gi],     sc1 = _scales[(o0 + 1) * groups + gi];
-                float sc2 = _scales[(o0 + 2) * groups + gi], sc3 = _scales[(o0 + 3) * groups + gi];
-                int z0 = Vnni.ZeroPoint * _groupSum[(o0) * groups + gi];
-                int z1 = Vnni.ZeroPoint * _groupSum[(o0 + 1) * groups + gi];
-                int z2 = Vnni.ZeroPoint * _groupSum[(o0 + 2) * groups + gi];
-                int z3 = Vnni.ZeroPoint * _groupSum[(o0 + 3) * groups + gi];
-
-                f00 += sc0 * (Vector256.Sum(a00) - z0);
-                f01 += sc1 * (Vector256.Sum(a01) - z1);
-                f02 += sc2 * (Vector256.Sum(a02) - z2);
-                f03 += sc3 * (Vector256.Sum(a03) - z3);
-
-                if (two)
-                {
-                    f10 += sc0 * (Vector256.Sum(a10) - z0);
-                    f11 += sc1 * (Vector256.Sum(a11) - z1);
-                    f12 += sc2 * (Vector256.Sum(a12) - z2);
-                    f13 += sc3 * (Vector256.Sum(a13) - z3);
-                }
-            }
-
-            float as0 = aScale[s];
-            int yb0 = s * outDim + o0;
-            y[yb0] = as0 * f00; y[yb0 + 1] = as0 * f01; y[yb0 + 2] = as0 * f02; y[yb0 + 3] = as0 * f03;
-
-            if (two)
-            {
-                float as1 = aScale[s + 1];
-                int yb1 = (s + 1) * outDim + o0;
-                y[yb1] = as1 * f10; y[yb1 + 1] = as1 * f11; y[yb1 + 2] = as1 * f12; y[yb1 + 3] = as1 * f13;
-            }
+            Dot4(ref uaRef, ref wRef, aScale, y, o0, s, inDim, outDim);
+        }
+        for (; s < seq; s++)
+        {
+            Dot1(ref uaRef, ref wRef, aScale, y, o0, s, inDim, outDim);
         }
         ForwardProfile.StageStop(ForwardProfile.Stage.Dot, dotTs);
+    }
+
+    /// <summary>Four output channels by four positions: sixteen independent accumulator chains, and
+    /// each weight load feeds four of them.</summary>
+    private void Dot4(ref byte uaRef, ref sbyte wRef, float[] aScale, float[] y, int o0, int s, int inDim, int outDim)
+    {
+        int groups = _groups, gs = _groupSize;
+        int width = Vector256<byte>.Count;
+        int sb0 = s * inDim, sb1 = sb0 + inDim, sb2 = sb1 + inDim, sb3 = sb2 + inDim;
+
+        var f0 = Vector128<float>.Zero; var f1 = Vector128<float>.Zero;
+        var f2 = Vector128<float>.Zero; var f3 = Vector128<float>.Zero;
+
+        for (int g = 0; g < groups; g++)
+        {
+            int gStart = g * gs;
+            var a00 = Vector256<int>.Zero; var a01 = Vector256<int>.Zero; var a02 = Vector256<int>.Zero; var a03 = Vector256<int>.Zero;
+            var a10 = Vector256<int>.Zero; var a11 = Vector256<int>.Zero; var a12 = Vector256<int>.Zero; var a13 = Vector256<int>.Zero;
+            var a20 = Vector256<int>.Zero; var a21 = Vector256<int>.Zero; var a22 = Vector256<int>.Zero; var a23 = Vector256<int>.Zero;
+            var a30 = Vector256<int>.Zero; var a31 = Vector256<int>.Zero; var a32 = Vector256<int>.Zero; var a33 = Vector256<int>.Zero;
+
+            for (int c = 0; c < gs; c += width)
+            {
+                int off = gStart + c;
+                var w0 = Vector256.LoadUnsafe(ref wRef, (nuint)off);
+                var w1 = Vector256.LoadUnsafe(ref wRef, (nuint)(inDim + off));
+                var w2 = Vector256.LoadUnsafe(ref wRef, (nuint)(2 * inDim + off));
+                var w3 = Vector256.LoadUnsafe(ref wRef, (nuint)(3 * inDim + off));
+
+                var av0 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb0 + off));
+                a00 = Vnni.DotAccumulate(a00, av0, w0); a01 = Vnni.DotAccumulate(a01, av0, w1);
+                a02 = Vnni.DotAccumulate(a02, av0, w2); a03 = Vnni.DotAccumulate(a03, av0, w3);
+
+                var av1 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb1 + off));
+                a10 = Vnni.DotAccumulate(a10, av1, w0); a11 = Vnni.DotAccumulate(a11, av1, w1);
+                a12 = Vnni.DotAccumulate(a12, av1, w2); a13 = Vnni.DotAccumulate(a13, av1, w3);
+
+                var av2 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb2 + off));
+                a20 = Vnni.DotAccumulate(a20, av2, w0); a21 = Vnni.DotAccumulate(a21, av2, w1);
+                a22 = Vnni.DotAccumulate(a22, av2, w2); a23 = Vnni.DotAccumulate(a23, av2, w3);
+
+                var av3 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb3 + off));
+                a30 = Vnni.DotAccumulate(a30, av3, w0); a31 = Vnni.DotAccumulate(a31, av3, w1);
+                a32 = Vnni.DotAccumulate(a32, av3, w2); a33 = Vnni.DotAccumulate(a33, av3, w3);
+            }
+
+            int gBase = g * outDim + o0;
+            var sc = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_scales), (nuint)gBase);
+            var zp = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_groupSum), (nuint)gBase) * Vnni.ZeroPoint;
+
+            f0 += sc * Vector128.ConvertToSingle(Sum4(a00, a01, a02, a03) - zp);
+            f1 += sc * Vector128.ConvertToSingle(Sum4(a10, a11, a12, a13) - zp);
+            f2 += sc * Vector128.ConvertToSingle(Sum4(a20, a21, a22, a23) - zp);
+            f3 += sc * Vector128.ConvertToSingle(Sum4(a30, a31, a32, a33) - zp);
+        }
+
+        ref float yRef = ref MemoryMarshal.GetArrayDataReference(y);
+        (f0 * aScale[s]).StoreUnsafe(ref yRef, (nuint)(s * outDim + o0));
+        (f1 * aScale[s + 1]).StoreUnsafe(ref yRef, (nuint)((s + 1) * outDim + o0));
+        (f2 * aScale[s + 2]).StoreUnsafe(ref yRef, (nuint)((s + 2) * outDim + o0));
+        (f3 * aScale[s + 3]).StoreUnsafe(ref yRef, (nuint)((s + 3) * outDim + o0));
+    }
+
+    /// <summary>The tail: four output channels for a single position.</summary>
+    private void Dot1(ref byte uaRef, ref sbyte wRef, float[] aScale, float[] y, int o0, int s, int inDim, int outDim)
+    {
+        int groups = _groups, gs = _groupSize;
+        int width = Vector256<byte>.Count;
+        int sb0 = s * inDim;
+        var f0 = Vector128<float>.Zero;
+
+        for (int g = 0; g < groups; g++)
+        {
+            int gStart = g * gs;
+            var a00 = Vector256<int>.Zero; var a01 = Vector256<int>.Zero;
+            var a02 = Vector256<int>.Zero; var a03 = Vector256<int>.Zero;
+
+            for (int c = 0; c < gs; c += width)
+            {
+                int off = gStart + c;
+                var av0 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb0 + off));
+                a00 = Vnni.DotAccumulate(a00, av0, Vector256.LoadUnsafe(ref wRef, (nuint)off));
+                a01 = Vnni.DotAccumulate(a01, av0, Vector256.LoadUnsafe(ref wRef, (nuint)(inDim + off)));
+                a02 = Vnni.DotAccumulate(a02, av0, Vector256.LoadUnsafe(ref wRef, (nuint)(2 * inDim + off)));
+                a03 = Vnni.DotAccumulate(a03, av0, Vector256.LoadUnsafe(ref wRef, (nuint)(3 * inDim + off)));
+            }
+
+            int gBase = g * outDim + o0;
+            var sc = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_scales), (nuint)gBase);
+            var zp = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_groupSum), (nuint)gBase) * Vnni.ZeroPoint;
+            f0 += sc * Vector128.ConvertToSingle(Sum4(a00, a01, a02, a03) - zp);
+        }
+
+        (f0 * aScale[s]).StoreUnsafe(ref MemoryMarshal.GetArrayDataReference(y), (nuint)(s * outDim + o0));
     }
 
     /// <summary>Unpacks one output row's packed codes into signed bytes.</summary>
@@ -389,6 +428,28 @@ internal sealed class StqMatrix : IWeightMatrix
             StqPacking.UnpackGroup(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
                                    dst.Slice(g * _groupSize, _groupSize), _groupSize);
         }
+    }
+
+    /// <summary>
+    /// Sums four int32 accumulators into one <c>Vector128&lt;int&gt;</c> of four totals.
+    ///
+    /// <para>Four separate <c>Vector256.Sum</c> calls cost four independent shuffle-and-add chains.
+    /// Two <c>vphaddd</c>s fold the four vectors pairwise and a third produces all four totals in one
+    /// register, so the per-group reduction is paid once for the tile instead of once per output
+    /// channel. This matters here in a way it does not for the Int8 kernel: per-group scales force a
+    /// reduction every 128 weights rather than one at the end of the row.</para>
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector128<int> Sum4(Vector256<int> a, Vector256<int> b, Vector256<int> c, Vector256<int> d)
+    {
+        if (Avx2.IsSupported)
+        {
+            var ab = Avx2.HorizontalAdd(a, b);      // [sum(a[0..1]), sum(a[2..3]), sum(b[0..1]), sum(b[2..3]) | upper halves]
+            var cd = Avx2.HorizontalAdd(c, d);
+            var abcd = Avx2.HorizontalAdd(ab, cd);  // lower 128 = per-vector sums of the low halves, upper = of the high halves
+            return abcd.GetLower() + abcd.GetUpper();
+        }
+        return Vector128.Create(Vector256.Sum(a), Vector256.Sum(b), Vector256.Sum(c), Vector256.Sum(d));
     }
 
     /// <summary>One output tile, or the ragged remainder when the tile would run past the last
@@ -423,7 +484,6 @@ internal sealed class StqMatrix : IWeightMatrix
                                        wbuf.Slice(g * _groupSize, _groupSize), _groupSize);
         }
 
-        int scaleBase = o * _groups;
         for (int s = 0; s < seq; s++)
         {
             int sBase = s * inDim;
@@ -438,8 +498,8 @@ internal sealed class StqMatrix : IWeightMatrix
                         Vector256.LoadUnsafe(ref ua[sBase + gStart + c]),
                         Vector256.LoadUnsafe(ref wbuf[gStart + c]));
                 }
-                int dot = Vector256.Sum(acc) - Vnni.ZeroPoint * _groupSum[scaleBase + g];
-                facc += _scales[scaleBase + g] * dot;
+                int dot = Vector256.Sum(acc) - Vnni.ZeroPoint * _groupSum[g * OutDim + o];
+                facc += _scales[g * OutDim + o] * dot;
             }
             y[s * outDim + o] = aScale[s] * facc;
         }
@@ -471,7 +531,7 @@ internal sealed class StqMatrix : IWeightMatrix
         for (int g = 0; g < _groups; g++)
         {
             StqPacking.UnpackGroupScaled(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
-                                             buf.Slice(g * _groupSize, _groupSize), _groupSize, _scales[o * _groups + g]);
+                                             buf.Slice(g * _groupSize, _groupSize), _groupSize, _scales[g * OutDim + o]);
         }
         for (int s = 0; s < seq; s++)
         {
