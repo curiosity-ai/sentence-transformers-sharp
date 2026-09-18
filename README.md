@@ -329,10 +329,15 @@ using var encoder = await SentenceEncoder.LoadQuantizedAsync("harrier-small-q4.s
 ```
 
 Unlike the load-time `Int8`/`Int4` modes, an `.stq` file also quantizes the **token embedding
-table** — 63% of Harrier Small's parameters, which those modes leave in bfloat16. The default
-conversion is therefore both better and much smaller than `Int4`: 0.984 mean cosine against the fp32
-reference at 136 MB, versus 0.976 at roughly 410 MB resident. Passing `--embed-band tq1_0` takes the
-file to 89 MB at 0.951.
+table** — 63% of Harrier Small's parameters, which those modes leave in bfloat16. On the STS
+Benchmark test split the default conversion matches fp32 while being far smaller:
+
+| | size | STS Spearman |
+|---|---|---|
+| fp32 | 511 MB | 0.8177 |
+| `Int4`, load-time | ~410 MB resident | 0.8144 |
+| **`.stq` default** | **136.5 MB** | **0.8184** |
+| `.stq --embed-band tq1_0` | 89.0 MB | 0.8088 |
 
 Read [QUANTIZATION.md §4](QUANTIZATION.md) before converting with ternary projections: the released
 Harrier Small weights compress 9.11× that way (511 MB → 56 MB) but do **not** survive it, because

@@ -223,6 +223,8 @@ Against the fp32 baseline over 20 multilingual sentences (`compare`):
 | Int4, load-time (embeddings stay bf16) | ~410 MB resident | 0.97622 | 0.95592 | 0.97918 |
 | **`.stq` all-ternary `TQ1_0`** | 56.2 MB | **0.57374** | 0.43772 | 0.45249 |
 
+On the STS Benchmark that works out to 0.6759 Spearman against fp32's 0.8177 - a 17% relative loss.
+
 That is not a bug, and the validator's level-2 check is what establishes it: the kernel reproduces
 the reference decode to 7e-3 (the int8 activation path's own noise) and the embedding lookup is
 bit-exact. The loss is entirely in the weights.
@@ -256,30 +258,60 @@ resident, about 335 MB is a table no quantization mode previously compressed.
 
 ### The resulting size/quality curve
 
-Every row is a real conversion of the released checkpoint, scored the same way. Projections are
-`q4_0` at group 32 throughout; only the embedding table changes.
+Two things are measured here, and they disagree in an instructive way. **Cosine vs fp32** is what
+`compare` reports: how far each embedding moved. **STS Spearman** is what `eval` reports on the STS
+Benchmark test split (1379 annotated pairs): how well the embeddings still do the job. Projections
+are `q4_0` at group 32 throughout; only the embedding table changes.
 
-| embedding table | file on disk | mean cosine | min cosine | ranking ρ |
-|---|---|---|---|---|
-| `tq1_0`, group 128 | **89.0 MB** | 0.95056 | 0.91290 | 0.96201 |
-| `tq1_0`, group 64 | 91.5 MB | 0.95049 | 0.90276 | 0.96490 |
-| `tq2_0`, group 64 | 99.0 MB | 0.95049 | 0.90276 | 0.96490 |
-| **`q4_0`, group 128 (default)** | **136.5 MB** | **0.98430** | 0.95132 | **0.98931** |
-| `q4_0`, group 32 | 144.0 MB | 0.98436 | 0.95154 | 0.98923 |
-| — for reference, `Int4` load-time | ~410 MB resident | 0.97622 | 0.95592 | 0.97918 |
+| configuration | size | cosine vs fp32 | **STS Spearman** | retrieval acc | MRR |
+|---|---|---|---|---|---|
+| fp32 (baseline) | 511.4 MB | — | 0.8177 | 0.8707 | 0.9198 |
+| `Int8`, load-time (embeddings bf16) | ~440 MB resident | 0.9957 | 0.8179 | 0.8752 | 0.9218 |
+| `Int4`, load-time (embeddings bf16) | ~410 MB resident | 0.9762 | 0.8144 | 0.8752 | 0.9220 |
+| **`.stq` `q4_0` everywhere (default)** | **136.5 MB** | 0.9843 | **0.8184** | 0.8737 | 0.9205 |
+| **`.stq` `tq1_0` embedding table** | **89.0 MB** | 0.9506 | **0.8088** | 0.8588 | 0.9120 |
+| `.stq` all-ternary `tq1_0` | 56.2 MB | 0.5737 | 0.6759 | 0.8187 | 0.8809 |
 
-Two things follow, and they set the defaults:
+**Cosine systematically overstates the damage.** The default conversion sits 0.0157 below fp32 in
+cosine and is level with it on the task (the +0.0007 is noise at this sample size). The ternary
+embedding table looks like a real step down at 0.951 cosine, and costs 0.009 Spearman - roughly 1%
+relative. The embeddings move; the rankings they produce largely do not, and rankings are what a
+retrieval system consumes. Treat cosine as a cheap offline tripwire, not the shipping criterion -
+which is why the default validation gates deliberately fail the 89 MB build even though STS says it
+is fine. When the decision matters, run `eval`.
 
-- **4-bit throughout beats the shipped `Int4` mode on both axes** — 0.984 against 0.976 cosine, at
-  136.5 MB against roughly 410 MB resident — purely because it is the first path here that
-  compresses the embedding table. This is the default conversion.
-- **A ternary embedding table is the smallest useful build**, 89.0 MB at 0.951 cosine. That is a real
-  quality step down, so it is one flag away (`--embed-band tq1_0`) rather than the default, and it
-  does not clear the default validation gates — lower `--min-mean-cosine` deliberately if you want
-  it.
+That said, cosine is not crying wolf at the bottom of the table: all-ternary really is broken, losing
+0.142 Spearman (17% relative). Note it is *degraded*, not random - 0.676 is well above chance, so the
+model retains real structure. It is simply not a model anyone should ship.
+
+Three conclusions, and they set the defaults:
+
+- **4-bit throughout matches fp32 on the task at 136.5 MB** - against roughly 410 MB resident for
+  `Int4`, which scores slightly lower. This is the default conversion. The whole gain comes from
+  being the first path here that compresses the embedding table.
+- **A ternary embedding table costs about 1% relative for another 35% off the file**, at 89.0 MB and
+  0.8088 Spearman - between `Int4` and fp32 in quality at roughly a fifth of `Int4`'s memory. One
+  flag away (`--embed-band tq1_0`); it needs `--min-mean-cosine` lowered because the cosine gate, not
+  the model, objects.
+- **Ternary projections stay off the table** until weights are trained for them.
 
 Group size barely matters for the embedding table in either band (0.00006 of cosine between `q4_0`
 at 32 and at 128), so the default takes the coarser, smaller one.
+
+### Keeping it honest in CI
+
+`SentenceTransformers.Tests` carries an opt-in `StqStsBenchmarkTests` that runs the real converter,
+loads the result through `LoadQuantizedAsync`, and scores it against the same checkpoint in fp32 on
+STS-B. It asserts the default conversion stays within 0.02 Spearman of fp32, and that whole-model
+ternarization still collapses - so the finding above cannot be quietly undone by a change that only
+looks good on file size. It needs the checkpoint, so it is opt-in:
+
+```bash
+HARRIER_STQ_STSB=/path/to/harrier-oss-v1-270m.safetensors dotnet test
+```
+
+`HARRIER_STQ_STSB_PAIRS` caps the pair count (default 250, for a couple of minutes per configuration;
+the full split is 1379).
 
 ## 5. Regenerating weights
 
@@ -304,10 +336,13 @@ the run rather than blessing a conversion like the all-ternary one above.
 - The format, both Bonsai packings, the rotation, the converter, the validator and the runner are
   implemented and verified. The kernel is proven equivalent to the reference decode, so the tooling
   is ready for real ternary weights.
-- Ternarizing the whole model post-training does not work, for a reason that is a property of
-  three-level quantization rather than of this implementation. Weights trained for ternary are
-  required — which is how Bonsai does it.
-- The embedding table is the exception and ternarizes usefully on its own (0.964 cosine,
-  335 MB → 36.7 MB).
-- The immediate win is unrelated to bit width: quantizing the embedding table at all. The default
-  4-bit conversion is better and roughly 3× smaller than the `Int4` mode that ships today.
+- Ternarizing the whole model post-training does not work (0.676 STS Spearman against fp32's 0.818),
+  for a reason that is a property of three-level quantization rather than of this implementation.
+  Weights trained for ternary are required - which is how Bonsai does it.
+- The embedding table is the exception and ternarizes usefully: 335 MB to 36.7 MB for about 1%
+  relative on the task.
+- The immediate win is unrelated to bit width: quantizing the embedding table at all, which no
+  existing mode does. The default 4-bit conversion matches fp32 on STS-B at 136.5 MB, where the
+  `Int4` mode that ships today scores slightly lower at roughly three times the memory.
+- Judge builds with `eval` on a real task, not with cosine against fp32 - cosine consistently
+  overstates how much a conversion costs.
