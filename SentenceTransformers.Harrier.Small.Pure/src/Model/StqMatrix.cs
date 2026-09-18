@@ -33,7 +33,7 @@ namespace SentenceTransformers.Harrier.Small.Pure.Model;
 /// quantized at load time from safetensors; this one reads them already packed off disk, which is
 /// what lets the embedding table be quantized too.</para>
 /// </summary>
-internal sealed class StqMatrix : IWeightMatrix
+internal sealed partial class StqMatrix : IWeightMatrix
 {
     private readonly StqBand _band;
 
@@ -70,16 +70,31 @@ internal sealed class StqMatrix : IWeightMatrix
     // zero scales, so they contribute nothing and only their stores are skipped - which keeps the
     // kernel free of a ragged-tail variant.
     private readonly int _scaleStride;
-    private readonly int _tiles;             // _scaleStride / TileOut
+    private readonly int _tiles;             // _scaleStride / _tileOut
     private readonly int _tileGroupBytes;    // bytes one tile's worth of one scale group packs into
+
+    /// <summary>Output channels per tile: <see cref="TileOut"/> for the 256-bit kernel,
+    /// <see cref="TileOut512"/> for the 512-bit one. The blocked code order depends on it, so it is
+    /// fixed when the layout is built and the matmul dispatches on it.</summary>
+    private readonly int _tileOut;
+
+    /// <summary>
+    /// True when this matrix was blocked for, and will run, the 512-bit kernel.
+    ///
+    /// <para>Keyed off a <i>real</i> 512-bit int8 dot instruction, not off <c>Vnni.Use512</c>: the
+    /// latter is also true for the widen-and-<c>vpmaddwd</c> emulation, which is slower than 256-bit
+    /// <c>vpdpbusd</c> and would be the wrong choice here.</para>
+    /// </summary>
+    private static bool Use512Kernel => Vnni.Has512Dot;
 
     public int InDim { get; }
     public int OutDim { get; }
 
     private StqMatrix(StqBand band, byte[] codes, float[] scales, float[] zeroBias, HadamardRotation rotation,
                           int groupSize, int groups, int groupBytes, int outDim, int inDim,
-                          int tiles, int tileGroupBytes)
+                          int tiles, int tileGroupBytes, int tileOut)
     {
+        _tileOut = tileOut;
         _band = band;
         _codes = codes;
         _scales = scales;
@@ -90,7 +105,7 @@ internal sealed class StqMatrix : IWeightMatrix
         _groupBytes = groupBytes;
         _rowBytes = groups * groupBytes;
         _tiles = tiles;
-        _scaleStride = tiles * TileOut;
+        _scaleStride = tiles * tileOut;
         _tileGroupBytes = tileGroupBytes;
         InDim = inDim;
         OutDim = outDim;
@@ -126,9 +141,10 @@ internal sealed class StqMatrix : IWeightMatrix
         int groups = info.GroupsPerRow;
         int groupBytes = StqFormat.CodeBytesPerGroup(info.Band, groupSize);
         int rowBytes = groups * groupBytes;
-        int tiles = (outDim + TileOut - 1) / TileOut;
-        int scaleStride = tiles * TileOut;
-        int tileGroupBytes = StqFormat.CodeBytesPerGroup(info.Band, TileOut * groupSize);
+        int tileOut = Use512Kernel ? TileOut512 : TileOut;
+        int tiles = (outDim + tileOut - 1) / tileOut;
+        int scaleStride = tiles * tileOut;
+        int tileGroupBytes = StqFormat.CodeBytesPerGroup(info.Band, tileOut * groupSize);
 
         var rowCodes = file.Codes(info).ToArray();
         var rowMajorScales = file.Scales(info);
@@ -160,11 +176,11 @@ internal sealed class StqMatrix : IWeightMatrix
         // wants the blocked one and never looks at the row-major array again, so only one is kept.
         var codes = Vnni.IsSupported
             ? await BuildBlocked(band, rowCodes, outDim, groupSize, groups, groupBytes, rowBytes,
-                                 tiles, tileGroupBytes, parallelOptions).ConfigureAwait(false)
+                                 tiles, tileGroupBytes, tileOut, parallelOptions).ConfigureAwait(false)
             : rowCodes;
 
         return new StqMatrix(band, codes, scales, zeroBias, file.RotationFor(info), groupSize, groups,
-                             groupBytes, outDim, inDim, tiles, tileGroupBytes);
+                             groupBytes, outDim, inDim, tiles, tileGroupBytes, tileOut);
     }
 
     /// <summary>
@@ -180,26 +196,29 @@ internal sealed class StqMatrix : IWeightMatrix
     /// The instruction doing the multiplying is the same one either way; only the operand layout
     /// changes, which is why this is worth a pass over the weights at load.</para>
     ///
-    /// <para>The order, for one tile of <see cref="TileOut"/> channels and one scale group, is
-    /// <c>q * (TileOut * 4) + b * 32 + L * 4 + m</c>: input quad <c>q</c>, then block <c>b</c> of
-    /// eight channels, then channel <c>L</c> within it, then input <c>m</c> within the quad. Quad-major
-    /// so that the four weight vectors one step needs are 128 contiguous bytes, and whole-tile groups
-    /// so a tile's codes for a group unpack in a single call.</para>
+    /// <para>The order, for one tile of <paramref name="tileOut"/> channels and one scale group, is
+    /// <c>q * (tileOut * 4) + b * (lanes * 4) + L * 4 + m</c>: input quad <c>q</c>, then block
+    /// <c>b</c>, then channel <c>L</c> within the block, then input <c>m</c> within the quad -
+    /// where a block is one accumulator's worth of channels (eight at 256 bits, sixteen at 512).
+    /// Quad-major so that the four weight vectors one step needs are contiguous, and whole-tile
+    /// groups so a tile's codes for a group unpack in a single call.</para>
     /// </summary>
     private static async Task<byte[]> BuildBlocked(StqBand band, byte[] rowCodes, int outDim, int groupSize,
                                                    int groups, int groupBytes, int rowBytes,
-                                                   int tiles, int tileGroupBytes, ParallelOptions parallelOptions)
+                                                   int tiles, int tileGroupBytes, int tileOut,
+                                                   ParallelOptions parallelOptions)
     {
         // Pinned: the kernel takes a raw pointer into this to prefetch the next group, and it is a
         // long-lived, large, never-resized array - exactly what the pinned object heap is for.
         var blocked = GC.AllocateArray<byte>(checked((int)((long)tiles * groups * tileGroupBytes)), pinned: true);
-        int tileCodeCount = TileOut * groupSize;
+        int tileCodeCount = tileOut * groupSize;
+        int lanes = tileOut / BlocksPerTile;
         int quads = groupSize / 4;
 
         await ParallelExecution.ForAsync(0, tiles, parallelOptions, (t, _) =>
         {
             Span<sbyte> row = stackalloc sbyte[groupSize];
-            Span<sbyte> tile = tileCodeCount <= 8192 ? stackalloc sbyte[tileCodeCount] : new sbyte[tileCodeCount];
+            Span<sbyte> tile = tileCodeCount <= 16384 ? stackalloc sbyte[tileCodeCount] : new sbyte[tileCodeCount];
 
             for (int g = 0; g < groups; g++)
             {
@@ -207,9 +226,9 @@ internal sealed class StqMatrix : IWeightMatrix
                 // are zero too, so the padding contributes nothing to a real output.
                 tile.Clear();
 
-                for (int c = 0; c < TileOut; c++)
+                for (int c = 0; c < tileOut; c++)
                 {
-                    int o = t * TileOut + c;
+                    int o = t * tileOut + c;
                     if (o >= outDim)
                     {
                         break;
@@ -217,10 +236,10 @@ internal sealed class StqMatrix : IWeightMatrix
 
                     StqPacking.UnpackGroup(band, rowCodes.AsSpan(o * rowBytes + g * groupBytes, groupBytes), row, groupSize);
 
-                    int lane = (c >> 3) * 32 + (c & 7) * 4;
+                    int lane = (c / lanes) * (lanes * 4) + (c % lanes) * 4;
                     for (int q = 0; q < quads; q++)
                     {
-                        int dst = q * (TileOut * 4) + lane;
+                        int dst = q * (tileOut * 4) + lane;
                         int src = q * 4;
                         tile[dst]     = row[src];
                         tile[dst + 1] = row[src + 1];
@@ -359,18 +378,22 @@ internal sealed class StqMatrix : IWeightMatrix
     internal ValueTask MultiplyQuantizedAsync(byte[] ua, float[] aScale, float[] y, int seq, ParallelOptions parallelOptions)
     {
         int inDim = InDim, outDim = OutDim, tiles = _tiles;
+        bool wide = _tileOut == TileOut512;
+
         if (RunInline(parallelOptions))
         {
             for (int t = 0; t < tiles; t++)
             {
-                Tile(ua, aScale, y, t, seq, inDim, outDim);
+                if (wide) { Tile512(ua, aScale, y, t, seq, inDim, outDim); }
+                else      { Tile(ua, aScale, y, t, seq, inDim, outDim); }
             }
             return ValueTask.CompletedTask;
         }
 
         return new ValueTask(ParallelExecution.ForAsync(0, tiles, parallelOptions, (t, _) =>
         {
-            Tile(ua, aScale, y, t, seq, inDim, outDim);
+            if (wide) { Tile512(ua, aScale, y, t, seq, inDim, outDim); }
+            else      { Tile(ua, aScale, y, t, seq, inDim, outDim); }
             return ValueTask.CompletedTask;
         }));
     }

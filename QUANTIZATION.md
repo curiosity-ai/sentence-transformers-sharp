@@ -8,7 +8,8 @@ actually support.
 only usable for one tensor in this model, so the container also carries a 4-bit band and the default
 conversion is 4-bit throughout. That default is a **strict improvement on every mode that ships
 today** — fp32's STS-B score (0.8177) in 388 MB resident against `Int8`'s 1046, from a file 3.87×
-smaller, and **1.34× faster than `Int8` at the default parallelism** (1.11× on one thread). §4 has the numbers,
+smaller, and **1.33× faster than `Int8` at the default parallelism** (1.21× on one thread; 1.35× and
+1.24× when built for net11.0, which is the first runtime that can reach AVX-512 VNNI). §4 has the numbers,
 including how the kernel got there and the plausible argument that said it could not; §5 has what
 ternary needs to become viable.
 
@@ -119,11 +120,11 @@ activations. One routine, two uses, so a basis mistake cannot silently cancel ou
 
 ```bash
 # the default: 4-bit throughout, including the embedding table
-dotnet run --project SentenceTransformers.Quantize -c Release -- \
+dotnet run --project SentenceTransformers.Quantize -c Release -f net11.0 -- \
   convert --input harrier-oss-v1-270m.safetensors --output harrier-small-q4.stq
 
 # the smallest build: ternary embedding table, 4-bit projections
-dotnet run --project SentenceTransformers.Quantize -c Release -- \
+dotnet run --project SentenceTransformers.Quantize -c Release -f net11.0 -- \
   convert --input harrier-oss-v1-270m.safetensors --output harrier-small-mixed.stq --embed-band tq1_0
 ```
 
@@ -144,7 +145,7 @@ inference and cannot come out worse.
 **Validate**:
 
 ```bash
-dotnet run --project SentenceTransformers.Quantize -c Release -- \
+dotnet run --project SentenceTransformers.Quantize -c Release -f net11.0 -- \
   validate --ternary harrier-small-tq1_0.stq --original harrier-oss-v1-270m.safetensors
 ```
 
@@ -315,18 +316,27 @@ per iteration on a 4-core host, after three full warm-up passes, with every mode
 process so a VM or frequency change cannot land between the baseline and the candidate
 (`harrier-pure-bench`).
 
-| mode | default (4 threads) | 1 thread | resident |
-|---|---|---|---|
-| fp32 | — | 15938 | 1332 MB |
-| `Int8`, load-time | 3186 | 4081 | 1046 / 540 MB |
-| `Int4`, load-time | — | 13545 | 519 MB |
-| `.stq` q4 g128 — first working version | 5068 | 11538 | 388 MB |
-| **`.stq` q4 g128 — now** | **2374** | **3668** | **388 MB** |
+| mode | 4 threads, net10 | 4 threads, net11 | 1 thread, net10 | 1 thread, net11 | resident |
+|---|---|---|---|---|---|
+| fp32 | — | — | 15938 | — | 1332 MB |
+| `Int8`, load-time | 3049 | 3381 | 4391 | 3864 | 1046 / 540 MB |
+| `Int4`, load-time | — | — | 13545 | — | 519 MB |
+| `.stq` q4 g128 — first working version | 5068 | — | 11538 | — | 388 MB |
+| **`.stq` q4 g128 — now** | **2301** | **2497** | **3624** | **3127** | **388 MB** |
 
-Medians of three runs; the box drifts by up to 10% between runs, so read the in-process ratio rather
-than the absolute times. At the library's **default parallelism the packed path is 1.34× faster than
-`Int8`** (1.32–1.42× across runs); **pinned to one thread it is 1.11×** faster. It is 3.1× faster
-than where it started single-threaded, at 0.8177 STS-B Spearman — fp32's number to four decimals.
+Medians of three runs each; the box drifts by up to 10%, so read the in-process ratio rather than the
+absolute times. The packed path is **1.33× faster than `Int8`** at the default parallelism on net10
+and **1.35×** on net11; pinned to one thread, **1.21×** on net10 and **1.24×** on net11. It is 3.7×
+faster than where it started single-threaded, at 0.8177 STS-B Spearman — fp32's number to four
+decimals — in 388 MB against `Int8`'s 1046.
+
+Targeting net11.0 is worth **14% of a whole single-threaded encode** on this host (3624 → 3127) and
+12% for `Int8` (4391 → 3864), because .NET 11 is the first runtime that can reach AVX-512 VNNI. See
+the end of this section. At four threads it did not help here — the same build measured 2301 ms on
+net10 against 2497 on net11, with CPU time *down* 18% but wall time up, i.e. worse parallel
+efficiency. Two plausible causes, not separated: AVX-512 frequency behaviour with all cores issuing
+zmm, and Amdahl, since a third of the dot disappearing makes the serial remainder a larger share.
+Worth re-measuring per deployment rather than assuming.
 
 The order things were tried in is the order of intuition; the order of payoff was different.
 
@@ -342,6 +352,7 @@ The order things were tried in is the order of intuition; the order of payoff wa
 | row-level 4-bit unpack + the split-nibble layout | 1124 → 584 ms/iter |
 | **blocking the weights so the accumulator lanes are output channels** | **the dot: 3541 → 2015 ms/iter** |
 | prefetching the next scale group's codes during the dot | 584 → 428 ms/iter |
+| **targeting net11.0, for 512-bit `vpdpbusd`** | **the dot: 2015 → 1327 ms/iter** |
 | a 2-position tail kernel, and smaller items (per-channel bias, FMA, `SkipLocalsInit`) | a few % |
 
 Three of those deserve a note, because the mistake each corrects is easy to repeat.
@@ -422,20 +433,39 @@ is left. The dot is already at `vpdpbusd` throughput (13.2 G instructions in 201
 two per cycle), so it cannot be made faster; the unpack has a measured floor of ~274 ms (the rate it
 runs at when its source is L1-hot rather than streaming from L3) and the rotation perhaps 150. So
 **one-threaded the ceiling is about 4053/3439 = 1.18×**, and cutting the shared 915 ms helps almost
-not at all, because it comes off both sides equally.
+not at all, because it comes off both sides equally. That bound is specific to the 256-bit kernels it
+was computed from: on net11.0 the dot shrinks for both sides and the measured single-thread ratio is
+1.24×, above it. The method holds, the number does not travel.
 
-Multi-threaded is a different regime and much better: half the weight bytes matters more as cores
-contend, and the measured ratio is 1.34× at the default 4 threads against 1.11× at one. That trend is
-the thing to re-measure on a host with more cores.
+Multi-threaded is a different regime and better: half the weight bytes matters more as cores contend,
+and the measured ratio is 1.33× at the default 4 threads against 1.21× at one (net10; 1.35× and 1.24×
+on net11). That trend is the thing to re-measure on a host with more cores.
 
-**No 512-bit VNNI in .NET 10.** Worth stating because the CPUID flag is misleading: this host reports
-`avx512_vnni` in `/proc/cpuinfo`, but `AvxVnniInt8.V512.IsSupported` is false (that is AVX-VNNI-INT8,
-a different extension) and `Avx10v1`/`Avx10v1.V512`, which *are* supported, expose no
-`MultiplyWideningAndAdd` at all — only `MultiplyLow`. There is no standalone `Avx512Vnni` class. So
-both kernels are pinned to 256-bit `vpdpbusd`, `Vnni.Use512` stays false, and the 512-bit path in
-`Int8Matrix` remains the widen-and-`vpmaddwd` fallback, which is slower than 256-bit VNNI. If a
-future runtime exposes it, both kernels roughly halve their dot — which would *shrink* the packed
-path's lead, since its unpack and rotation are fixed costs.
+**512-bit VNNI needs net11.0, and the CPUID flag misleads.** This host reports `avx512_vnni` in
+`/proc/cpuinfo`, yet on .NET 10 the kernels ran at 256 bits, because none of the managed APIs reach
+that extension: `AvxVnniInt8.V512` is a *different* one (AVX-VNNI-INT8, AVX10.2-class) and is
+unsupported here, there is no standalone `Avx512Vnni` class, and `Avx10v1`/`Avx10v1.V512` — which
+*are* supported — expose no `MultiplyWideningAndAdd` at all, only `MultiplyLow`. .NET 11 added
+`AvxVnni.V512` (dotnet/runtime#128365), and that is the one. Measured in isolation it is 2.7× the MAC
+throughput of the 256-bit form; in the model it takes the packed dot from 2015 to 1327 ms/iter.
+
+Every project therefore multi-targets `net10.0;net11.0`. The instruction selection sits behind
+`#if NET11_0_OR_GREATER` in `Vnni.DotAccumulate512`; the 512-bit packed kernel itself
+(`StqMatrix.Vector512.cs`) is unconditional, since `AvxVnniInt8.V512` could already select it on
+net10 for AVX10.2 parts. Which kernel a matrix uses is decided once at load by `Vnni.Has512Dot` —
+deliberately *not* `Vnni.Use512`, which is also true for the widen-and-`vpmaddwd` emulation that is
+slower than 256-bit `vpdpbusd` and would be the wrong choice. The blocked layout is rebuilt to match:
+an accumulator covers sixteen channels instead of eight, so a tile is 64 channels rather than 32.
+
+**A prediction this document got wrong.** It previously said that if a runtime ever exposed 512-bit
+VNNI, both kernels would roughly halve their dot and that would *shrink* the packed path's lead,
+since its unpack and rotation are fixed costs. Measured, the lead slightly **widened**: 1.21× → 1.24×
+single-threaded. The fixed-cost reasoning was right as far as it went and still misses the layout,
+exactly as the original impossibility argument did. `Int8`'s row-major tile still finishes each dot
+product with a horizontal reduction, and that reduction gets *worse* at 512 bits — sixteen lanes to
+fold instead of eight — while the packed kernel's blocked layout just widens to sixteen-channel
+accumulators and keeps having no reduction at all. Widening the vector helps the layout that does not
+pay per-group reduction more than the one that does.
 
 What is still real from the old argument: the unpack and the rotation are genuine extra work the
 packed path does and `Int8` does not, and neither is removable. Rotation was measured, not assumed —
@@ -490,8 +520,8 @@ the run rather than blessing a conversion like the all-ternary one above.
   `Int4` mode that ships today scores slightly lower at roughly three times the memory.
 - Judge builds with `eval` on a real task, not with cosine against fp32 - cosine consistently
   overstates how much a conversion costs.
-- On speed the packed path went from 2.13x slower than `Int8` to **1.34x faster at the default
-  parallelism** (1.11x pinned to one thread) at 388 MB against 1046. The decisive change was not the
+- On speed the packed path went from 2.13x slower than `Int8` to **1.33x faster at the default
+  parallelism** (1.21x pinned to one thread; 1.35x / 1.24x on net11.0) at 388 MB against 1046. The decisive change was not the
   packing or the rotation but the weight layout: blocking the weights so a `vpdpbusd` accumulator's
   lanes are eight different output channels removes the per-scale-group horizontal reduction
   entirely. See "How the packed path overtook `Int8`", which records both the careful argument that

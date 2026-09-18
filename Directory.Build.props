@@ -7,4 +7,18 @@
        i.e. the shared CalVer version CI stamps via /p:Version). No package-vs-project switching
        is needed. See CLAUDE.md and https://markheath.net/post/multiple-nuget-single-repo -->
 
+  <PropertyGroup>
+    <!--
+      Every project targets both. net11.0 is what makes AVX-512 VNNI reachable: .NET 11 added
+      AvxVnni.V512 (dotnet/runtime#128365), which is the only managed API that emits a 512-bit
+      vpdpbusd. Before it, a CPU reporting the avx512_vnni CPUID flag - as the usual server parts do -
+      still ran the quantized kernels at 256 bits, because AvxVnniInt8.V512 is a different extension
+      and Avx10v1 exposes no VNNI at all. See QUANTIZATION.md.
+
+      The net10.0 build keeps working unchanged: the 512-bit paths sit behind NET11_0_OR_GREATER and
+      the 256-bit kernels remain the fallback on net11.0 hosts without the instruction.
+    -->
+    <SentenceTransformersTargetFrameworks>net10.0;net11.0</SentenceTransformersTargetFrameworks>
+  </PropertyGroup>
+
 </Project>

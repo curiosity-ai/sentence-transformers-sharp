@@ -159,7 +159,13 @@ public static class HarrierPureBench
                           $"Vector512 {Vector512.IsHardwareAccelerated}, Vector<float> width {System.Numerics.Vector<float>.Count}");
         Console.WriteLine($"  x86: Avx2 {Avx2.IsSupported}, Avx512F {Avx512F.IsSupported}, Avx512BW {Avx512BW.IsSupported}, " +
                           $"AvxVnni {AvxVnni.IsSupported}, AvxVnniInt8 {AvxVnniInt8.IsSupported}, AvxVnniInt8.V512 {AvxVnniInt8.V512.IsSupported}");
-        Console.WriteLine($"  kernels: Vnni.IsSupported {Vnni.IsSupported}, Vnni.Use512 {Vnni.Use512}");
+#if NET11_0_OR_GREATER
+        // The one that matters on an avx512_vnni host, and the reason this project multi-targets.
+        Console.WriteLine($"  x86: AvxVnni.V512 {AvxVnni.V512.IsSupported}  (net11.0 build)");
+#else
+        Console.WriteLine($"  x86: AvxVnni.V512 unavailable on this target framework (needs net11.0)");
+#endif
+        Console.WriteLine($"  kernels: Vnni.IsSupported {Vnni.IsSupported}, Vnni.Use512 {Vnni.Use512}, Vnni.Has512Dot {Vnni.Has512Dot}");
         Console.WriteLine();
     }
 

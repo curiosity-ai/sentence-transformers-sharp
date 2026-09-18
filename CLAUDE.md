@@ -51,3 +51,17 @@ Rules:
 dotnet restore SentenceTransformers.sln
 dotnet build SentenceTransformers.sln -c Release
 ```
+
+Every project multi-targets `net10.0;net11.0` (the list lives once, in `Directory.Build.props`).
+Building needs **both** SDKs installed — the 11.0 one compiles both target frameworks, but the 10.0
+runtime and targeting pack must be present to build and run `net10.0`.
+
+`net11.0` exists for one reason: .NET 11 added `AvxVnni.V512` (dotnet/runtime#128365), the only
+managed API that emits a 512-bit `vpdpbusd`. That is worth 14% of a whole encode on a host with the
+`avx512_vnni` CPUID flag — which is most server parts, and which no earlier .NET could reach. The
+512-bit code paths sit behind `#if NET11_0_OR_GREATER` in `Vnni`; everything else, including the
+512-bit packed kernel in `StqMatrix.Vector512.cs`, compiles on both and is selected at runtime by
+`Vnni.Has512Dot`.
+
+Because projects multi-target, `dotnet run --project X` needs `-f net11.0` (or `-f net10.0`), and
+`dotnet test` runs the suite once per framework unless given `-f`.
