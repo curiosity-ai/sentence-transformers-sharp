@@ -14,6 +14,7 @@ using SentenceTransformers.Training;
 //   dotnet run -- download [--data ./data]
 //   dotnet run -- train    [--model minilm] [--dataset stsb] [--out ./adapters/minilm.lora] [options]
 //   dotnet run -- eval      --model minilm  --adapter ./adapters/minilm.lora [--split test]
+//   dotnet run -- eval     --model harrier-small --weights model.stq [--split test]
 //
 // Weights are read from the fp32 ONNX graphs already embedded in the MiniLM / Arctic packages, so no
 // model download is needed (only the STS-B dataset is fetched on demand). Run `help` for all options.
@@ -251,15 +252,76 @@ async Task<int> RunTrainGemmaAsync(List<string> a, string model)
 
 async Task<int> RunEvalGemmaAsync(List<string> a, string model)
 {
-    string dir         = GetOption(a, "--data", "./data");
-    string adapterPath = GetOption(a, "--adapter", null);
-    string split       = GetOption(a, "--split", "test");
-    string datasetName = GetOption(a, "--dataset", "stsb").ToLowerInvariant();
+    string dir           = GetOption(a, "--data", "./data");
+    string adapterPath   = GetOption(a, "--adapter", null);
+    string split         = GetOption(a, "--split", "test");
+    string datasetName   = GetOption(a, "--dataset", "stsb").ToLowerInvariant();
+    string weightsPath   = GetOption(a, "--weights", null);
+    string quantization  = GetOption(a, "--quantization", "none").ToLowerInvariant();
 
     var data = LoadDataset(datasetName, dir, split);
     if (data is null) return 1;
 
+    // Evaluation encodes thousands of sentences through a 270M-parameter model twice (Spearman and
+    // retrieval each embed the set), so fan it across every core rather than taking the encoders'
+    // single-threaded default.
+    var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+
     Console.WriteLine($"Evaluating 'harrier-small' on {datasetName} {split} split ({data.Count} pairs).\n");
+
+    // A weights path selects a specific on-disk checkpoint: an .stq file (already quantized, including
+    // its embedding table) or a safetensors checkpoint quantized at load time by --quantization. This
+    // is what makes a quantized build comparable with fp32 on a real task rather than only by cosine
+    // against the fp32 embeddings. Without it, the original bf16 weights are downloaded as before.
+    if (weightsPath is not null)
+    {
+        if (adapterPath is not null)
+        {
+            Console.Error.WriteLine("--adapter is not supported together with --weights; adapters load through the LoRA encoder, which reads the original checkpoint.");
+            return 1;
+        }
+        if (!File.Exists(weightsPath))
+        {
+            Console.Error.WriteLine($"Weights file '{weightsPath}' was not found.");
+            return 1;
+        }
+
+        bool isStq = weightsPath.EndsWith(".stq", StringComparison.OrdinalIgnoreCase);
+        string label;
+        SentenceTransformers.Harrier.Small.Pure.SentenceEncoder encoder;
+
+        if (isStq)
+        {
+            if (quantization != "none")
+            {
+                Console.Error.WriteLine("--quantization does not apply to an .stq file: its precision was fixed when the file was written.");
+                return 1;
+            }
+            Console.WriteLine($"Loading quantized weights from '{weightsPath}' ...");
+            encoder = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.LoadQuantizedAsync(weightsPath, parallelOptions: parallelOptions);
+            label = Path.GetFileNameWithoutExtension(weightsPath);
+        }
+        else
+        {
+            var mode = quantization switch
+            {
+                "none" => SentenceTransformers.Harrier.Small.Pure.Model.Quantization.None,
+                "int8" => SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int8,
+                "int4" => SentenceTransformers.Harrier.Small.Pure.Model.Quantization.Int4,
+                _ => throw new ArgumentException($"Unknown --quantization '{quantization}'; use none, int8 or int4."),
+            };
+            Console.WriteLine($"Loading '{weightsPath}' as {mode} ...");
+            encoder = await SentenceTransformers.Harrier.Small.Pure.SentenceEncoder.LoadAsync(weightsPath, quantization: mode, parallelOptions: parallelOptions);
+            label = mode.ToString().ToLowerInvariant();
+        }
+
+        using (encoder)
+        {
+            await ReportAsync(label, encoder, data);
+        }
+        return 0;
+    }
+
     Console.WriteLine("Downloading/loading Harrier Small weights ...");
     using var baseEncoder = await Gemma3LoraEncoder.CreateAsync(reportProgress: p => Console.Error.Write($"\r  {p.Fraction*100,5:0.0}%   "));
     Console.Error.WriteLine();
@@ -322,6 +384,11 @@ USAGE
 MODELS (--model)     {string.Join(", ", EncoderFactory.Names)} (weights from embedded fp32 ONNX, no download),
                      harrier-small (pure C# Gemma3; bf16 weights downloaded on first use)
 DATASETS (--dataset) stsb (download first), patent (embedded)
+EVAL WEIGHTS         --weights <path> evaluates a specific harrier-small checkpoint instead of the
+                     downloaded bf16 one: an .stq file (quantized ahead of time by
+                     SentenceTransformers.Quantize, embedding table included) or a .safetensors file
+                     quantized at load time via --quantization none|int8|int4. Not combinable with
+                     --adapter.
 
 TRAIN OPTIONS
   --objective <name>      contrastive (default), cosent, or regression.

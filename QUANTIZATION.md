@@ -159,6 +159,24 @@ surfacing later as a mysterious quality drop:
 `compare` scores the ternary file and the existing Int8/Int4 modes against one fp32 baseline;
 `inspect` dumps a file's header.
 
+**Score it on a real task.** `validate` and `compare` measure agreement with the fp32 encoder, which
+catches damage but says nothing about absolute quality. For that, the LoRA training CLI's `eval`
+command takes a `--weights` path, so any checkpoint - an `.stq` file, or a safetensors checkpoint
+quantized at load time - can be scored on the STS Benchmark test split:
+
+```bash
+cd SentenceTransformers.LoraTraining
+dotnet run -c Release -- download                       # one-time, fetches the STS-B splits
+
+dotnet run -c Release -- eval --model harrier-small --split test \
+  --weights ../path/to/harrier-small-q4.stq             # an .stq file
+dotnet run -c Release -- eval --model harrier-small --split test \
+  --weights ../path/to/model.safetensors --quantization int4
+```
+
+It reports STS Spearman plus retrieval accuracy and MRR over 1379 annotated pairs - an absolute
+number to judge a build by, rather than a similarity to the fp32 one.
+
 **Runtime.** `SentenceEncoder.LoadQuantizedAsync(path)` / `CreateQuantizedAsync(url)` load an `.stq`
 checkpoint. The forward pass is unchanged: packed weights sit behind the same `IWeightMatrix` that
 `Int8Matrix`/`Int4Matrix` implement, and the embedding table behind a new `ITokenEmbedding`. A single
