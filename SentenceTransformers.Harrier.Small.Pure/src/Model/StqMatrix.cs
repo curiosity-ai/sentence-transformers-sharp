@@ -164,7 +164,7 @@ internal sealed class StqMatrix : IWeightMatrix
         float[] dst = ArrayPool<float>.Shared.Rent(seq * inDim);
         var src = x;
 
-        if ((long)seq * inDim >= RotationParallelThreshold && parallelOptions.MaxDegreeOfParallelism > 1)
+        if (!RunInline(parallelOptions) && (long)seq * inDim >= RotationParallelThreshold && parallelOptions.MaxDegreeOfParallelism > 1)
         {
             // Timed inside the body, not around the await: wrapping a parallel loop on the calling
             // thread measures its wall time, which is a quarter of its CPU cost on four threads and is
@@ -220,22 +220,21 @@ internal sealed class StqMatrix : IWeightMatrix
         try
         {
             int tiles = (outDim + TileOut - 1) / TileOut;
-            await ParallelExecution.ForAsync(0, tiles, parallelOptions, (t, _) =>
+            if (RunInline(parallelOptions))
             {
-                int o0 = t * TileOut;
-                if (o0 + TileOut <= outDim)
+                for (int t = 0; t < tiles; t++)
                 {
-                    Tile(ua, aScale, y, o0, seq, inDim, outDim);
+                    RunTile(ua, aScale, y, t, seq, inDim, outDim);
                 }
-                else
+            }
+            else
+            {
+                await ParallelExecution.ForAsync(0, tiles, parallelOptions, (t, _) =>
                 {
-                    for (int o = o0; o < outDim; o++)
-                    {
-                        VnniColumn(ua, aScale, y, o, seq, inDim, outDim);
-                    }
-                }
-                return ValueTask.CompletedTask;
-            }).ConfigureAwait(false);
+                    RunTile(ua, aScale, y, t, seq, inDim, outDim);
+                    return ValueTask.CompletedTask;
+                }).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -245,6 +244,20 @@ internal sealed class StqMatrix : IWeightMatrix
 
     /// <summary>Output channels computed together per tile.</summary>
     private const int TileOut = 4;
+
+    /// <summary>
+    /// When true (the default) and the caller asked for a single thread, the kernel runs its loops
+    /// directly instead of through <see cref="ParallelExecution.ForAsync"/>.
+    ///
+    /// <para>At <c>MaxDegreeOfParallelism = 1</c> that helper already runs sequentially, so this
+    /// changes no work - but it still allocates a closure, a delegate and an async state machine per
+    /// call, and the packed path makes several of those calls per projection per layer. Settable so
+    /// the benchmark can A/B it in one process.</para>
+    /// </summary>
+    internal static bool SingleThreadFastPath = true;
+
+    private static bool RunInline(ParallelOptions parallelOptions)
+        => SingleThreadFastPath && parallelOptions.MaxDegreeOfParallelism <= 1;
 
     /// <summary>
     /// Activation elements (seq * inDim) below which the rotation runs on the calling thread instead
@@ -378,6 +391,24 @@ internal sealed class StqMatrix : IWeightMatrix
         }
     }
 
+    /// <summary>One output tile, or the ragged remainder when the tile would run past the last
+    /// output channel.</summary>
+    private void RunTile(byte[] ua, float[] aScale, float[] y, int t, int seq, int inDim, int outDim)
+    {
+        int o0 = t * TileOut;
+        if (o0 + TileOut <= outDim)
+        {
+            Tile(ua, aScale, y, o0, seq, inDim, outDim);
+        }
+        else
+        {
+            for (int o = o0; o < outDim; o++)
+            {
+                VnniColumn(ua, aScale, y, o, seq, inDim, outDim);
+            }
+        }
+    }
+
     /// <summary>Unpacks one output row's codes once, then dots it against every position. The int32
     /// accumulator cannot overflow: a uint8 activation is at most 255 and a code at most 8 in
     /// magnitude, so even a 128-wide 4-bit group contributes at most 16 * 255 * 8 = 32,640 per
@@ -417,6 +448,15 @@ internal sealed class StqMatrix : IWeightMatrix
     private ValueTask MultiplyFloatAsync(float[] x, float[] y, int seq, ParallelOptions parallelOptions)
     {
         int inDim = InDim, outDim = OutDim;
+        if (RunInline(parallelOptions))
+        {
+            for (int o = 0; o < outDim; o++)
+            {
+                FloatColumn(x, y, seq, inDim, outDim, o);
+            }
+            return ValueTask.CompletedTask;
+        }
+
         return new ValueTask(ParallelExecution.ForAsync(0, outDim, parallelOptions, (o, _) =>
         {
             FloatColumn(x, y, seq, inDim, outDim, o);

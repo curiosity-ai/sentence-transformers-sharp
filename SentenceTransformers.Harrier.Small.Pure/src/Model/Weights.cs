@@ -148,6 +148,21 @@ internal static class VnniActivations
         int zp = Vnni.ZeroPoint;
         int qmax = Vnni.QMax;
 
+        // Single-threaded callers run the loop directly. ParallelExecution.ForAsync is already
+        // sequential at MaxDegreeOfParallelism = 1, so this changes no work - it just skips the
+        // closure, delegate and async state machine that every call would otherwise allocate, and
+        // this one runs once per projection per layer.
+        if (parallelOptions is null || parallelOptions.MaxDegreeOfParallelism <= 1)
+        {
+            var ct = parallelOptions?.CancellationToken ?? default;
+            for (int s = 0; s < seq; s++)
+            {
+                ct.ThrowIfCancellationRequested();
+                QuantizeRow(x, ua, scale, s, inDim, zp, qmax);
+            }
+            return (ua, scale);
+        }
+
         await ParallelExecution.ForAsync(0, seq, parallelOptions, (s, _) =>
         {
             QuantizeRow(x, ua, scale, s, inDim, zp, qmax);

@@ -40,6 +40,16 @@ public static class HarrierPureBench
         bool profile = (args ?? Array.Empty<string>()).Contains("--profile");
         bool abRotation = (args ?? Array.Empty<string>()).Contains("--ab-rotation");
         bool abSharing = (args ?? Array.Empty<string>()).Contains("--ab-sharing");
+        bool abThreads = (args ?? Array.Empty<string>()).Contains("--ab-fastpath");
+
+        // The library is consumed single-threaded in production - callers parallelize above it - so
+        // the thread count is explicit here rather than always ProcessorCount.
+        int threadsIdx = Array.IndexOf(args ?? Array.Empty<string>(), "--threads");
+        if (threadsIdx >= 0 && threadsIdx + 1 < args.Length)
+        {
+            _threads = int.Parse(args[threadsIdx + 1]);
+            stqPaths.Remove(args[threadsIdx + 1]);
+        }
         if (stqPaths.Count == 0 && Environment.GetEnvironmentVariable("HARRIER_STQ_PATH") is { Length: > 0 } fromEnv)
         {
             stqPaths.Add(fromEnv);
@@ -49,7 +59,7 @@ public static class HarrierPureBench
 
         var corpus = BuildCorpus(count: 192, wordsPerSentence: 18, seed: 20260918);
         Console.WriteLine($"Corpus: {corpus.Length} distinct sentences, ~{corpus[0].Split(' ').Length} words each");
-        Console.WriteLine($"Warm-up rounds: {WarmupRounds}, timed rounds: {TimedRounds}");
+        Console.WriteLine($"Warm-up rounds: {WarmupRounds}, timed rounds: {TimedRounds}, MaxDegreeOfParallelism: {_threads}");
         Console.WriteLine();
         Console.WriteLine($"  {"mode",-26} {"load s",8} {"ms/iter",10} {"emb/s",9} {"par",5} {"MB res.",9} {"MB alloc/it",12} {"GC 0/1/2",10}");
 
@@ -69,6 +79,26 @@ public static class HarrierPureBench
             }
 
             string name = Path.GetFileNameWithoutExtension(stqPath);
+
+            if (abThreads)
+            {
+                // A/B the single-thread fast path in this one process.
+                try
+                {
+                    StqMatrix.SingleThreadFastPath = false;
+                    await MeasureAsync($"stq {name} via ForAsync", corpus,
+                        () => SentenceEncoder.LoadQuantizedAsync(stqPath, parallelOptions: Options()), profile);
+
+                    StqMatrix.SingleThreadFastPath = true;
+                    await MeasureAsync($"stq {name} inline", corpus,
+                        () => SentenceEncoder.LoadQuantizedAsync(stqPath, parallelOptions: Options()), profile);
+                }
+                finally
+                {
+                    StqMatrix.SingleThreadFastPath = true;
+                }
+                continue;
+            }
 
             if (abSharing)
             {
@@ -168,7 +198,9 @@ public static class HarrierPureBench
         Console.WriteLine();
     }
 
-    private static ParallelOptions Options() => new() { MaxDegreeOfParallelism = Environment.ProcessorCount };
+    private static int _threads = Environment.ProcessorCount;
+
+    private static ParallelOptions Options() => new() { MaxDegreeOfParallelism = _threads };
 
     private static async Task MeasureAsync(string label, string[] corpus, Func<Task<SentenceEncoder>> create, bool profile)
     {
