@@ -115,16 +115,26 @@ public sealed class HadamardRotation
 
     /// <summary>Applies <c>R v</c> in place: signs, then the Walsh-Hadamard butterfly, then 1/sqrt(n).
     /// Used on activations before a ternary matmul, and by the converter on each weight row.</summary>
-    public void Apply(Span<float> v)
+    public void Apply(Span<float> v) => Apply(v, v);
+
+    /// <summary>
+    /// Applies <c>R v</c> from <paramref name="src"/> into <paramref name="dst"/>, which may be the
+    /// same span. The out-of-place form exists because the caller almost always needs the input
+    /// afterwards (it is the residual stream, or a sibling projection's activation) and would
+    /// otherwise copy it first - and the sign multiply already writes every element, so it does the
+    /// copy for free.
+    /// </summary>
+    public void Apply(ReadOnlySpan<float> src, Span<float> dst)
     {
-        if (v.Length != Dim) throw new ArgumentException($"Expected a {Dim}-element vector, got {v.Length}.", nameof(v));
+        if (src.Length != Dim) throw new ArgumentException($"Expected a {Dim}-element vector, got {src.Length}.", nameof(src));
+        if (dst.Length != Dim) throw new ArgumentException($"Expected a {Dim}-element destination, got {dst.Length}.", nameof(dst));
 
         // The 1/sqrt(n) rides along with the signs: scaling commutes with the (linear) butterfly, so
         // folding it in here costs nothing and saves a whole second pass over the vector.
-        TensorPrimitives.Multiply(v, _signsNorm, v);
+        TensorPrimitives.Multiply(src, _signsNorm, dst);
         for (int off = 0; off < Dim; off += Block)
         {
-            Fwht(v.Slice(off, Block));
+            Fwht(dst.Slice(off, Block));
         }
     }
 

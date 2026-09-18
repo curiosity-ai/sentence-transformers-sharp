@@ -19,7 +19,11 @@ CLI and `SentenceEncoder.LoadQuantizedAsync` is the runtime entry point.
 See `QUANTIZATION.md`, in particular §4, which records why post-training ternarization of the
 released Harrier Small projections does not produce a usable model (a property of three-level
 quantization, not of the implementation) and why the default conversion is 4-bit — so neither is
-rediscovered.
+rediscovered. §4 also covers the kernel: `StqMatrix` rewrites the file's row-major codes into a
+VNNI-blocked order at load, so that a `vpdpbusd` accumulator's eight lanes hold eight different
+output channels and a scale group needs no horizontal reduction. That is what makes the packed path
+faster than the load-time `Int8` mode despite also unpacking and rotating; do not "simplify" it back
+to row-major.
 
 ## Referencing the core SentenceTransformers library
 

@@ -171,7 +171,8 @@ memory and inference time. Pass a `Quantization` to `CreateAsync` (or the constr
 using SentenceTransformers.Harrier.Small.Pure;
 using SentenceTransformers.Harrier.Small.Pure.Model;
 
-// fp32 (default, most faithful), Int8 (recommended — fastest & ~40% less memory), or Int4 (smallest).
+// fp32 (default, most faithful), Int8 (fastest of the load-time modes, ~40% less memory), or Int4
+// (smallest). For Harrier Small Pure, a converted .stq file beats all three - see "Quantized weights".
 using var encoder = await SentenceEncoder.CreateAsync(quantization: Quantization.Int8);
 ```
 
@@ -335,14 +336,16 @@ Benchmark test split the default conversion matches fp32 while being far smaller
 | | size | STS Spearman | emb/s, 1 thread | emb/s, 4 threads |
 |---|---|---|---|---|
 | fp32 | 511 MB | 0.8177 | — | 12.0 |
-| `Int8`, load-time | ~540 MB resident | 0.8179 | 47.5 | 65.0 |
+| `Int8`, load-time | ~540 MB resident | 0.8179 | 46.7 | 56.9 |
 | `Int4`, load-time | ~519 MB resident | 0.8144 | — | 14.2 |
-| **`.stq` default** | **132 MB** | **0.8179** | **38.5** | **61.6** |
+| **`.stq` default** | **132 MB** | **0.8177** | **51.8** | **80.4** |
 | `.stq --embed-band tq1_0` | 89 MB | 0.8088 | — | — |
 
-`.stq` is 1.23× behind `Int8` on one thread and 1.06× on four, in 388 MB resident against 1046. That
-gap is the 4-bit unpack and the activation rotation, and `QUANTIZATION.md` explains why neither can
-be removed while keeping the format's accuracy — worth reading before trying to close it.
+`.stq` is **1.11× faster than `Int8` on one thread and 1.41× on four**, in 388 MB resident against
+1046 — despite having to unpack 4-bit codes and rotate its activations, which `Int8` does not. It
+wins because its weights are laid out so that a `vpdpbusd` accumulator's eight lanes are eight
+different output channels, which removes the horizontal reduction its per-group scales would
+otherwise force every 128 weights. `QUANTIZATION.md` has the full account.
 
 Read [QUANTIZATION.md §4](QUANTIZATION.md) before converting with ternary projections: the released
 Harrier Small weights compress 9.11× that way (511 MB → 56 MB) but do **not** survive it, because

@@ -34,9 +34,38 @@ public sealed record ConversionOptions
 
     public TernaryMethod Method { get; init; } = TernaryMethod.Optimal;
 
-    /// <summary>Store weights in the Hadamard-rotated basis. Off only for ablations - ternary
-    /// quantization without it is markedly worse.</summary>
-    public bool Rotate { get; init; } = true;
+    /// <summary>Which tensors are stored in the Hadamard-rotated basis.</summary>
+    public enum RotationScope
+    {
+        /// <summary>Every packed tensor. The most accurate, and the most work at inference: each
+        /// projection group has to rotate its activation before the matmul.</summary>
+        All,
+
+        /// <summary>The token embedding table only. A lookup is un-rotated once per token, which is
+        /// nothing next to the layers after it, and no projection needs a rotated activation - so
+        /// this keeps rotation where it pays most (63% of the parameters) and drops the per-layer
+        /// activation rotation entirely.</summary>
+        EmbeddingOnly,
+
+        /// <summary>Nothing. Ablation only - ternary quantization without rotation is markedly
+        /// worse, and it is also the required setting for a checkpoint already trained ternary in
+        /// the original basis (see QUANTIZATION.md §5).</summary>
+        None,
+    }
+
+    /// <summary>Store weights in the Hadamard-rotated basis. See <see cref="RotationScope"/>.</summary>
+    public RotationScope Rotation { get; init; } = RotationScope.All;
+
+    /// <summary>True when any tensor is rotated.</summary>
+    public bool Rotate => Rotation != RotationScope.None;
+
+    /// <summary>Whether a given tensor is stored rotated.</summary>
+    public bool RotateTensor(string tensorName) => Rotation switch
+    {
+        RotationScope.All => true,
+        RotationScope.EmbeddingOnly => IsEmbedding(tensorName),
+        _ => false,
+    };
 
     /// <summary>Upper bound on the Walsh-Hadamard block; the actual block per dimension is the
     /// largest power of two below it that divides that dimension.</summary>
@@ -62,6 +91,9 @@ public sealed record ConversionOptions
     /// </summary>
     public int? EmbeddingGroupSize { get; init; } = StqFormat.DefaultGroupSize;
 
+    private static bool IsEmbedding(string tensorName)
+        => tensorName.EndsWith("embed_tokens.weight", StringComparison.Ordinal);
+
     /// <summary>How one tensor is stored.</summary>
     public readonly record struct TensorPolicy(StqBand Band, int GroupSize);
 
@@ -70,7 +102,7 @@ public sealed record ConversionOptions
     /// meaningfully moves the file size on its own.</summary>
     public TensorPolicy PolicyFor(string tensorName)
     {
-        bool isEmbedding = tensorName.EndsWith("embed_tokens.weight", StringComparison.Ordinal);
+        bool isEmbedding = IsEmbedding(tensorName);
         var band = isEmbedding ? EmbeddingBand : Band;
         int defaultGroup = band == StqBand.Q4_0 ? Int4GroupSize : GroupSize;
         return new TensorPolicy(band, isEmbedding ? EmbeddingGroupSize ?? defaultGroup : defaultGroup);

@@ -44,16 +44,21 @@ public static class Converter
             .SetMetadata("int4_group_size", options.Int4GroupSize.ToString())
             .SetMetadata("embedding_group_size", options.PolicyFor("embed_tokens.weight").GroupSize.ToString())
             .SetMetadata("method", options.Method.ToString().ToLowerInvariant())
-            .SetMetadata("rotation", options.Rotate ? "hadamard" : "none")
+            .SetMetadata("rotation", options.Rotation switch
+            {
+                ConversionOptions.RotationScope.All           => "hadamard",
+                ConversionOptions.RotationScope.EmbeddingOnly => "hadamard-embedding-only",
+                _                                             => "none",
+            })
             .SetMetadata("rotation_max_block", options.MaxRotationBlock.ToString())
             .SetMetadata("rotation_seed", options.Seed.ToString())
             .SetMetadata("created_utc", DateTime.UtcNow.ToString("O"));
 
         // One rotation per distinct input width, created lazily and referenced by id.
         var rotations = new Dictionary<int, (string Id, HadamardRotation Rotation)>();
-        HadamardRotation? RotationFor(int inDim)
+        HadamardRotation? RotationFor(int inDim, string tensorName)
         {
-            if (!options.Rotate)
+            if (!options.RotateTensor(tensorName))
             {
                 return null;
             }
@@ -107,7 +112,7 @@ public static class Converter
 
             var (band, groupSize) = policy;
             int rows = shape[0], inDim = shape[1];
-            var rotation = RotationFor(inDim);
+            var rotation = RotationFor(inDim, name);
 
             var weights = st.ReadFloat(name);
             var result = await StqTensorBuilder.BuildAsync(

@@ -16,7 +16,10 @@ SentenceTransformers.Quantize - convert Harrier checkpoints to ternary .stq file
            [--int4-group <n>]            weights per 4-bit scale group      (default 128)
            [--embed-group <n>]           scale group for the embedding table (default 128)
            [--method optimal|absmean|twn] ternary group quantization rule   (default optimal)
-           [--no-rotate]                 store in the original basis (ablation only)
+           [--rotate all|embed|none]     which tensors are stored rotated (default all)
+                                         embed: the token embedding table only, so no projection
+                                         needs its activation rotated at inference
+           [--no-rotate]                 alias for --rotate none (ablation only)
            [--rotation-block <n>]        max Walsh-Hadamard block           (default 1024)
            [--seed <n>]                  sign-diagonal seed
            [--keep-float <name>]         leave a named tensor in float32 (repeatable)
@@ -92,6 +95,15 @@ try
             var keepFloat = GetAll("--keep-float");
             bool noErrorReport = Flag("--no-error-report");
             bool noRotate = Flag("--no-rotate");
+            string? rotateArg = Get("--rotate");
+            var rotation = rotateArg switch
+            {
+                null or "" => noRotate ? ConversionOptions.RotationScope.None : ConversionOptions.RotationScope.All,
+                "all"      => ConversionOptions.RotationScope.All,
+                "embed"    => ConversionOptions.RotationScope.EmbeddingOnly,
+                "none"     => ConversionOptions.RotationScope.None,
+                _ => throw new ArgumentException($"--rotate expects all|embed|none, got '{rotateArg}'."),
+            };
             int threads = int.Parse(Get("--threads") ?? Environment.ProcessorCount.ToString());
             Reject(argv);
 
@@ -105,7 +117,7 @@ try
                 Int4GroupSize = int4Group,
                 EmbeddingGroupSize = embedGroup,
                 Method = method,
-                Rotate = !noRotate,
+                Rotation = rotation,
                 MaxRotationBlock = rotationBlock,
                 Seed = seed,
                 KeepFloat = new HashSet<string>(keepFloat, StringComparer.Ordinal),

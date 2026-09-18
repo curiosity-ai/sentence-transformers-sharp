@@ -236,6 +236,25 @@ public static class StqPacking
         var bias = Vector256.Create((byte)8);
         int width = Vector256<byte>.Count;
 
+        // The default group of 128 is exactly two 256-bit steps, and a two-iteration loop is mostly
+        // branch. Unrolled, the group's two halves are independent chains and the whole row runs as
+        // one straight sequence of loads and stores.
+        if (half == 2 * width)
+        {
+            for (int g = 0; g < groups; g++)
+            {
+                nuint sBase = (nuint)(g * half);
+                nuint dBase = (nuint)(g * groupSize);
+                var v0 = Vector256.LoadUnsafe(ref s0, sBase);
+                var v1 = Vector256.LoadUnsafe(ref s0, sBase + (nuint)width);
+                ((v0 & mask) - bias).AsSByte().StoreUnsafe(ref d0, dBase);
+                ((v1 & mask) - bias).AsSByte().StoreUnsafe(ref d0, dBase + (nuint)width);
+                (Vector256.ShiftRightLogical(v0, 4) - bias).AsSByte().StoreUnsafe(ref d0, dBase + (nuint)half);
+                (Vector256.ShiftRightLogical(v1, 4) - bias).AsSByte().StoreUnsafe(ref d0, dBase + (nuint)(half + width));
+            }
+            return;
+        }
+
         for (int g = 0; g < groups; g++)
         {
             nuint sBase = (nuint)(g * half);
