@@ -332,12 +332,13 @@ Unlike the load-time `Int8`/`Int4` modes, an `.stq` file also quantizes the **to
 table** — 63% of Harrier Small's parameters, which those modes leave in bfloat16. On the STS
 Benchmark test split the default conversion matches fp32 while being far smaller:
 
-| | size | STS Spearman |
-|---|---|---|
-| fp32 | 511 MB | 0.8177 |
-| `Int4`, load-time | ~410 MB resident | 0.8144 |
-| **`.stq` default** | **136.5 MB** | **0.8184** |
-| `.stq --embed-band tq1_0` | 89.0 MB | 0.8088 |
+| | size | STS Spearman | emb/s |
+|---|---|---|---|
+| fp32 | 511 MB | 0.8177 | 12.0 |
+| `Int8`, load-time | ~540 MB resident | 0.8179 | 57.0 |
+| `Int4`, load-time | ~519 MB resident | 0.8144 | 14.2 |
+| **`.stq` default** | **132 MB** | **0.8181** | **37.2** |
+| `.stq --embed-band tq1_0` | 89 MB | 0.8088 | — |
 
 Read [QUANTIZATION.md §4](QUANTIZATION.md) before converting with ternary projections: the released
 Harrier Small weights compress 9.11× that way (511 MB → 56 MB) but do **not** survive it, because

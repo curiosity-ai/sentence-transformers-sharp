@@ -298,6 +298,48 @@ Three conclusions, and they set the defaults:
 Group size barely matters for the embedding table in either band (0.00006 of cosine between `q4_0`
 at 32 and at 128), so the default takes the coarser, smaller one.
 
+### Speed
+
+Encode throughput matters as much as size, and the packed path started out badly: it was the
+*slowest* way to run the model per embedding, which made the winning quantization the one nobody
+would want to serve. Measured over 192 distinct sentences per iteration on 4 cores, after three full
+warm-up passes (`harrier-pure-bench`):
+
+| mode | ms/iter | emb/s | resident |
+|---|---|---|---|
+| fp32 | 15938 | 12.0 | 1332 MB |
+| `Int8`, load-time | 3371 | 57.0 | 540 MB |
+| `Int4`, load-time | 13545 | 14.2 | 519 MB |
+| `.stq` q4, group 32 — *before* | 14180 | 13.5 | 415 MB |
+| **`.stq` q4, group 128 — after** | **5158** | **37.2** | **396 MB** |
+
+**2.75× faster**, and the file is smaller too (132.1 MB against 136.5). Three things were tried, and
+the order they are listed in is the order of intuition, not of payoff:
+
+| change | gain |
+|---|---|
+| vectorizing the 4-bit nibble unpack | ~1% |
+| widening the scale groups, 32 → 128 | ~7% |
+| **tiling the kernel** | **1.63×** |
+
+The kernel computed one output channel at a time, so `acc = DotAccumulate(acc, ...)` formed a single
+serial dependency chain and stalled on its own ~5-cycle latency no matter how cheap the unpack was.
+`Int8Matrix` had always avoided this with a register tile; the packed kernel now does the same, four
+output channels by two positions, giving eight independent chains.
+
+The fixes compose, and the group size matters far more once the chains are covered: after tiling,
+32 → 128 is worth 67% rather than 7%, because the per-group reduce-and-rescale is what is left. That
+is why 4-bit now defaults to group 128 — it is smaller, faster, and costs nothing measurable
+(0.8181 STS Spearman at 128 against 0.8184 at 32, either side of fp32's 0.8177).
+
+What is left is a 1.53× gap to `Int8`, down from 3.9×. `Int8Matrix` uses 512-bit tiles on an AVX-512
+host while the packed kernel is still 256-bit only, so that is the next thing to close.
+
+Two notes on measuring this. `EncodeAsync` memoizes the last 16 vectors by input hash, so a benchmark
+that re-encodes one small batch in a loop times a dictionary lookup rather than inference - the
+corpus here is deliberately far larger than that cache. And run-to-run spread on a shared 4-core box
+is around 10%, so only differences well beyond that are worth reading.
+
 ### Keeping it honest in CI
 
 `SentenceTransformers.Tests` carries an opt-in `StqStsBenchmarkTests` that runs the real converter,
