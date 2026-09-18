@@ -6,8 +6,24 @@ Guidance for Claude Code (and other contributors) when working in this repositor
 
 - `SentenceTransformers/` — the core library, published to NuGet as the `SentenceTransformers` package (tokenizers, ONNX inference, autograd/LoRA training engine).
 - `SentenceTransformers.<Model>/` (MiniLM, ArcticXs, Qwen3, Harrier.Small, Harrier.Medium, Harrier.Small.Pure, Bert.Pure, MiniLMForTest) — per-model wrapper packages, each published as its own NuGet package.
-- `SentenceTransformers.Test*/`, `SentenceTransformers.Benchmark*/`, `SentenceTransformers.LoraTraining/` — internal test, benchmark, and training projects (not published).
+- `SentenceTransformers.Test*/`, `SentenceTransformers.Benchmark*/`, `SentenceTransformers.LoraTraining/`, `SentenceTransformers.Quantize/` — internal test, benchmark, training, and model-conversion projects (not published).
 - `.devops/azure-pipelines.yml` — CI: builds and publishes all packages with a shared CalVer version (`yy.M.<buildId>`).
+
+## Quantized weights
+
+`SentenceTransformers/src/Stq/` implements the `.stq` container: packed integer codes with FP16 group
+scales in a Hadamard-rotated basis. It carries both Bonsai ternary packings (`tq1_0`, `tq2_0`) and a
+4-bit band (`q4_0`), selectable per tensor. `SentenceTransformers.Quantize` is the converter/validator
+CLI and `SentenceEncoder.LoadQuantizedAsync` is the runtime entry point.
+
+See `QUANTIZATION.md`, in particular §4, which records why post-training ternarization of the
+released Harrier Small projections does not produce a usable model (a property of three-level
+quantization, not of the implementation) and why the default conversion is 4-bit — so neither is
+rediscovered. §4 also covers the kernel: `StqMatrix` rewrites the file's row-major codes into a
+VNNI-blocked order at load, so that a `vpdpbusd` accumulator's eight lanes hold eight different
+output channels and a scale group needs no horizontal reduction. That is what makes the packed path
+faster than the load-time `Int8` mode despite also unpacking and rotating; do not "simplify" it back
+to row-major.
 
 ## Referencing the core SentenceTransformers library
 
@@ -35,3 +51,17 @@ Rules:
 dotnet restore SentenceTransformers.sln
 dotnet build SentenceTransformers.sln -c Release
 ```
+
+Every project multi-targets `net10.0;net11.0` (the list lives once, in `Directory.Build.props`).
+Building needs **both** SDKs installed — the 11.0 one compiles both target frameworks, but the 10.0
+runtime and targeting pack must be present to build and run `net10.0`.
+
+`net11.0` exists for one reason: .NET 11 added `AvxVnni.V512` (dotnet/runtime#128365), the only
+managed API that emits a 512-bit `vpdpbusd`. That is worth 14% of a whole encode on a host with the
+`avx512_vnni` CPUID flag — which is most server parts, and which no earlier .NET could reach. The
+512-bit code paths sit behind `#if NET11_0_OR_GREATER` in `Vnni`; everything else, including the
+512-bit packed kernel in `StqMatrix.Vector512.cs`, compiles on both and is selected at runtime by
+`Vnni.Has512Dot`.
+
+Because projects multi-target, `dotnet run --project X` needs `-f net11.0` (or `-f net10.0`), and
+`dotnet test` runs the suite once per framework unless given `-f`.

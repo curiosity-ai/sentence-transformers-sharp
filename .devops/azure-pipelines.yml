@@ -33,12 +33,24 @@ steps:
       Write-Host "##vso[task.setvariable variable=targetVersion;]$newTargetVersion"
       Write-Host "Updated targetVersion to '$newTargetVersion'"
 
+# Both SDKs, because every project multi-targets net10.0;net11.0. The 11.0 SDK builds both, but the
+# 10.0 one must still be present for the net10.0 targeting pack and runtime.
 - task: UseDotNet@2
   displayName: 'Use .NET 10.0 SDK'
   inputs:
     packageType: sdk
     version: 10.x
     includePreviewVersions: false
+    installationPath: $(Agent.ToolsDirectory)/dotnet
+
+# net11.0 is what makes AVX-512 VNNI reachable (AvxVnni.V512, dotnet/runtime#128365). Preview
+# versions are allowed until .NET 11 ships a stable SDK; drop the flag once it does.
+- task: UseDotNet@2
+  displayName: 'Use .NET 11.0 SDK'
+  inputs:
+    packageType: sdk
+    version: 11.x
+    includePreviewVersions: true
     installationPath: $(Agent.ToolsDirectory)/dotnet
 
 - task: DotNetCoreCLI@2

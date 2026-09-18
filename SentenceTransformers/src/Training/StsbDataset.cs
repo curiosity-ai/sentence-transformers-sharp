@@ -1,8 +1,6 @@
 using System.Globalization;
 using System.Text;
-using SentenceTransformers.Training;
-
-namespace SentenceTransformers.LoraTraining;
+namespace SentenceTransformers.Training;
 
 /// <summary>
 /// Downloader and parser for the English <b>STS Benchmark</b> (STS-B) dataset — a standard collection
@@ -12,8 +10,14 @@ namespace SentenceTransformers.LoraTraining;
 ///
 /// <para>Data is fetched from the permissively licensed <c>stsb_multi_mt</c> mirror on GitHub
 /// (<c>PhilipMay/stsb-multi-mt</c>), which republishes the original STS-B splits as simple CSV files.</para>
+///
+/// <para>It lives in the core library, next to <see cref="EmbeddingEvaluation"/>, because more than one
+/// consumer needs it: the LoRA training CLI trains and evaluates against it, and the test suite uses it
+/// to check that a quantized build still scores like the fp32 one on a real task rather than only
+/// agreeing with it on a handful of sentences. Nothing downloads at import time - callers opt in by
+/// calling <see cref="DownloadAsync"/>.</para>
 /// </summary>
-internal static class StsbDataset
+public static class StsbDataset
 {
     public const string TrainUrl = "https://raw.githubusercontent.com/PhilipMay/stsb-multi-mt/main/data/stsb-en-train.csv";
     public const string DevUrl   = "https://raw.githubusercontent.com/PhilipMay/stsb-multi-mt/main/data/stsb-en-dev.csv";

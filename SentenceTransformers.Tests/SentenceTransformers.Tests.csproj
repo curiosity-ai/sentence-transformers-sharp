@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>$(SentenceTransformersTargetFrameworks)</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <IsPackable>false</IsPackable>
@@ -27,6 +27,8 @@
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small\SentenceTransformers.Harrier.Small.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small.Pure\SentenceTransformers.Harrier.Small.Pure.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Bert.Pure\SentenceTransformers.Bert.Pure.csproj" />
+    <!-- The .stq quality test runs the real converter rather than reimplementing its tensor policy. -->
+    <ProjectReference Include="..\SentenceTransformers.Quantize\SentenceTransformers.Quantize.csproj" />
   </ItemGroup>
 
   <!--

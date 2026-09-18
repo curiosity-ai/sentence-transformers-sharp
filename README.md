@@ -171,7 +171,8 @@ memory and inference time. Pass a `Quantization` to `CreateAsync` (or the constr
 using SentenceTransformers.Harrier.Small.Pure;
 using SentenceTransformers.Harrier.Small.Pure.Model;
 
-// fp32 (default, most faithful), Int8 (recommended — fastest & ~40% less memory), or Int4 (smallest).
+// fp32 (default, most faithful), Int8 (fastest of the load-time modes, ~40% less memory), or Int4
+// (smallest). For Harrier Small Pure, a converted .stq file beats all three - see "Quantized weights".
 using var encoder = await SentenceEncoder.CreateAsync(quantization: Quantization.Int8);
 ```
 
@@ -203,10 +204,12 @@ How close it gets to ONNX depends on the CPU's int8 instruction set. ONNX Runtim
 assembly with **4-bit weights** and **int8-VNNI** (`vpdpbusd`/`vpdpbsud`). The pure build emits int8-VNNI
 too when the runtime exposes it: `AvxVnni` (256-bit, Alder Lake and newer client CPUs) or
 `AvxVnniInt8.V512` (512-bit, AVX10.2 / Granite Rapids-class CPUs) — on those it is within ~1.5–2× of ONNX
-and can approach parity with the 512-bit path. The one gap is "classic" AVX-512 servers that report the
-`avx512_vnni` CPUID flag but not `AvxVnni`/`AvxVnniInt8`/AVX10: .NET 10 has no standalone `Avx512Vnni`
-intrinsic, so there the pure build must fall back to widen + `vpmaddwd` (~6× the instructions) and lands
-~2.5× off ONNX. Either way the pure build's case is **zero native dependencies** (trim/AOT/WASM/mobile,
+and can approach parity with the 512-bit path. "Classic" AVX-512 servers — the ones reporting the
+`avx512_vnni` CPUID flag — need the **net11.0** build: .NET 10 could not reach that extension at all
+(`AvxVnniInt8.V512` is a different one, there is no standalone `Avx512Vnni`, and `Avx10v1` exposes no
+`MultiplyWideningAndAdd`), so it fell back to 256-bit `AvxVnni`. .NET 11 added `AvxVnni.V512`
+(dotnet/runtime#128365) and the pure build uses it, which is worth ~14% of a single-threaded encode.
+Without either, the fallback is widen + `vpmaddwd` (~6× the instructions, ~2.5× off ONNX). Either way the pure build's case is **zero native dependencies** (trim/AOT/WASM/mobile,
 one managed package) and **higher fidelity**, at a CPU-inference cost within a small multiple of ONNX.
 
 ### Comparing two texts (cosine similarity)
@@ -305,6 +308,57 @@ using var encoder = await SentenceEncoder.CreateAsync(
     modelUrl:     SentenceEncoder.Quantizations.FullModelUrl,
     modelDataUrl: SentenceEncoder.Quantizations.FullModelDataUrl);
 ```
+
+## Quantized weights (`.stq`)
+
+> 📖 **See [QUANTIZATION.md](QUANTIZATION.md)** for the format spec, the converter and validator, the
+> runtime, and the measured size/quality curve.
+
+The `.stq` container stores weights as packed integer codes with an FP16 scale per group, in a fixed
+Walsh-Hadamard rotated basis. It carries both of the ternary packings PrismML use for the Bonsai
+models — `{-1, 0, +1}` trits at 1.75 and 2.125 bits/weight — plus a 4-bit band, mixable per tensor.
+`SentenceTransformers.Quantize` converts and validates a checkpoint;
+`SentenceEncoder.LoadQuantizedAsync` runs it.
+
+```bash
+dotnet run --project SentenceTransformers.Quantize -c Release -f net11.0 -- \
+  convert  --input harrier-oss-v1-270m.safetensors --output harrier-small-q4.stq
+dotnet run --project SentenceTransformers.Quantize -c Release -f net11.0 -- \
+  validate --ternary harrier-small-q4.stq --original harrier-oss-v1-270m.safetensors
+```
+
+```csharp
+using var encoder = await SentenceEncoder.LoadQuantizedAsync("harrier-small-q4.stq");
+```
+
+Unlike the load-time `Int8`/`Int4` modes, an `.stq` file also quantizes the **token embedding
+table** — 63% of Harrier Small's parameters, which those modes leave in bfloat16. On the STS
+Benchmark test split the default conversion matches fp32 while being far smaller:
+
+| | size | STS Spearman | emb/s, 1 thread | emb/s, 4 threads |
+|---|---|---|---|---|
+| fp32 | 511 MB | 0.8177 | — | 12.0 |
+| `Int8`, load-time | ~540 MB resident | 0.8179 | 43.7 / 49.7 | 63.0 / 56.8 |
+| `Int4`, load-time | ~519 MB resident | 0.8144 | — | 14.2 |
+| **`.stq` default** | **132 MB** | **0.8177** | **53.0 / 61.4** | **83.4 / 76.9** |
+
+Throughput columns are `net10.0 / net11.0`. Targeting net11.0 is worth ~14% of a single-threaded
+encode, because .NET 11 added `AvxVnni.V512` — the only managed API that emits a 512-bit `vpdpbusd`,
+and so the first way to use the `avx512_vnni` that most server CPUs have had for years.
+| `.stq --embed-band tq1_0` | 89 MB | 0.8088 | — | — |
+
+`.stq` is **1.33× faster than `Int8` at the default parallelism** (1.21× pinned to one thread; 1.35×
+and 1.24× on net11.0), in
+388 MB resident against 1046 — despite having to unpack 4-bit codes and rotate its activations, which
+`Int8` does not. It wins because its weights are laid out so that a `vpdpbusd` accumulator's eight
+lanes are eight different output channels, which removes the horizontal reduction its per-group
+scales would otherwise force every 128 weights. `QUANTIZATION.md` has the full account, including why
+the single-thread lead is bounded near 1.18× and why the multi-thread one is larger.
+
+Read [QUANTIZATION.md §4](QUANTIZATION.md) before converting with ternary projections: the released
+Harrier Small weights compress 9.11× that way (511 MB → 56 MB) but do **not** survive it, because
+round-to-nearest post-training quantization cannot reach three levels on this model. Ternary
+projections are for weights trained for them, which is how Bonsai does it.
 
 ## Fine-tuning for your use case (real weight-space LoRA)
 

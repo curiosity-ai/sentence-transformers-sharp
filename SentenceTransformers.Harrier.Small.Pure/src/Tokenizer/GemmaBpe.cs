@@ -316,7 +316,14 @@ internal sealed class GemmaBpe
 
         // Min-heap of candidate merges, ordered by (rank, left position) to match BPE tie-breaking:
         // apply the lowest-rank merge first, breaking ties in favour of the leftmost pair.
-        var heap = new PriorityQueue<PendingMerge, (int Rank, int Left)>();
+        //
+        // Reused per thread rather than allocated per call. Allocation tracing put this queue's
+        // backing array at ~7% of everything an encode pass allocates - the largest single
+        // non-scheduling source - because a fresh queue starts empty and regrows on every call.
+        // Clear() keeps the capacity, so after the first few sentences no regrowth happens at all.
+        // Thread-static because sentences tokenize concurrently; Bpe is not re-entrant on one thread.
+        var heap = _mergeHeap ??= new PriorityQueue<PendingMerge, (int Rank, int Left)>();
+        heap.Clear();
         void TryEnqueue(int left)
         {
             if (left < 0)
@@ -416,4 +423,6 @@ internal sealed class GemmaBpe
     /// and re-checked on dequeue so a merge that has since been invalidated (because one side absorbed
     /// another symbol first) is silently dropped. <see cref="NewId"/> is the merged token's id.</summary>
     private readonly record struct PendingMerge(int Left, int Right, int LeftId, int RightId, int NewId);
+
+    [ThreadStatic] private static PriorityQueue<PendingMerge, (int Rank, int Left)> _mergeHeap;
 }

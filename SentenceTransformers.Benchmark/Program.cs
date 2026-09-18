@@ -15,7 +15,13 @@ if (args.Length > 0 && args[0] == "parallel-bench")
 
 if (args.Length > 0 && args[0] == "harrier-pure-bench")
 {
-    await HarrierPureBench.RunAsync();
+    await HarrierPureBench.RunAsync(args.Skip(1).ToArray());
+    return;
+}
+
+if (args.Length > 0 && args[0] == "harrier-pure-profile")
+{
+    await HarrierPureBench.ProfileAsync(args.Length > 1 ? args[1] : null, args.Length > 2 ? int.Parse(args[2]) : Environment.ProcessorCount);
     return;
 }
 
