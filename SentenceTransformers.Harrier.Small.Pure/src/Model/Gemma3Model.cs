@@ -6,7 +6,7 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using SentenceTransformers;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 
 namespace SentenceTransformers.Harrier.Small.Pure.Model;
 
@@ -126,19 +126,19 @@ internal sealed class Gemma3Model
     }
 
     /// <summary>
-    /// Loads the model from an <c>.stq</c> ternary checkpoint (see
-    /// <see cref="SentenceTransformers.Ternary.TernaryFormat"/>) instead of the original
+    /// Loads the model from an <c>.stq</c> quantized checkpoint (see
+    /// <see cref="SentenceTransformers.Stq.StqFormat"/>) instead of the original
     /// safetensors. Every tensor arrives already quantized, so unlike <see cref="LoadAsync"/> this
     /// path does no quantization work at load time and never materializes a float32 copy of the
     /// weights: the peak memory is roughly the size of the file.
     ///
-    /// <para>The forward pass is identical - the ternary weights sit behind the same
-    /// <see cref="IWeightMatrix"/> and <see cref="ITokenEmbedding"/> abstractions, and each ternary
+    /// <para>The forward pass is identical - the packed weights sit behind the same
+    /// <see cref="IWeightMatrix"/> and <see cref="ITokenEmbedding"/> abstractions, and each packed
     /// projection applies its own activation rotation internally.</para>
     /// </summary>
-    public static async Task<Gemma3Model> LoadTernaryAsync(string ternaryPath, Gemma3Config cfg, ParallelOptions parallelOptions)
+    public static async Task<Gemma3Model> LoadQuantizedAsync(string ternaryPath, Gemma3Config cfg, ParallelOptions parallelOptions)
     {
-        var file = await TernaryModelFile.LoadAsync(ternaryPath, parallelOptions.CancellationToken).ConfigureAwait(false);
+        var file = await StqFile.LoadAsync(ternaryPath, parallelOptions.CancellationToken).ConfigureAwait(false);
 
         if (file.Metadata.TryGetValue("architecture", out var arch) && arch != TernaryArchitecture)
         {
@@ -159,12 +159,12 @@ internal sealed class Gemma3Model
             throw new InvalidDataException($"'{ternaryPath}' has a {vocab}-token vocabulary; expected {cfg.VocabSize}.");
         }
 
-        ITokenEmbedding embed = TernaryFormat.IsTernary(embedInfo.Band)
-            ? new TernaryEmbedding(file, embedInfo)
+        ITokenEmbedding embed = StqFormat.IsPacked(embedInfo.Band)
+            ? new StqEmbedding(file, embedInfo)
             : new FloatEmbedding(file.ReadFloat(prefix + "embed_tokens.weight"), cfg.HiddenSize);
 
         Task<IWeightMatrix> Proj(string p, string name, int outDim, int inDim)
-            => TernaryWeights.CreateAsync(file, file.Info(p + name), outDim, inDim, parallelOptions);
+            => StqWeights.CreateAsync(file, file.Info(p + name), outDim, inDim, parallelOptions);
 
         var layers = new Layer[cfg.NumLayers];
         for (int i = 0; i < cfg.NumLayers; i++)

@@ -1,23 +1,23 @@
 using SentenceTransformers.Harrier.Small.Pure.Model;
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 
 namespace SentenceTransformers.Tests;
 
 /// <summary>
-/// Checks the runtime side of the ternary path: that <see cref="TernaryMatrix"/> and
-/// <see cref="TernaryEmbedding"/> reproduce what the format's own reference decode says the weights
+/// Checks the runtime side of the ternary path: that <see cref="StqMatrix"/> and
+/// <see cref="StqEmbedding"/> reproduce what the format's own reference decode says the weights
 /// are.
 ///
 /// <para>These are the tests that tell a kernel bug apart from quantization loss. Both look the same
 /// from the outside - embeddings that drift from the fp32 reference - but only one is fixable in
 /// code, so the runner is held to the decoded weights rather than to the original checkpoint.</para>
 /// </summary>
-public class TernaryRunnerTests
+public class StqRunnerTests
 {
-    private const int GroupSize = 128;
+    private const int GroupSize = 128;   // the ternary default; the 4-bit tests use 32
 
-    private static async Task<(TernaryModelFile File, string Path, float[] Weights)> WriteMatrixAsync(
-        int rows, int inDim, TernaryBand band, bool rotate, int seed = 31)
+    private static async Task<(StqFile File, string Path, float[] Weights)> WriteMatrixAsync(
+        int rows, int inDim, StqBand band, bool rotate, int seed = 31)
     {
         var rnd = new Random(seed);
         var weights = new float[rows * inDim];
@@ -29,26 +29,27 @@ public class TernaryRunnerTests
             weights[i] = (float)(u * u * u);
         }
 
-        var rotation = rotate ? TernaryRotation.Create(inDim, TernaryRotation.ChooseBlock(inDim, 1024), 77) : null;
+        var rotation = rotate ? HadamardRotation.Create(inDim, HadamardRotation.ChooseBlock(inDim, 1024), 77) : null;
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
-        var built = await TernaryTensorBuilder.BuildAsync("w", weights, rows, inDim, band, GroupSize, rotation, TernaryMethod.Optimal, parallelOptions);
+        int groupSize = StqFormat.DefaultGroupSizeFor(band);
+        var built = await StqTensorBuilder.BuildAsync("w", weights, rows, inDim, band, groupSize, rotation, TernaryMethod.Optimal, parallelOptions);
 
-        var writer = new TernaryModelWriter();
+        var writer = new StqWriter();
         if (rotation is not null) writer.AddRotation("r", rotation);
-        writer.AddTernary("w", band, [rows, inDim], GroupSize, rotation is null ? null : "r", built.Codes, built.Scales);
+        writer.AddPacked("w", band, [rows, inDim], groupSize, rotation is null ? null : "r", built.Codes, built.Scales);
 
         var path = Path.Combine(Path.GetTempPath(), $"stq-runner-{Guid.NewGuid():N}.stq");
         await writer.WriteAsync(path);
-        return (await TernaryModelFile.LoadAsync(path), path, weights);
+        return (await StqFile.LoadAsync(path), path, weights);
     }
 
     [Theory]
-    [InlineData(TernaryBand.TQ1_0, 640, true)]
-    [InlineData(TernaryBand.TQ2_0, 640, true)]
-    [InlineData(TernaryBand.TQ1_0, 1024, true)]
-    [InlineData(TernaryBand.TQ1_0, 2048, true)]
-    [InlineData(TernaryBand.TQ1_0, 640, false)]
-    public async Task TernaryMatrixReproducesTheReferenceDecode(TernaryBand band, int inDim, bool rotate)
+    [InlineData(StqBand.TQ1_0, 640, true)]
+    [InlineData(StqBand.TQ2_0, 640, true)]
+    [InlineData(StqBand.TQ1_0, 1024, true)]
+    [InlineData(StqBand.TQ1_0, 2048, true)]
+    [InlineData(StqBand.TQ1_0, 640, false)]
+    public async Task TernaryMatrixReproducesTheReferenceDecode(StqBand band, int inDim, bool rotate)
     {
         const int Rows = 96, Seq = 4;
         var (file, path, _) = await WriteMatrixAsync(Rows, inDim, band, rotate);
@@ -57,7 +58,7 @@ public class TernaryRunnerTests
             var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
             var info = file.Info("w");
 
-            var ternary = await TernaryMatrix.CreateAsync(file, info, parallelOptions);
+            var ternary = await StqMatrix.CreateAsync(file, info, parallelOptions);
             // FloatMatrix over the decoded weights takes a completely different route to the same
             // answer: it un-rotates the weights, where the kernel rotates the activation instead.
             var reference = new FloatMatrix(file.ReadFloat("w"), Rows, inDim);
@@ -92,17 +93,17 @@ public class TernaryRunnerTests
     }
 
     [Theory]
-    [InlineData(TernaryBand.TQ1_0, true)]
-    [InlineData(TernaryBand.TQ2_0, true)]
-    [InlineData(TernaryBand.TQ1_0, false)]
-    public async Task TernaryEmbeddingLookupMatchesTheReferenceDecode(TernaryBand band, bool rotate)
+    [InlineData(StqBand.TQ1_0, true)]
+    [InlineData(StqBand.TQ2_0, true)]
+    [InlineData(StqBand.TQ1_0, false)]
+    public async Task TernaryEmbeddingLookupMatchesTheReferenceDecode(StqBand band, bool rotate)
     {
         const int Vocab = 256, Hidden = 640;
         var (file, path, _) = await WriteMatrixAsync(Vocab, Hidden, band, rotate, seed: 64);
         try
         {
             var info = file.Info("w");
-            var embedding = new TernaryEmbedding(file, info);
+            var embedding = new StqEmbedding(file, info);
             var decoded = file.ReadFloat("w");
 
             var row = new float[Hidden];
@@ -147,18 +148,18 @@ public class TernaryRunnerTests
         }
 
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
-        var built = await TernaryTensorBuilder.BuildAsync("w", weights, Rows, InDim, TernaryBand.TQ1_0, GroupSize,
+        var built = await StqTensorBuilder.BuildAsync("w", weights, Rows, InDim, StqBand.TQ1_0, GroupSize,
                                                           rotation: null, TernaryMethod.Optimal, parallelOptions);
 
         Assert.True(built.Stats.RelativeError < 1e-6, $"expected a lossless conversion, got relative error {built.Stats.RelativeError:E3}");
 
-        var writer = new TernaryModelWriter();
-        writer.AddTernary("w", TernaryBand.TQ1_0, [Rows, InDim], GroupSize, null, built.Codes, built.Scales);
+        var writer = new StqWriter();
+        writer.AddPacked("w", StqBand.TQ1_0, [Rows, InDim], GroupSize, null, built.Codes, built.Scales);
         var path = Path.Combine(Path.GetTempPath(), $"stq-qat-{Guid.NewGuid():N}.stq");
         try
         {
             await writer.WriteAsync(path);
-            var file = await TernaryModelFile.LoadAsync(path);
+            var file = await StqFile.LoadAsync(path);
             var decoded = file.ReadFloat("w");
             for (int i = 0; i < weights.Length; i++)
             {

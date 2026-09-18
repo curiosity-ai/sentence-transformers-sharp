@@ -9,14 +9,17 @@ Guidance for Claude Code (and other contributors) when working in this repositor
 - `SentenceTransformers.Test*/`, `SentenceTransformers.Benchmark*/`, `SentenceTransformers.LoraTraining/`, `SentenceTransformers.Quantize/` — internal test, benchmark, training, and model-conversion projects (not published).
 - `.devops/azure-pipelines.yml` — CI: builds and publishes all packages with a shared CalVer version (`yy.M.<buildId>`).
 
-## Ternary weights
+## Quantized weights
 
-`SentenceTransformers/src/Ternary/` implements the `.stq` container: ternary `{-1, 0, +1}` weights
-with FP16 group scales in a Hadamard-rotated basis, following the scheme PrismML use for Bonsai.
-`SentenceTransformers.Quantize` is the converter/validator CLI, and
-`SentenceEncoder.LoadTernaryAsync` is the runtime entry point. See `TERNARY.md` — in particular §4,
-which records why post-training ternarization of the released Harrier Small weights does not produce
-a usable model, so that finding is not rediscovered.
+`SentenceTransformers/src/Stq/` implements the `.stq` container: packed integer codes with FP16 group
+scales in a Hadamard-rotated basis. It carries both Bonsai ternary packings (`tq1_0`, `tq2_0`) and a
+4-bit band (`q4_0`), selectable per tensor. `SentenceTransformers.Quantize` is the converter/validator
+CLI and `SentenceEncoder.LoadQuantizedAsync` is the runtime entry point.
+
+See `QUANTIZATION.md`, in particular §4, which records why post-training ternarization of the
+released Harrier Small projections does not produce a usable model (a property of three-level
+quantization, not of the implementation) and why the default conversion is 4-bit — so neither is
+rediscovered.
 
 ## Referencing the core SentenceTransformers library
 

@@ -1,4 +1,4 @@
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 
 namespace SentenceTransformers.Quantize;
 
@@ -8,7 +8,7 @@ public static class Inspector
 {
     public static int Run(string path, TextWriter log)
     {
-        var file = TernaryModelFile.Load(path);
+        var file = StqFile.Load(path);
         var info = new FileInfo(path);
 
         log.WriteLine($"{path}  ({info.Length / 1024.0 / 1024.0:F1} MB on disk, {file.PayloadBytes / 1024.0 / 1024.0:F1} MB of tensor data)");
@@ -38,7 +38,7 @@ public static class Inspector
             long bytes = (t.CodesEnd - t.CodesBegin) + (t.ScalesEnd - t.ScalesBegin) + (t.DataEnd - t.DataBegin);
             totalBytes += bytes;
             totalParams += t.ElementCount;
-            log.WriteLine($"  {t.Name,-48} {TernaryFormat.BandName(t.Band),-6} {"[" + string.Join(", ", t.Shape) + "]",-18} " +
+            log.WriteLine($"  {t.Name,-48} {StqFormat.BandName(t.Band),-6} {"[" + string.Join(", ", t.Shape) + "]",-18} " +
                           $"{t.RotationId ?? "-",-9} {bytes / 1024.0 / 1024.0,7:F2} {(double)bytes * 8 / t.ElementCount,6:F3}");
         }
 

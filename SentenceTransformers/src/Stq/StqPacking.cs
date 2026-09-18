@@ -1,27 +1,30 @@
 #nullable enable
 
-namespace SentenceTransformers.Ternary;
+namespace SentenceTransformers.Stq;
 
 /// <summary>
 /// Packs and unpacks ternary codes for the two ternary bands. Both directions go through the same
 /// per-byte lookup tables, so unpacking never divides or branches.
 ///
 /// <list type="bullet">
-/// <item><see cref="TernaryBand.TQ2_0"/>: four codes per byte, two bits each, stored as
+/// <item><see cref="StqBand.TQ2_0"/>: four codes per byte, two bits each, stored as
 /// <c>trit + 1</c> in <c>{0, 1, 2}</c> (the fourth code point is unused), least-significant pair
 /// first. 32 bytes per 128-weight group.</item>
-/// <item><see cref="TernaryBand.TQ1_0"/>: five codes per byte in base 3 -
+/// <item><see cref="StqBand.Q4_0"/>: two codes per byte, four bits each, stored as
+/// <c>code + 8</c> in <c>[0, 15]</c>, low nibble first. <c>groupSize/2</c> bytes per group.</item>
+/// <item><see cref="StqBand.TQ1_0"/>: five codes per byte in base 3 -
 /// <c>b = t0 + 3*t1 + 9*t2 + 27*t3 + 81*t4</c> with each <c>t = trit + 1</c>, so the largest byte
 /// value is 242. 128 codes need 25 full bytes plus one byte carrying the last three (zero-padded),
 /// i.e. 26 bytes per group. That is what takes the band to 1.75 bits/weight.</item>
 /// </list>
 /// </summary>
-public static class TernaryPacking
+public static class StqPacking
 {
     // byte value -> its 4 (TQ2_0) or 5 (TQ1_0) decoded trits. 1 KiB and 1.25 KiB respectively:
     // both stay resident in L1 across a whole matmul.
     private static readonly sbyte[] _tq2Table = BuildTq2Table();
     private static readonly sbyte[] _tq1Table = BuildTq1Table();
+    private static readonly sbyte[] _q4Table = BuildQ4Table();
 
     private static sbyte[] BuildTq2Table()
     {
@@ -51,15 +54,26 @@ public static class TernaryPacking
         return t;
     }
 
+    private static sbyte[] BuildQ4Table()
+    {
+        var t = new sbyte[256 * 2];
+        for (int b = 0; b < 256; b++)
+        {
+            t[b * 2]     = (sbyte)((b & 0x0F) - 8);
+            t[b * 2 + 1] = (sbyte)((b >> 4) - 8);
+        }
+        return t;
+    }
+
     /// <summary>Packs one group of codes into <paramref name="dst"/>, which must be at least
-    /// <see cref="TernaryFormat.CodeBytesPerGroup"/> long. Trailing slots in the final byte are
+    /// <see cref="StqFormat.CodeBytesPerGroup"/> long. Trailing slots in the final byte are
     /// zero-filled, which decodes to the trit 0 - harmless, since the unpacker is driven by the
     /// group size, not by the byte count.</summary>
-    public static void PackGroup(TernaryBand band, ReadOnlySpan<sbyte> codes, Span<byte> dst)
+    public static void PackGroup(StqBand band, ReadOnlySpan<sbyte> codes, Span<byte> dst)
     {
         switch (band)
         {
-            case TernaryBand.TQ2_0:
+            case StqBand.TQ2_0:
             {
                 int bytes = (codes.Length + 3) / 4;
                 dst[..bytes].Clear();
@@ -70,7 +84,7 @@ public static class TernaryPacking
                 }
                 break;
             }
-            case TernaryBand.TQ1_0:
+            case StqBand.TQ1_0:
             {
                 int bytes = (codes.Length + 4) / 5;
                 dst[..bytes].Clear();
@@ -88,19 +102,30 @@ public static class TernaryPacking
                 }
                 break;
             }
+            case StqBand.Q4_0:
+            {
+                int bytes = (codes.Length + 1) / 2;
+                dst[..bytes].Clear();
+                for (int i = 0; i < codes.Length; i++)
+                {
+                    int nibble = (codes[i] + 8) & 0x0F;   // {-8..7} -> {0..15}
+                    dst[i >> 1] |= (byte)((i & 1) == 0 ? nibble : nibble << 4);
+                }
+                break;
+            }
             default:
-                throw new ArgumentOutOfRangeException(nameof(band), band, "Not a ternary band.");
+                throw new ArgumentOutOfRangeException(nameof(band), band, "Not a packed band.");
         }
     }
 
     /// <summary>Unpacks <paramref name="count"/> codes from <paramref name="src"/> into
     /// <paramref name="dst"/> as signed bytes in <c>{-1, 0, +1}</c> - the form the VNNI int8 dot
     /// consumes directly.</summary>
-    public static void UnpackGroup(TernaryBand band, ReadOnlySpan<byte> src, Span<sbyte> dst, int count)
+    public static void UnpackGroup(StqBand band, ReadOnlySpan<byte> src, Span<sbyte> dst, int count)
     {
         switch (band)
         {
-            case TernaryBand.TQ2_0:
+            case StqBand.TQ2_0:
             {
                 var table = _tq2Table;
                 int i = 0;
@@ -124,7 +149,7 @@ public static class TernaryPacking
                 }
                 break;
             }
-            case TernaryBand.TQ1_0:
+            case StqBand.TQ1_0:
             {
                 var table = _tq1Table;
                 int i = 0;
@@ -149,14 +174,32 @@ public static class TernaryPacking
                 }
                 break;
             }
+            case StqBand.Q4_0:
+            {
+                var table = _q4Table;
+                int i = 0;
+                int fullBytes = count >> 1;
+                for (int b = 0; b < fullBytes; b++)
+                {
+                    int t = src[b] * 2;
+                    dst[i]     = table[t];
+                    dst[i + 1] = table[t + 1];
+                    i += 2;
+                }
+                if (i < count)
+                {
+                    dst[i] = table[src[fullBytes] * 2];
+                }
+                break;
+            }
             default:
-                throw new ArgumentOutOfRangeException(nameof(band), band, "Not a ternary band.");
+                throw new ArgumentOutOfRangeException(nameof(band), band, "Not a packed band.");
         }
     }
 
     /// <summary>Unpacks a group straight to float, scaled: <c>dst[i] = scale * trit_i</c>. The float
     /// fallback kernel (and the converter's error report) uses this.</summary>
-    public static void UnpackGroupScaled(TernaryBand band, ReadOnlySpan<byte> src, Span<float> dst, int count, float scale)
+    public static void UnpackGroupScaled(StqBand band, ReadOnlySpan<byte> src, Span<float> dst, int count, float scale)
     {
         Span<sbyte> codes = count <= 256 ? stackalloc sbyte[count] : new sbyte[count];
         UnpackGroup(band, src, codes, count);

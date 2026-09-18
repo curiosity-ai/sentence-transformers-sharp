@@ -3,7 +3,7 @@
 using System.Numerics;
 using System.Numerics.Tensors;
 
-namespace SentenceTransformers.Ternary;
+namespace SentenceTransformers.Stq;
 
 /// <summary>
 /// The fixed orthogonal basis change that makes ternary quantization work:
@@ -34,7 +34,7 @@ namespace SentenceTransformers.Ternary;
 /// <para>The signs are stored in the file as a bitmask (one bit per position, set = -1), not derived
 /// from a seeded PRNG, so a reader never has to reproduce a generator to load a file.</para>
 /// </summary>
-public sealed class TernaryRotation
+public sealed class HadamardRotation
 {
     /// <summary>Length of the vectors this rotation applies to.</summary>
     public int Dim { get; }
@@ -49,7 +49,7 @@ public sealed class TernaryRotation
     private readonly float _norm;    // 1 / sqrt(Block)
 
     /// <summary>Wraps an existing sign mask (the file-loading path).</summary>
-    public TernaryRotation(int dim, int block, byte[] signBits)
+    public HadamardRotation(int dim, int block, byte[] signBits)
     {
         if (dim <= 0)                       throw new ArgumentOutOfRangeException(nameof(dim));
         if (block <= 0 || !IsPowerOfTwo(block)) throw new ArgumentException($"Rotation block {block} must be a power of two.", nameof(block));
@@ -73,7 +73,7 @@ public sealed class TernaryRotation
     /// readers never re-run this generator. Uses SplitMix64 so the choice does not depend on the
     /// runtime's <see cref="Random"/> implementation.
     /// </summary>
-    public static TernaryRotation Create(int dim, int block, ulong seed)
+    public static HadamardRotation Create(int dim, int block, ulong seed)
     {
         var bits = new byte[(dim + 7) / 8];
         ulong state = seed;
@@ -89,7 +89,7 @@ public sealed class TernaryRotation
                 bits[i >> 3] |= (byte)(1 << (i & 7));
             }
         }
-        return new TernaryRotation(dim, block, bits);
+        return new HadamardRotation(dim, block, bits);
     }
 
     /// <summary>

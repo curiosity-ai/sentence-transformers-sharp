@@ -1,6 +1,6 @@
 #nullable enable
 
-namespace SentenceTransformers.Ternary;
+namespace SentenceTransformers.Stq;
 
 /// <summary>How a group of weights is reduced to trits and one shared scale.</summary>
 public enum TernaryMethod

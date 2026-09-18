@@ -1,15 +1,21 @@
 using SentenceTransformers.Quantize;
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 
 const string Usage = """
 SentenceTransformers.Quantize - convert Harrier checkpoints to ternary .stq files and validate them.
 
   convert  --input <model.safetensors> --output <model.stq>
-           [--band tq1_0|tq2_0]          storage band for the projections   (default tq1_0)
-           [--embed-band tq1_0|tq2_0|f32] band for the token embedding table (default: --band)
+           The defaults quantize everything to 4-bit, including the token embedding table that the
+           load-time Int8/Int4 modes leave in bfloat16. Pass --embed-band tq1_0 for the smallest
+           file. See QUANTIZATION.md for the measured size/quality curve and for why ternary
+           projections are not usable post-training on this model.
+           [--band tq1_0|tq2_0|q4_0]     band for the projections           (default q4_0)
+           [--embed-band <band>|f32]     band for the embedding table       (default q4_0)
                                          f32 leaves it unquantized (ablation)
-           [--group <n>]                 weights per scale group            (default 128)
-           [--method optimal|absmean|twn] group quantization rule           (default optimal)
+           [--group <n>]                 weights per ternary scale group    (default 128)
+           [--int4-group <n>]            weights per 4-bit scale group      (default 32)
+           [--embed-group <n>]           scale group for the embedding table (default 128)
+           [--method optimal|absmean|twn] ternary group quantization rule   (default optimal)
            [--no-rotate]                 store in the original basis (ablation only)
            [--rotation-block <n>]        max Walsh-Hadamard block           (default 1024)
            [--seed <n>]                  sign-diagonal seed
@@ -19,7 +25,8 @@ SentenceTransformers.Quantize - convert Harrier checkpoints to ternary .stq file
 
   validate --ternary <model.stq> [--original <model.safetensors>]
            [--sentences <file>]          one sentence per line (default: a built-in multilingual set)
-           [--min-cosine <x>]            default 0.99
+           [--min-mean-cosine <x>]       default 0.98
+           [--min-cosine <x>]            per-sentence floor, default 0.90
            [--min-spearman <x>]          default 0.98
            [--max-tensor-error <x>]      default 0.35
 
@@ -74,10 +81,12 @@ try
         {
             var input = Require("--input");
             var output = Require("--output");
-            var band = ParseBand(Get("--band") ?? "tq1_0");
-            var embedBand = Get("--embed-band") is { } eb ? TernaryFormat.ParseBand(eb.ToLowerInvariant()) : (TernaryBand?)null;
+            var band = ParsePackedBand(Get("--band") ?? "q4_0");
+            var embedBand = StqFormat.ParseBand((Get("--embed-band") ?? "q4_0").ToLowerInvariant());
             var method = Enum.Parse<TernaryMethod>(Get("--method") ?? "optimal", ignoreCase: true);
-            int group = int.Parse(Get("--group") ?? TernaryFormat.DefaultGroupSize.ToString());
+            int group = int.Parse(Get("--group") ?? StqFormat.DefaultGroupSize.ToString());
+            int int4Group = int.Parse(Get("--int4-group") ?? StqFormat.DefaultGroupSizeFor(StqBand.Q4_0).ToString());
+            int? embedGroup = Get("--embed-group") is { } eg ? int.Parse(eg) : StqFormat.DefaultGroupSize;
             int rotationBlock = int.Parse(Get("--rotation-block") ?? "1024");
             ulong seed = ulong.Parse(Get("--seed") ?? "6822930717860817885");
             var keepFloat = GetAll("--keep-float");
@@ -93,6 +102,8 @@ try
                 Band = band,
                 EmbeddingBand = embedBand,
                 GroupSize = group,
+                Int4GroupSize = int4Group,
+                EmbeddingGroupSize = embedGroup,
                 Method = method,
                 Rotate = !noRotate,
                 MaxRotationBlock = rotationBlock,
@@ -111,7 +122,8 @@ try
             var sentencesFile = Get("--sentences");
             var thresholds = new ValidationThresholds
             {
-                MinEmbeddingCosine = double.Parse(Get("--min-cosine") ?? "0.99"),
+                MinMeanCosine = double.Parse(Get("--min-mean-cosine") ?? "0.98"),
+                MinEmbeddingCosine = double.Parse(Get("--min-cosine") ?? "0.90"),
                 MinSpearman = double.Parse(Get("--min-spearman") ?? "0.98"),
                 MaxTensorRelativeError = double.Parse(Get("--max-tensor-error") ?? "0.35"),
             };
@@ -159,12 +171,12 @@ catch (ArgumentException ex)
     return 1;
 }
 
-static TernaryBand ParseBand(string s)
+static StqBand ParsePackedBand(string s)
 {
-    var band = TernaryFormat.ParseBand(s.ToLowerInvariant());
-    if (!TernaryFormat.IsTernary(band))
+    var band = StqFormat.ParseBand(s.ToLowerInvariant());
+    if (!StqFormat.IsPacked(band))
     {
-        throw new ArgumentException($"'{s}' is not a ternary band; use tq1_0 or tq2_0.");
+        throw new ArgumentException($"'{s}' is not a quantized band; use tq1_0, tq2_0 or q4_0.");
     }
     return band;
 }

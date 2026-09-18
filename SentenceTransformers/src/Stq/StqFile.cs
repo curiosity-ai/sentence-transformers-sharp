@@ -4,14 +4,14 @@ using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
 
-namespace SentenceTransformers.Ternary;
+namespace SentenceTransformers.Stq;
 
 /// <summary>One tensor's entry in an <c>.stq</c> header. Byte ranges are <c>[Begin, End)</c> offsets
 /// into the data section.</summary>
-public sealed class TernaryTensorInfo
+public sealed class StqTensorInfo
 {
     public required string Name { get; init; }
-    public required TernaryBand Band { get; init; }
+    public required StqBand Band { get; init; }
     public required int[] Shape { get; init; }
 
     /// <summary>Weights per scale group along the last (input) dimension. Zero for raw bands.</summary>
@@ -21,11 +21,11 @@ public sealed class TernaryTensorInfo
     /// tensor is stored in its original basis.</summary>
     public string? RotationId { get; init; }
 
-    /// <summary>Packed code bytes (ternary bands only).</summary>
+    /// <summary>Packed code bytes (packed bands only).</summary>
     public long CodesBegin { get; init; }
     public long CodesEnd { get; init; }
 
-    /// <summary>FP16 group scales, <c>rows * groupsPerRow</c> of them (ternary bands only).</summary>
+    /// <summary>FP16 group scales, <c>rows * groupsPerRow</c> of them (packed bands only).</summary>
     public long ScalesBegin { get; init; }
     public long ScalesEnd { get; init; }
 
@@ -55,20 +55,20 @@ public sealed class TernaryTensorInfo
 }
 
 /// <summary>
-/// Reader for the <c>.stq</c> ternary container described in <see cref="TernaryFormat"/>. The whole
+/// Reader for the <c>.stq</c> ternary container described in <see cref="StqFormat"/>. The whole
 /// file is read into memory once (a ternary Harrier Small is ~60 MB) and tensors are decoded lazily,
 /// so a runtime can hand the packed bytes straight to a kernel without ever materializing floats.
 /// </summary>
-public sealed class TernaryModelFile
+public sealed class StqFile
 {
     private readonly byte[] _bytes;
     private readonly long _dataStart;
-    private readonly Dictionary<string, TernaryTensorInfo> _tensors;
-    private readonly Dictionary<string, TernaryRotation> _rotations;
+    private readonly Dictionary<string, StqTensorInfo> _tensors;
+    private readonly Dictionary<string, HadamardRotation> _rotations;
     private readonly Dictionary<string, string> _metadata;
 
-    private TernaryModelFile(byte[] bytes, long dataStart, Dictionary<string, TernaryTensorInfo> tensors,
-                             Dictionary<string, TernaryRotation> rotations, Dictionary<string, string> metadata)
+    private StqFile(byte[] bytes, long dataStart, Dictionary<string, StqTensorInfo> tensors,
+                             Dictionary<string, HadamardRotation> rotations, Dictionary<string, string> metadata)
     {
         _bytes = bytes;
         _dataStart = dataStart;
@@ -77,22 +77,22 @@ public sealed class TernaryModelFile
         _metadata = metadata;
     }
 
-    public IReadOnlyDictionary<string, TernaryTensorInfo> Tensors => _tensors;
+    public IReadOnlyDictionary<string, StqTensorInfo> Tensors => _tensors;
     public IReadOnlyDictionary<string, string> Metadata => _metadata;
-    public IReadOnlyDictionary<string, TernaryRotation> Rotations => _rotations;
+    public IReadOnlyDictionary<string, HadamardRotation> Rotations => _rotations;
 
     public bool Contains(string name) => _tensors.ContainsKey(name);
 
-    public static TernaryModelFile Load(string path) => Parse(File.ReadAllBytes(path), path);
+    public static StqFile Load(string path) => Parse(File.ReadAllBytes(path), path);
 
-    public static async Task<TernaryModelFile> LoadAsync(string path, CancellationToken ct = default)
+    public static async Task<StqFile> LoadAsync(string path, CancellationToken ct = default)
         => Parse(await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false), path);
 
-    private static TernaryModelFile Parse(byte[] bytes, string path)
+    private static StqFile Parse(byte[] bytes, string path)
     {
-        if (bytes.Length < 8 || Encoding.ASCII.GetString(bytes, 0, 4) != TernaryFormat.Magic)
+        if (bytes.Length < 8 || Encoding.ASCII.GetString(bytes, 0, 4) != StqFormat.Magic)
         {
-            throw new InvalidDataException($"'{path}' is not an {TernaryFormat.Magic} file.");
+            throw new InvalidDataException($"'{path}' is not an {StqFormat.Magic} file.");
         }
 
         uint headerLen = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4, 4));
@@ -101,11 +101,11 @@ public sealed class TernaryModelFile
             throw new InvalidDataException($"'{path}' has an invalid header length ({headerLen}).");
         }
 
-        var tensors   = new Dictionary<string, TernaryTensorInfo>(StringComparer.Ordinal);
-        var rotations = new Dictionary<string, TernaryRotation>(StringComparer.Ordinal);
+        var tensors   = new Dictionary<string, StqTensorInfo>(StringComparer.Ordinal);
+        var rotations = new Dictionary<string, HadamardRotation>(StringComparer.Ordinal);
         var metadata  = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        long dataStart = TernaryFormat.AlignUp(8 + headerLen);
+        long dataStart = StqFormat.AlignUp(8 + headerLen);
 
         using (var doc = JsonDocument.Parse(bytes.AsMemory(8, (int)headerLen)))
         {
@@ -119,10 +119,10 @@ public sealed class TernaryModelFile
                 }
             }
 
-            if (metadata.TryGetValue("format_version", out var fv) && int.TryParse(fv, out int v) && v > TernaryFormat.FormatVersion)
+            if (metadata.TryGetValue("format_version", out var fv) && int.TryParse(fv, out int v) && v > StqFormat.FormatVersion)
             {
                 throw new InvalidDataException(
-                    $"'{path}' was written by a newer format (version {v}); this build reads up to {TernaryFormat.FormatVersion}.");
+                    $"'{path}' was written by a newer format (version {v}); this build reads up to {StqFormat.FormatVersion}.");
             }
 
             // Rotations are parsed first: a tensor entry may reference one by id.
@@ -136,7 +136,7 @@ public sealed class TernaryModelFile
                     var span = r.GetProperty("signs");
                     long b = span[0].GetInt64(), e = span[1].GetInt64();
                     var signs = bytes.AsSpan((int)(dataStart + b), (int)(e - b)).ToArray();
-                    rotations[p.Name] = new TernaryRotation(dim, block, signs);
+                    rotations[p.Name] = new HadamardRotation(dim, block, signs);
                 }
             }
 
@@ -148,7 +148,7 @@ public sealed class TernaryModelFile
                 }
 
                 var e = p.Value;
-                var band = TernaryFormat.ParseBand(e.GetProperty("band").GetString()!);
+                var band = StqFormat.ParseBand(e.GetProperty("band").GetString()!);
                 var shapeEl = e.GetProperty("shape");
                 var shape = new int[shapeEl.GetArrayLength()];
                 int i = 0;
@@ -163,8 +163,8 @@ public sealed class TernaryModelFile
                     throw new InvalidDataException($"Tensor '{p.Name}' references unknown rotation '{rotationId}'.");
                 }
 
-                var info = TernaryFormat.IsTernary(band)
-                    ? new TernaryTensorInfo
+                var info = StqFormat.IsPacked(band)
+                    ? new StqTensorInfo
                     {
                         Name = p.Name,
                         Band = band,
@@ -176,7 +176,7 @@ public sealed class TernaryModelFile
                         ScalesBegin = e.GetProperty("scales")[0].GetInt64(),
                         ScalesEnd = e.GetProperty("scales")[1].GetInt64(),
                     }
-                    : new TernaryTensorInfo
+                    : new StqTensorInfo
                     {
                         Name = p.Name,
                         Band = band,
@@ -204,29 +204,29 @@ public sealed class TernaryModelFile
                 "Delete the cached file and download it again.");
         }
 
-        return new TernaryModelFile(bytes, dataStart, tensors, rotations, metadata);
+        return new StqFile(bytes, dataStart, tensors, rotations, metadata);
     }
 
-    public TernaryTensorInfo Info(string name)
+    public StqTensorInfo Info(string name)
         => _tensors.TryGetValue(name, out var t) ? t : throw new KeyNotFoundException($"Tensor '{name}' is not present in the ternary model file.");
 
     public int[] Shape(string name) => Info(name).Shape;
 
     /// <summary>The rotation a tensor was stored under, or null if it is in its original basis.</summary>
-    public TernaryRotation? RotationFor(TernaryTensorInfo info)
+    public HadamardRotation? RotationFor(StqTensorInfo info)
         => info.RotationId is null ? null : _rotations[info.RotationId];
 
     /// <summary>The packed code bytes, referenced in place (no copy).</summary>
-    public ReadOnlyMemory<byte> Codes(TernaryTensorInfo info)
+    public ReadOnlyMemory<byte> Codes(StqTensorInfo info)
     {
-        RequireTernary(info);
+        RequirePacked(info);
         return _bytes.AsMemory((int)(_dataStart + info.CodesBegin), (int)(info.CodesEnd - info.CodesBegin));
     }
 
     /// <summary>The FP16 group scales, widened to float (one per group, <c>Rows * GroupsPerRow</c>).</summary>
-    public float[] Scales(TernaryTensorInfo info)
+    public float[] Scales(StqTensorInfo info)
     {
-        RequireTernary(info);
+        RequirePacked(info);
         int count = (int)((info.ScalesEnd - info.ScalesBegin) / 2);
         var src = _bytes.AsSpan((int)(_dataStart + info.ScalesBegin), count * 2);
         var result = new float[count];
@@ -249,18 +249,18 @@ public sealed class TernaryModelFile
         long n = info.ElementCount;
         var result = new float[n];
 
-        if (!TernaryFormat.IsTernary(info.Band))
+        if (!StqFormat.IsPacked(info.Band))
         {
             var src = _bytes.AsSpan((int)(_dataStart + info.DataBegin), (int)(info.DataEnd - info.DataBegin));
             switch (info.Band)
             {
-                case TernaryBand.F32:
+                case StqBand.F32:
                     for (long i = 0; i < n; i++) result[i] = BinaryPrimitives.ReadSingleLittleEndian(src.Slice((int)i * 4, 4));
                     break;
-                case TernaryBand.F16:
+                case StqBand.F16:
                     for (long i = 0; i < n; i++) result[i] = (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(src.Slice((int)i * 2, 2)));
                     break;
-                case TernaryBand.BF16:
+                case StqBand.BF16:
                     for (long i = 0; i < n; i++) result[i] = BitConverter.UInt32BitsToSingle((uint)BinaryPrimitives.ReadUInt16LittleEndian(src.Slice((int)i * 2, 2)) << 16);
                     break;
             }
@@ -271,7 +271,7 @@ public sealed class TernaryModelFile
         var scales = Scales(info);
         var rotation = RotationFor(info);
         int inDim = info.InDim, groups = info.GroupsPerRow, gs = info.GroupSize;
-        int groupBytes = TernaryFormat.CodeBytesPerGroup(info.Band, gs);
+        int groupBytes = StqFormat.CodeBytesPerGroup(info.Band, gs);
         int rowBytes = groups * groupBytes;
 
         for (int r = 0; r < info.Rows; r++)
@@ -279,7 +279,7 @@ public sealed class TernaryModelFile
             var row = result.AsSpan(r * inDim, inDim);
             for (int g = 0; g < groups; g++)
             {
-                TernaryPacking.UnpackGroupScaled(info.Band, codes.Slice(r * rowBytes + g * groupBytes, groupBytes),
+                StqPacking.UnpackGroupScaled(info.Band, codes.Slice(r * rowBytes + g * groupBytes, groupBytes),
                                                  row.Slice(g * gs, gs), gs, scales[r * groups + g]);
             }
             rotation?.ApplyInverse(row);
@@ -287,11 +287,11 @@ public sealed class TernaryModelFile
         return result;
     }
 
-    private static void RequireTernary(TernaryTensorInfo info)
+    private static void RequirePacked(StqTensorInfo info)
     {
-        if (!TernaryFormat.IsTernary(info.Band))
+        if (!StqFormat.IsPacked(info.Band))
         {
-            throw new InvalidOperationException($"Tensor '{info.Name}' is stored as {TernaryFormat.BandName(info.Band)}, not a ternary band.");
+            throw new InvalidOperationException($"Tensor '{info.Name}' is stored as {StqFormat.BandName(info.Band)}, not a packed band.");
         }
     }
 

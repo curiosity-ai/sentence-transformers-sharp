@@ -1,6 +1,6 @@
 #nullable enable
 
-namespace SentenceTransformers.Ternary;
+namespace SentenceTransformers.Stq;
 
 /// <summary>Per-tensor quantization quality, as reported by the converter.</summary>
 /// <param name="RelativeError">Relative Frobenius error <c>||W - W'|| / ||W||</c> against the original
@@ -9,9 +9,9 @@ namespace SentenceTransformers.Ternary;
 /// the number that tracks end-to-end quality more closely than the Frobenius error does.</param>
 /// <param name="ZeroFraction">Fraction of trits that came out zero. Around 0.3-0.5 is healthy; near 0
 /// or near 1 means the scale search is degenerate for this tensor.</param>
-public sealed record TernaryTensorStats(
+public sealed record StqTensorStats(
     string Name,
-    TernaryBand Band,
+    StqBand Band,
     int Rows,
     int InDim,
     int GroupSize,
@@ -25,10 +25,10 @@ public sealed record TernaryTensorStats(
 /// Turns a float weight matrix into the rotated, group-scaled, packed representation an
 /// <c>.stq</c> file stores, and measures how much was lost doing it.
 /// </summary>
-public static class TernaryTensorBuilder
+public static class StqTensorBuilder
 {
     /// <summary>The packed result plus its quality report.</summary>
-    public sealed record Result(byte[] Codes, ushort[] Scales, TernaryTensorStats Stats);
+    public sealed record Result(byte[] Codes, ushort[] Scales, StqTensorStats Stats);
 
     /// <summary>
     /// Quantizes <paramref name="weights"/> (row-major <c>[rows, inDim]</c>).
@@ -44,16 +44,16 @@ public static class TernaryTensorBuilder
         float[] weights,
         int rows,
         int inDim,
-        TernaryBand band,
+        StqBand band,
         int groupSize,
-        TernaryRotation? rotation,
+        HadamardRotation? rotation,
         TernaryMethod method,
         ParallelOptions parallelOptions,
         bool measureError = true)
     {
-        if (!TernaryFormat.IsTernary(band))
+        if (!StqFormat.IsPacked(band))
         {
-            throw new ArgumentException($"{TernaryFormat.BandName(band)} is not a ternary band.", nameof(band));
+            throw new ArgumentException($"{StqFormat.BandName(band)} is not a packed band.", nameof(band));
         }
         if (inDim % groupSize != 0)
         {
@@ -69,7 +69,7 @@ public static class TernaryTensorBuilder
         }
 
         int groups = inDim / groupSize;
-        int groupBytes = TernaryFormat.CodeBytesPerGroup(band, groupSize);
+        int groupBytes = StqFormat.CodeBytesPerGroup(band, groupSize);
         int rowBytes = groups * groupBytes;
 
         var codes = new byte[(long)rows * rowBytes];
@@ -95,14 +95,14 @@ public static class TernaryTensorBuilder
             for (int g = 0; g < groups; g++)
             {
                 var slice = rowBuf.AsSpan(g * groupSize, groupSize);
-                float s = TernaryQuantizer.QuantizeGroup(slice, trits, method, scratch.AsSpan(0, groupSize));
+                float s = StqQuantizer.QuantizeGroup(band, slice, trits, method, scratch.AsSpan(0, groupSize));
 
                 // The scale is stored as FP16, so quantize it here too - otherwise the error we report
                 // would be optimistic relative to what the runtime actually reconstructs.
                 var half = (Half)s;
                 scales[r * groups + g] = BitConverter.HalfToUInt16Bits(half);
 
-                TernaryPacking.PackGroup(band, trits, codes.AsSpan(r * rowBytes + g * groupBytes, groupBytes));
+                StqPacking.PackGroup(band, trits, codes.AsSpan(r * rowBytes + g * groupBytes, groupBytes));
                 for (int i = 0; i < groupSize; i++)
                 {
                     if (trits[i] == 0) zeros++;
@@ -117,7 +117,7 @@ public static class TernaryTensorBuilder
                 for (int g = 0; g < groups; g++)
                 {
                     float s = (float)BitConverter.UInt16BitsToHalf(scales[r * groups + g]);
-                    TernaryPacking.UnpackGroupScaled(band, codes.AsSpan(r * rowBytes + g * groupBytes, groupBytes),
+                    StqPacking.UnpackGroupScaled(band, codes.AsSpan(r * rowBytes + g * groupBytes, groupBytes),
                                                      recon.AsSpan(g * groupSize, groupSize), groupSize, s);
                 }
                 rotation?.ApplyInverse(recon);
@@ -152,7 +152,7 @@ public static class TernaryTensorBuilder
             zeroTotal += rowZeros[r];
         }
 
-        var stats = new TernaryTensorStats(
+        var stats = new StqTensorStats(
             name, band, rows, inDim, groupSize, rotation is not null,
             RelativeError: measureError && totalMag > 0 ? Math.Sqrt(totalErr / totalMag) : 0.0,
             RowCosine: measureError ? cosSum / rows : 0.0,

@@ -2,34 +2,41 @@ using System.Buffers;
 using System.Numerics.Tensors;
 using System.Runtime.Intrinsics;
 using SentenceTransformers;
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 
 namespace SentenceTransformers.Harrier.Small.Pure.Model;
 
 /// <summary>
-/// A linear projection whose weights are ternary <c>{-1, 0, +1}</c> trits with one FP16 scale per
-/// group of 128, read straight out of an <c>.stq</c> file - the same representation Bonsai's
-/// <c>PQ2_0</c> / <c>PTQ1_0</c> packings use. At 1.75-2.125 bits per weight this is 8-9x smaller than
-/// the fp32 weights and roughly half the size of the <see cref="Int4Matrix"/> path.
+/// A linear projection whose weights are packed integer codes with one FP16 scale per group, read
+/// straight out of an <c>.stq</c> file. One class covers every packed band, because they differ only
+/// in how a group of codes unpacks to signed bytes:
+/// <list type="bullet">
+/// <item><c>TQ1_0</c> / <c>TQ2_0</c> - ternary <c>{-1, 0, +1}</c> at 1.75 / 2.125 bits per weight,
+/// the same representation Bonsai's <c>PTQ1_0</c> / <c>PQ2_0</c> packings use.</item>
+/// <item><c>Q4_0</c> - symmetric 4-bit at 4.125-4.5 bits per weight.</item>
+/// </list>
+/// Once unpacked the kernel is identical: the codes are int8 operands either way.
 ///
 /// <para><b>The rotation.</b> The file stores <c>W R^T</c>, not <c>W</c>. This kernel therefore
 /// rotates its activations by <c>R</c> before the dot products, restoring <c>W x</c> exactly (see
-/// <see cref="TernaryRotation"/>). The transform is O(inDim log inDim) per position against an
+/// <see cref="HadamardRotation"/>). The transform is O(inDim log inDim) per position against an
 /// O(inDim * outDim) matmul, so it costs well under 1% here - q/k/v each re-rotate the same input
 /// rather than sharing one transform, which keeps this class self-contained at that price.</para>
 ///
 /// <para><b>The kernels.</b> Unchanged in shape from <see cref="Int4Matrix"/>: on a VNNI host the
-/// trits expand to signed bytes and feed <c>vpdpbusd</c> against dynamically int8-quantized
-/// activations (a trit is a perfectly good int8 operand, so no special casing is needed); elsewhere
-/// each row is dequantized to float and dotted with <see cref="TensorPrimitives.Dot"/>.</para>
+/// codes expand to signed bytes and feed <c>vpdpbusd</c> against dynamically int8-quantized
+/// activations; elsewhere each row is dequantized to float and dotted with
+/// <see cref="TensorPrimitives.Dot"/>. <see cref="Int4Matrix"/> remains the path for weights
+/// quantized at load time from safetensors; this one reads them already packed off disk, which is
+/// what lets the embedding table be quantized too.</para>
 /// </summary>
-internal sealed class TernaryMatrix : IWeightMatrix
+internal sealed class StqMatrix : IWeightMatrix
 {
-    private readonly TernaryBand _band;
+    private readonly StqBand _band;
     private readonly byte[] _codes;          // [outDim * rowBytes]
     private readonly float[] _scales;        // [outDim * groups]
     private readonly int[] _groupSum;        // [outDim * groups], sum of the group's trits
-    private readonly TernaryRotation _rotation; // null when the tensor is stored unrotated
+    private readonly HadamardRotation _rotation; // null when the tensor is stored unrotated
     private readonly int _groupSize;
     private readonly int _groups;
     private readonly int _groupBytes;
@@ -38,7 +45,7 @@ internal sealed class TernaryMatrix : IWeightMatrix
     public int InDim { get; }
     public int OutDim { get; }
 
-    private TernaryMatrix(TernaryBand band, byte[] codes, float[] scales, int[] groupSum, TernaryRotation rotation,
+    private StqMatrix(StqBand band, byte[] codes, float[] scales, int[] groupSum, HadamardRotation rotation,
                           int groupSize, int groups, int groupBytes, int outDim, int inDim)
     {
         _band = band;
@@ -56,14 +63,18 @@ internal sealed class TernaryMatrix : IWeightMatrix
 
     /// <summary>
     /// Wraps a tensor from an already-loaded <c>.stq</c> file. The packed codes are referenced as-is;
-    /// the only derived state is the per-group trit sum, which the VNNI path needs to undo the
+    /// the only derived state is the per-group code sum, which the VNNI path needs to undo the
     /// activation zero-point offset and which is far cheaper to compute once here than per matmul.
     /// </summary>
-    public static async Task<TernaryMatrix> CreateAsync(TernaryModelFile file, TernaryTensorInfo info, ParallelOptions parallelOptions)
+    public static async Task<StqMatrix> CreateAsync(StqFile file, StqTensorInfo info, ParallelOptions parallelOptions)
     {
-        if (!TernaryFormat.IsTernary(info.Band))
+        if (!StqFormat.IsPacked(info.Band))
         {
-            throw new ArgumentException($"Tensor '{info.Name}' is stored as {TernaryFormat.BandName(info.Band)}, not a ternary band.", nameof(info));
+            throw new ArgumentException($"Tensor '{info.Name}' is stored as {StqFormat.BandName(info.Band)}, not a packed band.", nameof(info));
+        }
+        if (info.InDim % info.GroupSize != 0)
+        {
+            throw new ArgumentException($"Tensor '{info.Name}': input dim {info.InDim} is not a multiple of its group size {info.GroupSize}.", nameof(info));
         }
         if (info.Shape.Length != 2)
         {
@@ -73,7 +84,7 @@ internal sealed class TernaryMatrix : IWeightMatrix
         int outDim = info.Shape[0], inDim = info.Shape[1];
         int groupSize = info.GroupSize;
         int groups = info.GroupsPerRow;
-        int groupBytes = TernaryFormat.CodeBytesPerGroup(info.Band, groupSize);
+        int groupBytes = StqFormat.CodeBytesPerGroup(info.Band, groupSize);
         int rowBytes = groups * groupBytes;
 
         var codes = file.Codes(info).ToArray();
@@ -83,21 +94,21 @@ internal sealed class TernaryMatrix : IWeightMatrix
 
         await ParallelExecution.ForAsync(0, outDim, parallelOptions, (o, _) =>
         {
-            Span<sbyte> trits = stackalloc sbyte[groupSize];
+            Span<sbyte> group = stackalloc sbyte[groupSize];
             for (int g = 0; g < groups; g++)
             {
-                TernaryPacking.UnpackGroup(band, codes.AsSpan(o * rowBytes + g * groupBytes, groupBytes), trits, groupSize);
+                StqPacking.UnpackGroup(band, codes.AsSpan(o * rowBytes + g * groupBytes, groupBytes), group, groupSize);
                 int sum = 0;
                 for (int i = 0; i < groupSize; i++)
                 {
-                    sum += trits[i];
+                    sum += group[i];
                 }
                 groupSum[o * groups + g] = sum;
             }
             return ValueTask.CompletedTask;
         }).ConfigureAwait(false);
 
-        return new TernaryMatrix(band, codes, scales, groupSum, file.RotationFor(info), groupSize, groups, groupBytes, outDim, inDim);
+        return new StqMatrix(band, codes, scales, groupSum, file.RotationFor(info), groupSize, groups, groupBytes, outDim, inDim);
     }
 
     public async ValueTask MultiplyAsync(float[] x, float[] y, int seq, ParallelOptions parallelOptions)
@@ -160,16 +171,17 @@ internal sealed class TernaryMatrix : IWeightMatrix
         }
     }
 
-    /// <summary>Unpacks one output row's trits once, then dots it against every position. The int32
-    /// accumulator cannot overflow: each uint8 activation is at most 255 and each trit at most 1, so a
-    /// 128-wide group contributes at most 16 * 255 per lane.</summary>
+    /// <summary>Unpacks one output row's codes once, then dots it against every position. The int32
+    /// accumulator cannot overflow: a uint8 activation is at most 255 and a code at most 8 in
+    /// magnitude, so even a 128-wide 4-bit group contributes at most 16 * 255 * 8 = 32,640 per
+    /// lane.</summary>
     private void VnniColumn(byte[] ua, float[] aScale, float[] y, int o, int seq, int inDim, int outDim)
     {
         Span<sbyte> wbuf = stackalloc sbyte[inDim];
         int rowBase = o * _rowBytes;
         for (int g = 0; g < _groups; g++)
         {
-            TernaryPacking.UnpackGroup(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
+            StqPacking.UnpackGroup(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
                                        wbuf.Slice(g * _groupSize, _groupSize), _groupSize);
         }
 
@@ -211,7 +223,7 @@ internal sealed class TernaryMatrix : IWeightMatrix
         int rowBase = o * _rowBytes;
         for (int g = 0; g < _groups; g++)
         {
-            TernaryPacking.UnpackGroupScaled(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
+            StqPacking.UnpackGroupScaled(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
                                              buf.Slice(g * _groupSize, _groupSize), _groupSize, _scales[o * _groups + g]);
         }
         for (int s = 0; s < seq; s++)
@@ -225,10 +237,11 @@ internal sealed class TernaryMatrix : IWeightMatrix
 }
 
 /// <summary>Builds the right <see cref="IWeightMatrix"/> for a tensor in an <c>.stq</c> file,
-/// whichever band the converter chose for it.</summary>
-internal static class TernaryWeights
+/// whichever band the converter chose for it - a packed kernel for the ternary and 4-bit bands, the
+/// plain float path for a tensor the converter left unquantized.</summary>
+internal static class StqWeights
 {
-    public static async Task<IWeightMatrix> CreateAsync(TernaryModelFile file, TernaryTensorInfo info, int outDim, int inDim, ParallelOptions parallelOptions)
+    public static async Task<IWeightMatrix> CreateAsync(StqFile file, StqTensorInfo info, int outDim, int inDim, ParallelOptions parallelOptions)
     {
         if (info.Shape is not [var r, var c] || r != outDim || c != inDim)
         {
@@ -236,9 +249,9 @@ internal static class TernaryWeights
                 $"Tensor '{info.Name}' has shape [{string.Join(", ", info.Shape)}]; this model expects [{outDim}, {inDim}].");
         }
 
-        if (TernaryFormat.IsTernary(info.Band))
+        if (StqFormat.IsPacked(info.Band))
         {
-            return await TernaryMatrix.CreateAsync(file, info, parallelOptions).ConfigureAwait(false);
+            return await StqMatrix.CreateAsync(file, info, parallelOptions).ConfigureAwait(false);
         }
 
         // A converter may leave a tensor in a float band (say, to isolate one during an ablation).

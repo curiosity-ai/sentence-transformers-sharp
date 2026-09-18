@@ -1,6 +1,6 @@
 #nullable enable
 
-namespace SentenceTransformers.Ternary;
+namespace SentenceTransformers.Stq;
 
 /// <summary>
 /// Storage band for a single tensor inside an <c>.stq</c> file. The two ternary bands mirror the
@@ -9,7 +9,7 @@ namespace SentenceTransformers.Ternary;
 /// The float bands exist so a converter can leave small, quantization-sensitive tensors (norm
 /// vectors, biases) alone in the same container.
 /// </summary>
-public enum TernaryBand
+public enum StqBand
 {
     /// <summary>Raw float32, 4 bytes/weight. Passthrough - no quantization.</summary>
     F32 = 0,
@@ -35,6 +35,18 @@ public enum TernaryBand
     /// <c>PTQ1_0</c>.
     /// </summary>
     TQ1_0 = 4,
+
+    /// <summary>
+    /// Symmetric 4-bit, two codes per byte, plus one FP16 scale per group: codes in
+    /// <c>[-8, +7]</c>. 4.5 bits/weight at group 32, 4.125 at group 128.
+    ///
+    /// <para>Not a Bonsai band - it exists because ternary turns out to be viable for this model's
+    /// embedding table but not for its projections (see <c>QUANTIZATION.md</c> §4), so the useful
+    /// checkpoint is a mixed one. Everything else about it matches the ternary bands: the same
+    /// group scales, the same optional rotated basis, and the same kernel, since 4-bit codes are
+    /// int8 operands just as trits are.</para>
+    /// </summary>
+    Q4_0 = 5,
 }
 
 /// <summary>
@@ -53,7 +65,7 @@ public enum TernaryBand
 /// near-Gaussian distribution that ternarizes cleanly. The identity is exact:
 /// <c>W x = (W R^T)(R x)</c>, so the file stores <c>W R^T</c> and the runtime applies <c>R</c> to
 /// the activation with a fast Walsh-Hadamard transform - O(n log n), a fraction of a percent of the
-/// matmul it precedes. See <see cref="TernaryRotation"/>.</para>
+/// matmul it precedes. See <see cref="HadamardRotation"/>.</para>
 ///
 /// <para><b>File layout.</b>
 /// <code>
@@ -67,7 +79,7 @@ public enum TernaryBand
 /// section, exactly as in <c>safetensors</c>. Codes and scales live in <b>separate</b> blobs rather
 /// than interleaved blocks (GGUF's choice) so a kernel can stream a row's scales contiguously.</para>
 /// </summary>
-public static class TernaryFormat
+public static class StqFormat
 {
     /// <summary>File magic. Bumped only for a breaking container change.</summary>
     public const string Magic = "STQ1";
@@ -82,42 +94,53 @@ public static class TernaryFormat
     /// <summary>Alignment (bytes) of the data section and of every blob within it.</summary>
     public const int Alignment = 64;
 
-    /// <summary>True when <paramref name="band"/> stores ternary codes rather than raw floats.</summary>
-    public static bool IsTernary(TernaryBand band) => band is TernaryBand.TQ2_0 or TernaryBand.TQ1_0;
+    /// <summary>True when <paramref name="band"/> stores ternary codes.</summary>
+    public static bool IsTernary(StqBand band) => band is StqBand.TQ2_0 or StqBand.TQ1_0;
+
+    /// <summary>True when <paramref name="band"/> stores packed integer codes with group scales -
+    /// the bands that go through the code/scale blob pair and the packed kernel, as opposed to the
+    /// raw float bands.</summary>
+    public static bool IsPacked(StqBand band) => IsTernary(band) || band is StqBand.Q4_0;
 
     /// <summary>Packed code bytes for one group of <paramref name="groupSize"/> weights, excluding
     /// the scale. TQ2_0 packs 4 codes/byte; TQ1_0 packs 5 trits/byte in base 3.</summary>
-    public static int CodeBytesPerGroup(TernaryBand band, int groupSize) => band switch
+    public static int CodeBytesPerGroup(StqBand band, int groupSize) => band switch
     {
-        TernaryBand.TQ2_0 => (groupSize + 3) / 4,
-        TernaryBand.TQ1_0 => (groupSize + 4) / 5,
-        _ => throw new ArgumentOutOfRangeException(nameof(band), band, "Not a ternary band."),
+        StqBand.TQ2_0 => (groupSize + 3) / 4,
+        StqBand.TQ1_0 => (groupSize + 4) / 5,
+        StqBand.Q4_0  => (groupSize + 1) / 2,
+        _ => throw new ArgumentOutOfRangeException(nameof(band), band, "Not a packed band."),
     };
 
-    /// <summary>Trits packed into a single byte by <paramref name="band"/>.</summary>
-    public static int CodesPerByte(TernaryBand band) => band switch
+    /// <summary>Codes packed into a single byte by <paramref name="band"/>.</summary>
+    public static int CodesPerByte(StqBand band) => band switch
     {
-        TernaryBand.TQ2_0 => 4,
-        TernaryBand.TQ1_0 => 5,
-        _ => throw new ArgumentOutOfRangeException(nameof(band), band, "Not a ternary band."),
+        StqBand.TQ2_0 => 4,
+        StqBand.TQ1_0 => 5,
+        StqBand.Q4_0  => 2,
+        _ => throw new ArgumentOutOfRangeException(nameof(band), band, "Not a packed band."),
     };
+
+    /// <summary>The default group size for a band: 128 for the ternary bands (matching Bonsai's
+    /// g128 packings), 32 for 4-bit, where the finer grouping is worth its 0.375 bits/weight.</summary>
+    public static int DefaultGroupSizeFor(StqBand band) => band == StqBand.Q4_0 ? 32 : DefaultGroupSize;
 
     /// <summary>Total bits per weight including the FP16 group scale - the number quoted in the
     /// band docs (2.125 for TQ2_0, 1.75 for TQ1_0 at group 128).</summary>
-    public static double BitsPerWeight(TernaryBand band, int groupSize = DefaultGroupSize) => band switch
+    public static double BitsPerWeight(StqBand band, int groupSize = DefaultGroupSize) => band switch
     {
-        TernaryBand.F32  => 32.0,
-        TernaryBand.F16  => 16.0,
-        TernaryBand.BF16 => 16.0,
+        StqBand.F32  => 32.0,
+        StqBand.F16  => 16.0,
+        StqBand.BF16 => 16.0,
         _ => (CodeBytesPerGroup(band, groupSize) + 2) * 8.0 / groupSize,
     };
 
     /// <summary>Bytes a raw (non-ternary) band uses per element.</summary>
-    public static int RawBytesPerElement(TernaryBand band) => band switch
+    public static int RawBytesPerElement(StqBand band) => band switch
     {
-        TernaryBand.F32  => 4,
-        TernaryBand.F16  => 2,
-        TernaryBand.BF16 => 2,
+        StqBand.F32  => 4,
+        StqBand.F16  => 2,
+        StqBand.BF16 => 2,
         _ => throw new ArgumentOutOfRangeException(nameof(band), band, "Not a raw band."),
     };
 
@@ -125,24 +148,26 @@ public static class TernaryFormat
     public static long AlignUp(long offset) => (offset + Alignment - 1) / Alignment * Alignment;
 
     /// <summary>Parses the lower-case band name used in the JSON header.</summary>
-    public static TernaryBand ParseBand(string name) => name switch
+    public static StqBand ParseBand(string name) => name switch
     {
-        "f32"   => TernaryBand.F32,
-        "f16"   => TernaryBand.F16,
-        "bf16"  => TernaryBand.BF16,
-        "tq2_0" => TernaryBand.TQ2_0,
-        "tq1_0" => TernaryBand.TQ1_0,
+        "f32"   => StqBand.F32,
+        "f16"   => StqBand.F16,
+        "bf16"  => StqBand.BF16,
+        "tq2_0" => StqBand.TQ2_0,
+        "tq1_0" => StqBand.TQ1_0,
+        "q4_0"  => StqBand.Q4_0,
         _ => throw new InvalidDataException($"Unknown storage band '{name}'."),
     };
 
     /// <summary>The lower-case band name used in the JSON header.</summary>
-    public static string BandName(TernaryBand band) => band switch
+    public static string BandName(StqBand band) => band switch
     {
-        TernaryBand.F32   => "f32",
-        TernaryBand.F16   => "f16",
-        TernaryBand.BF16  => "bf16",
-        TernaryBand.TQ2_0 => "tq2_0",
-        TernaryBand.TQ1_0 => "tq1_0",
+        StqBand.F32   => "f32",
+        StqBand.F16   => "f16",
+        StqBand.BF16  => "bf16",
+        StqBand.TQ2_0 => "tq2_0",
+        StqBand.TQ1_0 => "tq1_0",
+        StqBand.Q4_0  => "q4_0",
         _ => throw new ArgumentOutOfRangeException(nameof(band), band, null),
     };
 }

@@ -1,5 +1,5 @@
 using System.Numerics.Tensors;
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 using SentenceTransformers.Harrier.Small.Pure.Numerics;
 
 namespace SentenceTransformers.Harrier.Small.Pure.Model;
@@ -49,22 +49,22 @@ internal sealed class BFloat16Embedding : ITokenEmbedding
 }
 
 /// <summary>
-/// The ternary table: five 128-weight groups per row, each a packed code block plus an FP16 scale.
-/// At <c>TQ1_0</c> that is 36.7 MB against bfloat16's 335 MB, and it is the single biggest win in
-/// the whole conversion.
+/// The packed table: each row is a sequence of code groups, each with its own FP16 scale. At
+/// <c>TQ1_0</c>'s five 128-weight groups per row that is 36.7 MB against bfloat16's 335 MB, the
+/// single biggest win in the whole conversion; the 4-bit band works here too, at 86.6 MB.
 ///
-/// <para>The rows are stored rotated, like every other ternary tensor - the rotation is exactly what
+/// <para>The rows are stored rotated, like every other packed tensor - the rotation is exactly what
 /// makes a 640-wide embedding row survive 1.75 bits/weight. A lookup has no activation to push the
-/// rotation onto, so the row is un-rotated after unpacking with <see cref="TernaryRotation.ApplyInverse"/>:
+/// rotation onto, so the row is un-rotated after unpacking with <see cref="HadamardRotation.ApplyInverse"/>:
 /// one Walsh-Hadamard transform over 640 floats per token, which is nothing next to the 18 layers
 /// that follow.</para>
 /// </summary>
-internal sealed class TernaryEmbedding : ITokenEmbedding
+internal sealed class StqEmbedding : ITokenEmbedding
 {
-    private readonly TernaryBand _band;
+    private readonly StqBand _band;
     private readonly byte[] _codes;
     private readonly float[] _scales;
-    private readonly TernaryRotation _rotation;
+    private readonly HadamardRotation _rotation;
     private readonly int _groupSize;
     private readonly int _groups;
     private readonly int _groupBytes;
@@ -73,11 +73,11 @@ internal sealed class TernaryEmbedding : ITokenEmbedding
 
     public int HiddenSize { get; }
 
-    public TernaryEmbedding(TernaryModelFile file, TernaryTensorInfo info)
+    public StqEmbedding(StqFile file, StqTensorInfo info)
     {
-        if (!TernaryFormat.IsTernary(info.Band))
+        if (!StqFormat.IsPacked(info.Band))
         {
-            throw new ArgumentException($"Tensor '{info.Name}' is stored as {TernaryFormat.BandName(info.Band)}, not a ternary band.", nameof(info));
+            throw new ArgumentException($"Tensor '{info.Name}' is stored as {StqFormat.BandName(info.Band)}, not a packed band.", nameof(info));
         }
 
         _band = info.Band;
@@ -86,7 +86,7 @@ internal sealed class TernaryEmbedding : ITokenEmbedding
         _rotation = file.RotationFor(info);
         _groupSize = info.GroupSize;
         _groups = info.GroupsPerRow;
-        _groupBytes = TernaryFormat.CodeBytesPerGroup(info.Band, info.GroupSize);
+        _groupBytes = StqFormat.CodeBytesPerGroup(info.Band, info.GroupSize);
         _rowBytes = _groups * _groupBytes;
         _vocabSize = info.Shape[0];
         HiddenSize = info.Shape[1];
@@ -103,7 +103,7 @@ internal sealed class TernaryEmbedding : ITokenEmbedding
         int scaleBase = tokenId * _groups;
         for (int g = 0; g < _groups; g++)
         {
-            TernaryPacking.UnpackGroupScaled(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
+            StqPacking.UnpackGroupScaled(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
                                              dst.Slice(g * _groupSize, _groupSize), _groupSize, _scales[scaleBase + g]);
         }
         _rotation?.ApplyInverse(dst);

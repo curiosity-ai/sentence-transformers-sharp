@@ -306,33 +306,38 @@ using var encoder = await SentenceEncoder.CreateAsync(
     modelDataUrl: SentenceEncoder.Quantizations.FullModelDataUrl);
 ```
 
-## Ternary (1.58-bit) weights
+## Quantized weights (`.stq`)
 
-> 📖 **See [TERNARY.md](TERNARY.md)** for the format spec, the converter and validator, the runtime,
-> and the measured results.
+> 📖 **See [QUANTIZATION.md](QUANTIZATION.md)** for the format spec, the converter and validator, the
+> runtime, and the measured size/quality curve.
 
-The `.stq` container stores weights as `{-1, 0, +1}` trits with an FP16 scale per group of 128, in a
-fixed Walsh-Hadamard rotated basis — the same scheme PrismML use for the Bonsai models, including
-both of their packings (1.75 and 2.125 bits/weight). `SentenceTransformers.Quantize` converts a
-checkpoint and validates it; `SentenceEncoder.LoadTernaryAsync` runs it.
+The `.stq` container stores weights as packed integer codes with an FP16 scale per group, in a fixed
+Walsh-Hadamard rotated basis. It carries both of the ternary packings PrismML use for the Bonsai
+models — `{-1, 0, +1}` trits at 1.75 and 2.125 bits/weight — plus a 4-bit band, mixable per tensor.
+`SentenceTransformers.Quantize` converts and validates a checkpoint;
+`SentenceEncoder.LoadQuantizedAsync` runs it.
 
 ```bash
-# convert, then check it against the original before shipping it
 dotnet run --project SentenceTransformers.Quantize -c Release -- \
-  convert  --input harrier-oss-v1-270m.safetensors --output harrier-small-tq1_0.stq --band tq1_0
+  convert  --input harrier-oss-v1-270m.safetensors --output harrier-small-q4.stq
 dotnet run --project SentenceTransformers.Quantize -c Release -- \
-  validate --ternary harrier-small-tq1_0.stq --original harrier-oss-v1-270m.safetensors
+  validate --ternary harrier-small-q4.stq --original harrier-oss-v1-270m.safetensors
 ```
 
 ```csharp
-using var encoder = await SentenceEncoder.LoadTernaryAsync("harrier-small-tq1_0.stq");
+using var encoder = await SentenceEncoder.LoadQuantizedAsync("harrier-small-q4.stq");
 ```
 
-Read [TERNARY.md §4](TERNARY.md) before converting a checkpoint: the released Harrier Small weights
-compress 9.11× (511 MB → 56 MB) but do **not** survive whole-model ternarization, because
-round-to-nearest post-training quantization cannot reach three levels on this model's projections.
-Ternary is for weights trained for it, which is how Bonsai does it. The embedding table is the
-exception and ternarizes well on its own.
+Unlike the load-time `Int8`/`Int4` modes, an `.stq` file also quantizes the **token embedding
+table** — 63% of Harrier Small's parameters, which those modes leave in bfloat16. The default
+conversion is therefore both better and much smaller than `Int4`: 0.984 mean cosine against the fp32
+reference at 136 MB, versus 0.976 at roughly 410 MB resident. Passing `--embed-band tq1_0` takes the
+file to 89 MB at 0.951.
+
+Read [QUANTIZATION.md §4](QUANTIZATION.md) before converting with ternary projections: the released
+Harrier Small weights compress 9.11× that way (511 MB → 56 MB) but do **not** survive it, because
+round-to-nearest post-training quantization cannot reach three levels on this model. Ternary
+projections are for weights trained for them, which is how Bonsai does it.
 
 ## Fine-tuning for your use case (real weight-space LoRA)
 

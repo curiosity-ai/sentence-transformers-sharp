@@ -36,8 +36,8 @@ public static class Comparer
 
         if (ternaryPath is not null)
         {
-            using var ternary = await SentenceEncoder.LoadTernaryAsync(ternaryPath, parallelOptions: parallelOptions).ConfigureAwait(false);
-            await ReportAsync($"ternary {Path.GetFileNameWithoutExtension(ternaryPath)}", ternary, refVectors, refSim, sentences, parallelOptions, log).ConfigureAwait(false);
+            using var ternary = await SentenceEncoder.LoadQuantizedAsync(ternaryPath, parallelOptions: parallelOptions).ConfigureAwait(false);
+            await ReportAsync($"stq {Path.GetFileNameWithoutExtension(ternaryPath)}", ternary, refVectors, refSim, sentences, parallelOptions, log).ConfigureAwait(false);
         }
 
         return 0;

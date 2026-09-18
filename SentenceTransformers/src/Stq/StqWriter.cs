@@ -4,7 +4,7 @@ using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
 
-namespace SentenceTransformers.Ternary;
+namespace SentenceTransformers.Stq;
 
 /// <summary>
 /// Builds an <c>.stq</c> file. Blobs are collected in memory, then laid out back to back (each
@@ -12,42 +12,42 @@ namespace SentenceTransformers.Ternary;
 /// Small comes to ~60 MB, so holding the payload in memory keeps the writer simple; a converter for a
 /// much larger model would want to spool the data section to a temp file instead.
 /// </summary>
-public sealed class TernaryModelWriter
+public sealed class StqWriter
 {
     private readonly List<(string Key, byte[] Data)> _blobs = new();
     private readonly Dictionary<string, string> _metadata = new(StringComparer.Ordinal);
-    private readonly List<(string Id, TernaryRotation Rotation)> _rotations = new();
+    private readonly List<(string Id, HadamardRotation Rotation)> _rotations = new();
     private readonly List<TensorEntry> _tensors = new();
 
-    private sealed record TensorEntry(string Name, TernaryBand Band, int[] Shape, int GroupSize, string? RotationId, string? CodesKey, string? ScalesKey, string? DataKey);
+    private sealed record TensorEntry(string Name, StqBand Band, int[] Shape, int GroupSize, string? RotationId, string? CodesKey, string? ScalesKey, string? DataKey);
 
-    public TernaryModelWriter()
+    public StqWriter()
     {
         _metadata["format"] = "stq";
-        _metadata["format_version"] = TernaryFormat.FormatVersion.ToString();
+        _metadata["format_version"] = StqFormat.FormatVersion.ToString();
     }
 
     /// <summary>Records a free-form header field. Values are stored as strings.</summary>
-    public TernaryModelWriter SetMetadata(string key, string value)
+    public StqWriter SetMetadata(string key, string value)
     {
         _metadata[key] = value;
         return this;
     }
 
     /// <summary>Registers a rotation that tensors can reference by <paramref name="id"/>.</summary>
-    public TernaryModelWriter AddRotation(string id, TernaryRotation rotation)
+    public StqWriter AddRotation(string id, HadamardRotation rotation)
     {
         _rotations.Add((id, rotation));
         _blobs.Add(($"rot:{id}", rotation.SignBits));
         return this;
     }
 
-    /// <summary>Adds a ternary tensor from already-packed codes and FP16 scales.</summary>
-    public TernaryModelWriter AddTernary(string name, TernaryBand band, int[] shape, int groupSize, string? rotationId, byte[] codes, ushort[] scales)
+    /// <summary>Adds a packed tensor (ternary or 4-bit) from already-packed codes and FP16 scales.</summary>
+    public StqWriter AddPacked(string name, StqBand band, int[] shape, int groupSize, string? rotationId, byte[] codes, ushort[] scales)
     {
-        if (!TernaryFormat.IsTernary(band))
+        if (!StqFormat.IsPacked(band))
         {
-            throw new ArgumentException($"{TernaryFormat.BandName(band)} is not a ternary band.", nameof(band));
+            throw new ArgumentException($"{StqFormat.BandName(band)} is not a packed band.", nameof(band));
         }
 
         var scaleBytes = new byte[scales.Length * 2];
@@ -64,21 +64,21 @@ public sealed class TernaryModelWriter
 
     /// <summary>Adds a tensor stored verbatim in a float band - for norm vectors and anything else
     /// too small or too sensitive to ternarize.</summary>
-    public TernaryModelWriter AddRaw(string name, TernaryBand band, int[] shape, ReadOnlySpan<float> data)
+    public StqWriter AddRaw(string name, StqBand band, int[] shape, ReadOnlySpan<float> data)
     {
-        int bytesPer = TernaryFormat.RawBytesPerElement(band);
+        int bytesPer = StqFormat.RawBytesPerElement(band);
         var buf = new byte[(long)data.Length * bytesPer];
         for (int i = 0; i < data.Length; i++)
         {
             switch (band)
             {
-                case TernaryBand.F32:
+                case StqBand.F32:
                     BinaryPrimitives.WriteSingleLittleEndian(buf.AsSpan(i * 4, 4), data[i]);
                     break;
-                case TernaryBand.F16:
+                case StqBand.F16:
                     BinaryPrimitives.WriteUInt16LittleEndian(buf.AsSpan(i * 2, 2), BitConverter.HalfToUInt16Bits((Half)data[i]));
                     break;
-                case TernaryBand.BF16:
+                case StqBand.BF16:
                     // Round-to-nearest-even on the way down to bf16, matching what PyTorch stores.
                     uint bits = BitConverter.SingleToUInt32Bits(data[i]);
                     uint rounded = (bits + 0x7FFF + ((bits >> 16) & 1)) >> 16;
@@ -99,7 +99,7 @@ public sealed class TernaryModelWriter
         long cursor = 0;
         foreach (var (key, data) in _blobs)
         {
-            cursor = TernaryFormat.AlignUp(cursor);
+            cursor = StqFormat.AlignUp(cursor);
             offsets[key] = (cursor, cursor + data.Length);
             cursor += data.Length;
         }
@@ -108,18 +108,18 @@ public sealed class TernaryModelWriter
         // Pass 2: serialize the header now that every offset is known.
         byte[] header = BuildHeader(offsets);
         long headerEnd = 8 + header.Length;
-        long dataStart = TernaryFormat.AlignUp(headerEnd);
+        long dataStart = StqFormat.AlignUp(headerEnd);
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         await using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
 
         var prologue = new byte[8];
-        Encoding.ASCII.GetBytes(TernaryFormat.Magic, prologue.AsSpan(0, 4));
+        Encoding.ASCII.GetBytes(StqFormat.Magic, prologue.AsSpan(0, 4));
         BinaryPrimitives.WriteUInt32LittleEndian(prologue.AsSpan(4, 4), (uint)header.Length);
         await fs.WriteAsync(prologue, ct).ConfigureAwait(false);
         await fs.WriteAsync(header, ct).ConfigureAwait(false);
 
-        var padding = new byte[TernaryFormat.Alignment];
+        var padding = new byte[StqFormat.Alignment];
         await fs.WriteAsync(padding.AsMemory(0, (int)(dataStart - headerEnd)), ct).ConfigureAwait(false);
 
         long written = 0;
@@ -172,12 +172,12 @@ public sealed class TernaryModelWriter
             foreach (var t in _tensors)
             {
                 w.WriteStartObject(t.Name);
-                w.WriteString("band", TernaryFormat.BandName(t.Band));
+                w.WriteString("band", StqFormat.BandName(t.Band));
                 w.WriteStartArray("shape");
                 foreach (int d in t.Shape) w.WriteNumberValue(d);
                 w.WriteEndArray();
 
-                if (TernaryFormat.IsTernary(t.Band))
+                if (StqFormat.IsPacked(t.Band))
                 {
                     w.WriteNumber("group_size", t.GroupSize);
                     if (t.RotationId is not null) w.WriteString("rotation", t.RotationId);

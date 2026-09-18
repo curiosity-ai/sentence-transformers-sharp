@@ -1,4 +1,4 @@
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 
 namespace SentenceTransformers.Tests;
 
@@ -6,41 +6,48 @@ namespace SentenceTransformers.Tests;
 /// Covers the ternary container end to end without needing a real checkpoint: the packings, the
 /// Hadamard rotation, the quantizer's optimality claim, and a write/read round trip.
 /// </summary>
-public class TernaryFormatTests
+public class StqFormatTests
 {
     [Theory]
-    [InlineData(TernaryBand.TQ1_0, 128, 28, 1.75)]
-    [InlineData(TernaryBand.TQ2_0, 128, 34, 2.125)]
-    public void BandSizesMatchTheDocumentedRates(TernaryBand band, int groupSize, int expectedBytes, double expectedBpw)
+    [InlineData(StqBand.TQ1_0, 128, 28, 1.75)]
+    [InlineData(StqBand.TQ2_0, 128, 34, 2.125)]
+    [InlineData(StqBand.Q4_0, 32, 18, 4.5)]
+    [InlineData(StqBand.Q4_0, 128, 66, 4.125)]
+    public void BandSizesMatchTheDocumentedRates(StqBand band, int groupSize, int expectedBytes, double expectedBpw)
     {
         // The whole point of the two bands is these numbers; if the arithmetic drifts, a file written
         // by one build stops lining up with what another expects.
-        Assert.Equal(expectedBytes, TernaryFormat.CodeBytesPerGroup(band, groupSize) + 2);
-        Assert.Equal(expectedBpw, TernaryFormat.BitsPerWeight(band, groupSize), 6);
+        Assert.Equal(expectedBytes, StqFormat.CodeBytesPerGroup(band, groupSize) + 2);
+        Assert.Equal(expectedBpw, StqFormat.BitsPerWeight(band, groupSize), 6);
     }
 
     [Theory]
-    [InlineData(TernaryBand.TQ1_0, 128)]
-    [InlineData(TernaryBand.TQ2_0, 128)]
-    [InlineData(TernaryBand.TQ1_0, 64)]
-    [InlineData(TernaryBand.TQ2_0, 64)]
-    [InlineData(TernaryBand.TQ1_0, 32)]
-    [InlineData(TernaryBand.TQ2_0, 32)]
-    public void PackingRoundTripsEveryCode(TernaryBand band, int groupSize)
+    [InlineData(StqBand.TQ1_0, 128)]
+    [InlineData(StqBand.TQ2_0, 128)]
+    [InlineData(StqBand.TQ1_0, 64)]
+    [InlineData(StqBand.TQ2_0, 64)]
+    [InlineData(StqBand.TQ1_0, 32)]
+    [InlineData(StqBand.TQ2_0, 32)]
+    [InlineData(StqBand.Q4_0, 32)]
+    [InlineData(StqBand.Q4_0, 128)]
+    public void PackingRoundTripsEveryCode(StqBand band, int groupSize)
     {
         var rnd = new Random(7);
         var codes = new sbyte[groupSize];
-        var packed = new byte[TernaryFormat.CodeBytesPerGroup(band, groupSize)];
+        var packed = new byte[StqFormat.CodeBytesPerGroup(band, groupSize)];
         var unpacked = new sbyte[groupSize];
+        // Each band has to survive its own full code range, not just the ternary one.
+        int lo = band == StqBand.Q4_0 ? Int4Quantizer.QMin : -1;
+        int hi = band == StqBand.Q4_0 ? Int4Quantizer.QMax : 1;
 
         for (int trial = 0; trial < 200; trial++)
         {
             for (int i = 0; i < groupSize; i++)
             {
-                codes[i] = (sbyte)(rnd.Next(3) - 1);
+                codes[i] = (sbyte)rnd.Next(lo, hi + 1);
             }
-            TernaryPacking.PackGroup(band, codes, packed);
-            TernaryPacking.UnpackGroup(band, packed, unpacked, groupSize);
+            StqPacking.PackGroup(band, codes, packed);
+            StqPacking.UnpackGroup(band, packed, unpacked, groupSize);
             Assert.Equal(codes, unpacked);
         }
     }
@@ -52,7 +59,7 @@ public class TernaryFormatTests
         // able to reproduce it from the spec alone.
         sbyte[] codes = [1, 0, -1, 1, 1];   // -> 2 + 1*3 + 0*9 + 2*27 + 2*81 = 221
         var packed = new byte[1];
-        TernaryPacking.PackGroup(TernaryBand.TQ1_0, codes, packed);
+        StqPacking.PackGroup(StqBand.TQ1_0, codes, packed);
         Assert.Equal(221, packed[0]);
     }
 
@@ -61,7 +68,7 @@ public class TernaryFormatTests
     {
         sbyte[] codes = [1, 0, -1, 1];      // -> 2 | 1<<2 | 0<<4 | 2<<6 = 2 + 4 + 0 + 128 = 134
         var packed = new byte[1];
-        TernaryPacking.PackGroup(TernaryBand.TQ2_0, codes, packed);
+        StqPacking.PackGroup(StqBand.TQ2_0, codes, packed);
         Assert.Equal(134, packed[0]);
     }
 
@@ -72,7 +79,7 @@ public class TernaryFormatTests
     [InlineData(2048, 4096, 2048)]
     [InlineData(768, 1024, 256)]
     public void ChooseBlockPicksTheLargestDividingPowerOfTwo(int dim, int max, int expected)
-        => Assert.Equal(expected, TernaryRotation.ChooseBlock(dim, max));
+        => Assert.Equal(expected, HadamardRotation.ChooseBlock(dim, max));
 
     [Fact]
     public void FwhtAppliedTwiceScalesByN()
@@ -82,8 +89,8 @@ public class TernaryFormatTests
         for (int i = 0; i < v.Length; i++) v[i] = (float)(rnd.NextDouble() * 2 - 1);
         var original = (float[])v.Clone();
 
-        TernaryRotation.Fwht(v);
-        TernaryRotation.Fwht(v);
+        HadamardRotation.Fwht(v);
+        HadamardRotation.Fwht(v);
 
         for (int i = 0; i < v.Length; i++)
         {
@@ -97,7 +104,7 @@ public class TernaryFormatTests
     [InlineData(2048, 1024)]
     public void RotationIsItsOwnInverse(int dim, int block)
     {
-        var rotation = TernaryRotation.Create(dim, block, 99);
+        var rotation = HadamardRotation.Create(dim, block, 99);
         var rnd = new Random(3);
         var v = new float[dim];
         for (int i = 0; i < dim; i++) v[i] = (float)(rnd.NextDouble() * 2 - 1);
@@ -119,7 +126,7 @@ public class TernaryFormatTests
     {
         // The identity the whole format rests on: W x = (W R^T)(R x). Applying the same rotation to
         // both operands must leave their dot product alone, because R is orthogonal.
-        var rotation = TernaryRotation.Create(640, 128, 5);
+        var rotation = HadamardRotation.Create(640, 128, 5);
         var rnd = new Random(21);
         var w = new float[640];
         var x = new float[640];
@@ -205,12 +212,15 @@ public class TernaryFormatTests
     }
 
     [Theory]
-    [InlineData(TernaryBand.TQ1_0, true)]
-    [InlineData(TernaryBand.TQ2_0, true)]
-    [InlineData(TernaryBand.TQ1_0, false)]
-    public async Task ContainerRoundTripsThroughDisk(TernaryBand band, bool rotate)
+    [InlineData(StqBand.TQ1_0, true)]
+    [InlineData(StqBand.TQ2_0, true)]
+    [InlineData(StqBand.TQ1_0, false)]
+    [InlineData(StqBand.Q4_0, true)]
+    [InlineData(StqBand.Q4_0, false)]
+    public async Task ContainerRoundTripsThroughDisk(StqBand band, bool rotate)
     {
-        const int Rows = 40, InDim = 640, GroupSize = 128;
+        const int Rows = 40, InDim = 640;
+        int GroupSize = StqFormat.DefaultGroupSizeFor(band);
         var rnd = new Random(8);
         var weights = new float[Rows * InDim];
         for (int i = 0; i < weights.Length; i++)
@@ -220,23 +230,23 @@ public class TernaryFormatTests
         var norm = new float[InDim];
         for (int i = 0; i < InDim; i++) norm[i] = (float)rnd.NextDouble();
 
-        var rotation = rotate ? TernaryRotation.Create(InDim, 128, 17) : null;
+        var rotation = rotate ? HadamardRotation.Create(InDim, 128, 17) : null;
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
-        var built = await TernaryTensorBuilder.BuildAsync("w", weights, Rows, InDim, band, GroupSize, rotation, TernaryMethod.Optimal, parallelOptions);
+        var built = await StqTensorBuilder.BuildAsync("w", weights, Rows, InDim, band, GroupSize, rotation, TernaryMethod.Optimal, parallelOptions);
 
-        var writer = new TernaryModelWriter().SetMetadata("architecture", "test");
+        var writer = new StqWriter().SetMetadata("architecture", "test");
         if (rotation is not null) writer.AddRotation("r", rotation);
-        writer.AddTernary("w", band, [Rows, InDim], GroupSize, rotation is null ? null : "r", built.Codes, built.Scales);
-        writer.AddRaw("n", TernaryBand.F32, [InDim], norm);
+        writer.AddPacked("w", band, [Rows, InDim], GroupSize, rotation is null ? null : "r", built.Codes, built.Scales);
+        writer.AddRaw("n", StqBand.F32, [InDim], norm);
 
         var path = Path.Combine(Path.GetTempPath(), $"stq-test-{Guid.NewGuid():N}.stq");
         try
         {
             await writer.WriteAsync(path);
-            var file = await TernaryModelFile.LoadAsync(path);
+            var file = await StqFile.LoadAsync(path);
 
             Assert.Equal("test", file.Metadata["architecture"]);
-            Assert.Equal(TernaryFormat.FormatVersion.ToString(), file.Metadata["format_version"]);
+            Assert.Equal(StqFormat.FormatVersion.ToString(), file.Metadata["format_version"]);
 
             // The float band is stored verbatim, so it must come back bit-identical.
             Assert.Equal(norm, file.ReadFloat("n"));
@@ -254,8 +264,14 @@ public class TernaryFormatTests
             double rel = Math.Sqrt(se / mag);
             Assert.Equal(built.Stats.RelativeError, rel, 4);
 
-            // Rotated storage is what makes ternary survive; it should measurably beat unrotated here.
-            Assert.True(rel < (rotate ? 0.47 : 0.60), $"relative error {rel:F4} is worse than expected for rotate={rotate}");
+            // Each band is held to its own bound, so a band silently decoding as another would fail
+            // here. Note the rotation is only asserted to help for ternary: these weights are drawn
+            // uniformly and so have no outliers to spread, which is the one case where rotating can
+            // cost a little - it turns a bounded distribution into a Gaussian one, whose tail widens
+            // the amax-driven 4-bit scale. On real weights, which do have outliers, it is measured
+            // per band rather than assumed (see QUANTIZATION.md).
+            double bound = band == StqBand.Q4_0 ? 0.12 : (rotate ? 0.47 : 0.60);
+            Assert.True(rel < bound, $"relative error {rel:F4} is worse than expected for {band}, rotate={rotate}");
         }
         finally
         {
@@ -266,13 +282,13 @@ public class TernaryFormatTests
     [Fact]
     public async Task ReaderRejectsAFileFromANewerFormat()
     {
-        var writer = new TernaryModelWriter().SetMetadata("format_version", (TernaryFormat.FormatVersion + 1).ToString());
-        writer.AddRaw("n", TernaryBand.F32, [4], new float[4]);
+        var writer = new StqWriter().SetMetadata("format_version", (StqFormat.FormatVersion + 1).ToString());
+        writer.AddRaw("n", StqBand.F32, [4], new float[4]);
         var path = Path.Combine(Path.GetTempPath(), $"stq-test-{Guid.NewGuid():N}.stq");
         try
         {
             await writer.WriteAsync(path);
-            var ex = await Assert.ThrowsAsync<InvalidDataException>(() => TernaryModelFile.LoadAsync(path));
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() => StqFile.LoadAsync(path));
             Assert.Contains("newer format", ex.Message);
         }
         finally

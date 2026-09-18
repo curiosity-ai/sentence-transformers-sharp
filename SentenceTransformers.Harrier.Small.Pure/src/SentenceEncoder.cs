@@ -33,10 +33,12 @@ namespace SentenceTransformers.Harrier.Small.Pure
         /// <c>weightsUrl</c> to use a mirror.</summary>
         public const string DefaultWeightsUrl = "https://models.curiosity.ai/harrier-oss-v1-270m-safetensors/harrier-oss-v1-270m.safetensors";
 
-        /// <summary>Default download URL for the ternary <c>.stq</c> weights (~60 MB) used by
-        /// <see cref="CreateTernaryAsync"/>. The <c>TQ1_0</c> band at 1.75 bits/weight; override
-        /// <c>weightsUrl</c> to point at a <c>TQ2_0</c> build or a mirror.</summary>
-        public const string DefaultTernaryWeightsUrl = "https://models.curiosity.ai/harrier-oss-v1-270m-safetensors/harrier-oss-v1-270m-tq1_0.stq";
+        /// <summary>Default download URL for the quantized <c>.stq</c> weights (~136 MB) used by
+        /// <see cref="CreateQuantizedAsync"/>: the 4-bit build, which also compresses the token
+        /// embedding table that the <see cref="Quantization.Int8"/>/<see cref="Quantization.Int4"/>
+        /// modes leave in bfloat16. Override <c>weightsUrl</c> for a smaller build (a ternary
+        /// embedding table takes it to ~89 MB) or a mirror.</summary>
+        public const string DefaultQuantizedWeightsUrl = "https://models.curiosity.ai/harrier-oss-v1-270m-safetensors/harrier-oss-v1-270m-q4_0.stq";
 
         private static readonly SemaphoreSlim _oneDownloadAtATime = new(1, 1);
         private static readonly HttpClient _downloadClient = new() { Timeout = TimeSpan.FromDays(1) };
@@ -138,31 +140,31 @@ namespace SentenceTransformers.Harrier.Small.Pure
         }
 
         /// <summary>
-        /// Downloads the ternary <c>.stq</c> weights to <paramref name="downloadToPath"/> (or a temp
-        /// path if null), then creates an encoder from them. About 60 MB against the safetensors
+        /// Downloads the quantized <c>.stq</c> weights to <paramref name="downloadToPath"/> (or a temp
+        /// path if null), then creates an encoder from them. About 136 MB against the safetensors
         /// checkpoint's 540 MB.
         /// </summary>
-        /// <param name="weightsUrl">URL of the <c>.stq</c> file. Defaults to <see cref="DefaultTernaryWeightsUrl"/>.</param>
+        /// <param name="weightsUrl">URL of the <c>.stq</c> file. Defaults to <see cref="DefaultQuantizedWeightsUrl"/>.</param>
         /// <param name="downloadToPath">Where to cache the weights. Defaults to a temp folder.</param>
         /// <param name="reportProgress">Optional download progress callback (~2 Hz).</param>
         /// <param name="parallelOptions">Concurrency for loading <b>and</b> the default used by the
         /// <see cref="EncodeAsync(string[], CancellationToken)"/> document path; see <see cref="CreateAsync"/>.</param>
-        public static async Task<SentenceEncoder> CreateTernaryAsync(
+        public static async Task<SentenceEncoder> CreateQuantizedAsync(
             string weightsUrl = null,
             string downloadToPath = null,
             Action<DownloadProgress> reportProgress = null,
             ParallelOptions parallelOptions = null)
         {
-            var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Pure", "harrier-small-tq1_0.stq");
+            var path = downloadToPath ?? Path.Combine(Path.GetTempPath(), "SentenceTransformers.Harrier.Small.Pure", "harrier-small-q4_0.stq");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-            var resolvedUrl = weightsUrl ?? DefaultTernaryWeightsUrl;
+            var resolvedUrl = weightsUrl ?? DefaultQuantizedWeightsUrl;
             var ct = parallelOptions?.CancellationToken ?? default;
 
             await DownloadFileAsync(resolvedUrl, path, reportProgress, ct).ConfigureAwait(false);
             try
             {
-                return await LoadTernaryAsync(path, parallelOptions: parallelOptions).ConfigureAwait(false);
+                return await LoadQuantizedAsync(path, parallelOptions: parallelOptions).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is InvalidDataException or ArgumentOutOfRangeException)
             {
@@ -170,22 +172,25 @@ namespace SentenceTransformers.Harrier.Small.Pure
                 // blow up while reading tensors. Delete it, fetch once more, and only then give up.
                 try { File.Delete(path); } catch { /* ignore */ }
                 await DownloadFileAsync(resolvedUrl, path, reportProgress, ct).ConfigureAwait(false);
-                return await LoadTernaryAsync(path, parallelOptions: parallelOptions).ConfigureAwait(false);
+                return await LoadQuantizedAsync(path, parallelOptions: parallelOptions).ConfigureAwait(false);
             }
         }
 
         /// <summary>
-        /// Creates an encoder from a ternary <c>.stq</c> checkpoint on disk - the format produced by
-        /// the <c>SentenceTransformers.Quantize</c> tool, holding <c>{-1, 0, +1}</c> weights with FP16
-        /// group scales in a fixed Hadamard-rotated basis (see <c>TERNARY.md</c>).
+        /// Creates an encoder from a quantized <c>.stq</c> checkpoint on disk - the format produced
+        /// by the <c>SentenceTransformers.Quantize</c> tool, holding packed integer codes (ternary or
+        /// 4-bit, per tensor) with FP16 group scales in a fixed Hadamard-rotated basis (see
+        /// <c>QUANTIZATION.md</c>).
         ///
         /// <para>Unlike <see cref="LoadAsync"/> there is no <c>quantization</c> choice to make: the
-        /// precision was fixed when the file was written, and loading does no quantization work.</para>
+        /// precision was fixed when the file was written, and loading does no quantization work. It
+        /// also covers the token embedding table, which <see cref="LoadAsync"/>'s modes never
+        /// quantize.</para>
         /// </summary>
         /// <param name="ternaryPath">Path to the <c>.stq</c> file.</param>
         /// <param name="tokenizerJsonPath">Optional path to <c>tokenizer.json</c>; when null the embedded copy is used.</param>
         /// <param name="parallelOptions">See <see cref="LoadAsync"/>.</param>
-        public static async Task<SentenceEncoder> LoadTernaryAsync(
+        public static async Task<SentenceEncoder> LoadQuantizedAsync(
             string ternaryPath,
             string tokenizerJsonPath = null,
             ParallelOptions parallelOptions = null)
@@ -198,7 +203,7 @@ namespace SentenceTransformers.Harrier.Small.Pure
             var loadOptions   = parallelOptions ?? new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount / 2 };
             var encodeDefault = parallelOptions ?? new ParallelOptions { MaxDegreeOfParallelism = 1 };
 
-            var model = await Gemma3Model.LoadTernaryAsync(ternaryPath, new Gemma3Config(), loadOptions).ConfigureAwait(false);
+            var model = await Gemma3Model.LoadQuantizedAsync(ternaryPath, new Gemma3Config(), loadOptions).ConfigureAwait(false);
             var tokenizer = LoadTokenizer(tokenizerJsonPath, GetMaxChunkLength());
             return new SentenceEncoder(model, tokenizer, encodeDefault);
         }

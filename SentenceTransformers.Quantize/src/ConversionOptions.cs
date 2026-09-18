@@ -1,4 +1,4 @@
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 
 namespace SentenceTransformers.Quantize;
 
@@ -8,15 +8,28 @@ public sealed class ConversionOptions
     public required string InputPath { get; init; }
     public required string OutputPath { get; init; }
 
-    /// <summary>Band for the transformer projections.</summary>
-    public TernaryBand Band { get; init; } = TernaryBand.TQ1_0;
+    /// <summary>
+    /// Band for the transformer projections. Defaults to 4-bit rather than ternary: on this model
+    /// ternary projections do not survive post-training quantization (see <c>QUANTIZATION.md</c> §4),
+    /// while 4-bit ones clear the shipped <c>Int4</c> path's quality at a third of its memory.
+    /// </summary>
+    public StqBand Band { get; init; } = StqBand.Q4_0;
 
-    /// <summary>Band for the token embedding table. Defaults to <see cref="Band"/>. The embedding is
-    /// 63% of Harrier Small's parameters, so it is the first thing worth an ablation if quality
-    /// slips; a float band here leaves it unquantized.</summary>
-    public TernaryBand? EmbeddingBand { get; init; }
+    /// <summary>
+    /// Band for the token embedding table, which is 63% of Harrier Small's parameters. Defaults to
+    /// 4-bit, which quantizes the table for the first time (the load-time <c>Int8</c>/<c>Int4</c>
+    /// modes leave it in bfloat16) while keeping quality above the shipped <c>Int4</c> path. Set it
+    /// to <c>TQ1_0</c> for the smallest file - the table is the one tensor in the model that
+    /// ternarizes usefully - or to a float band to leave it alone for an ablation.
+    /// </summary>
+    public StqBand EmbeddingBand { get; init; } = StqBand.Q4_0;
 
-    public int GroupSize { get; init; } = TernaryFormat.DefaultGroupSize;
+    /// <summary>Group size for the ternary bands.</summary>
+    public int GroupSize { get; init; } = StqFormat.DefaultGroupSize;
+
+    /// <summary>Group size for the 4-bit band. Finer than the ternary default because 4-bit spends
+    /// its scale budget better: 32 costs 4.5 bits/weight against 128's 4.125.</summary>
+    public int Int4GroupSize { get; init; } = StqFormat.DefaultGroupSizeFor(StqBand.Q4_0);
 
     public TernaryMethod Method { get; init; } = TernaryMethod.Optimal;
 
@@ -40,6 +53,25 @@ public sealed class ConversionOptions
 
     public int MaxDegreeOfParallelism { get; init; } = Environment.ProcessorCount;
 
-    public TernaryBand BandFor(string tensorName)
-        => tensorName.EndsWith("embed_tokens.weight", StringComparison.Ordinal) ? (EmbeddingBand ?? Band) : Band;
+    /// <summary>
+    /// Group size for the token embedding table, independent of the projections. Defaults to 128 for
+    /// either band: the table is where a group size costs real megabytes (a 4-bit table is 86.6 MB at
+    /// 128 against 94.4 MB at 32) and it is also where quality is least sensitive to it - measured,
+    /// the two differ by 0.00006 in end-to-end cosine.
+    /// </summary>
+    public int? EmbeddingGroupSize { get; init; } = StqFormat.DefaultGroupSize;
+
+    /// <summary>How one tensor is stored.</summary>
+    public readonly record struct TensorPolicy(StqBand Band, int GroupSize);
+
+    /// <summary>Resolves the band and group size for a tensor. The embedding table is the only
+    /// tensor treated specially, because it is 63% of the parameters and the only one whose band
+    /// meaningfully moves the file size on its own.</summary>
+    public TensorPolicy PolicyFor(string tensorName)
+    {
+        bool isEmbedding = tensorName.EndsWith("embed_tokens.weight", StringComparison.Ordinal);
+        var band = isEmbedding ? EmbeddingBand : Band;
+        int defaultGroup = band == StqBand.Q4_0 ? Int4GroupSize : GroupSize;
+        return new TensorPolicy(band, isEmbedding ? EmbeddingGroupSize ?? defaultGroup : defaultGroup);
+    }
 }

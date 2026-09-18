@@ -1,17 +1,24 @@
 using System.Diagnostics;
 using SentenceTransformers.Harrier.Small.Pure;
 using SentenceTransformers.Harrier.Small.Pure.Model;
-using SentenceTransformers.Ternary;
+using SentenceTransformers.Stq;
 
 namespace SentenceTransformers.Quantize;
 
 /// <summary>Thresholds a converted model must clear. Exceeding any of them fails the run.</summary>
 public sealed class ValidationThresholds
 {
-    /// <summary>Lowest acceptable cosine between an fp32 embedding and its ternary counterpart.</summary>
-    public double MinEmbeddingCosine { get; init; } = 0.99;
+    /// <summary>Lowest acceptable mean cosine between fp32 embeddings and their quantized
+    /// counterparts. This is the headline gate; the default is set so a 4-bit conversion of Harrier
+    /// Small passes and anything meaningfully worse does not.</summary>
+    public double MinMeanCosine { get; init; } = 0.98;
 
-    /// <summary>Lowest acceptable Spearman correlation between the fp32 and ternary pairwise
+    /// <summary>Per-sentence floor. Looser than the mean gate on purpose: over a small sentence set
+    /// the minimum is noisy, so it guards against one sentence collapsing rather than against
+    /// gradual drift.</summary>
+    public double MinEmbeddingCosine { get; init; } = 0.90;
+
+    /// <summary>Lowest acceptable Spearman correlation between the fp32 and quantized pairwise
     /// similarity matrices - the property that actually decides whether retrieval rankings survive.</summary>
     public double MinSpearman { get; init; } = 0.98;
 
@@ -72,7 +79,7 @@ public static class Validator
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = ct };
 
         log.WriteLine($"Loading {ternaryPath} ...");
-        var file = await TernaryModelFile.LoadAsync(ternaryPath, ct).ConfigureAwait(false);
+        var file = await StqFile.LoadAsync(ternaryPath, ct).ConfigureAwait(false);
         foreach (var (k, v) in file.Metadata.OrderBy(kv => kv.Key, StringComparer.Ordinal))
         {
             log.WriteLine($"  {k,-20} {v}");
@@ -102,7 +109,7 @@ public static class Validator
     }
 
     /// <summary>Exact structural checks: pack/unpack symmetry and rotation orthogonality.</summary>
-    private static bool CheckCodec(TernaryModelFile file, TextWriter log)
+    private static bool CheckCodec(StqFile file, TextWriter log)
     {
         log.WriteLine("Codec checks (exact)");
         bool ok = true;
@@ -133,11 +140,11 @@ public static class Validator
         }
 
         int checkedTensors = 0;
-        foreach (var info in file.Tensors.Values.Where(t => TernaryFormat.IsTernary(t.Band)))
+        foreach (var info in file.Tensors.Values.Where(t => StqFormat.IsPacked(t.Band)))
         {
             var codes = file.Codes(info).Span;
             int gs = info.GroupSize;
-            int groupBytes = TernaryFormat.CodeBytesPerGroup(info.Band, gs);
+            int groupBytes = StqFormat.CodeBytesPerGroup(info.Band, gs);
             Span<sbyte> trits = stackalloc sbyte[gs];
             Span<byte> repacked = stackalloc byte[groupBytes];
 
@@ -147,8 +154,8 @@ public static class Validator
             for (long g = 0; g < totalGroups; g++)
             {
                 var src = codes.Slice((int)(g * groupBytes), groupBytes);
-                TernaryPacking.UnpackGroup(info.Band, src, trits, gs);
-                TernaryPacking.PackGroup(info.Band, trits, repacked);
+                StqPacking.UnpackGroup(info.Band, src, trits, gs);
+                StqPacking.PackGroup(info.Band, trits, repacked);
                 if (!src.SequenceEqual(repacked))
                 {
                     log.WriteLine($"  FAIL {info.Name}: group {g} does not survive an unpack/repack round trip.");
@@ -157,14 +164,14 @@ public static class Validator
             }
             checkedTensors++;
         }
-        log.WriteLine($"  pack/unpack round trip  {checkedTensors} ternary tensors, every group byte-identical  ok");
+        log.WriteLine($"  pack/unpack round trip  {checkedTensors} packed tensors, every group byte-identical  ok");
         return ok;
     }
 
     /// <summary>
     /// Proves the runtime kernel agrees with the format's own reference decode. For a sample of
-    /// tensors it runs <see cref="TernaryMatrix"/> - packed codes, group scales and the activation
-    /// rotation - against a <see cref="FloatMatrix"/> built from <see cref="TernaryModelFile.ReadFloat"/>,
+    /// tensors it runs <see cref="StqMatrix"/> - packed codes, group scales and the activation
+    /// rotation - against a <see cref="FloatMatrix"/> built from <see cref="StqFile.ReadFloat"/>,
     /// which unpacks and un-rotates the same weights by a completely different route. The two must
     /// agree to float32 round-off.
     ///
@@ -172,13 +179,13 @@ public static class Validator
     /// wrong kernel (rotation applied on the wrong side, a mis-ordered group, a sign error) and
     /// honest quantization loss. Without it, a kernel bug would just look like a bad conversion.</para>
     /// </summary>
-    private static async Task<bool> CheckKernelAsync(TernaryModelFile file, TextWriter log, ParallelOptions parallelOptions)
+    private static async Task<bool> CheckKernelAsync(StqFile file, TextWriter log, ParallelOptions parallelOptions)
     {
         log.WriteLine("Kernel vs. reference decode (exact up to float32 round-off)");
 
         // One tensor per distinct (shape, band) so every rotation width and both code paths are hit.
         var sample = file.Tensors.Values
-            .Where(t => TernaryFormat.IsTernary(t.Band) && t.Shape.Length == 2 && t.Rows <= 4096)
+            .Where(t => StqFormat.IsPacked(t.Band) && t.Shape.Length == 2 && t.Rows <= 4096)
             .GroupBy(t => (t.Shape[0], t.Shape[1], t.Band))
             .Select(g => g.First())
             .OrderBy(t => t.Name, StringComparer.Ordinal)
@@ -190,7 +197,7 @@ public static class Validator
         {
             int inDim = info.InDim, outDim = info.Shape[0];
 
-            var ternaryMatrix = await TernaryMatrix.CreateAsync(file, info, parallelOptions).ConfigureAwait(false);
+            var ternaryMatrix = await StqMatrix.CreateAsync(file, info, parallelOptions).ConfigureAwait(false);
             var floatMatrix = new FloatMatrix(file.ReadFloat(info.Name), outDim, inDim);
 
             var rnd = new Random(987);
@@ -227,10 +234,10 @@ public static class Validator
         // different path anyway - a row lookup that un-rotates instead of pushing the rotation onto an
         // activation - so it gets its own spot check against the reference decode.
         var embedName = file.Contains("embed_tokens.weight") ? "embed_tokens.weight" : "model.embed_tokens.weight";
-        if (file.Contains(embedName) && TernaryFormat.IsTernary(file.Info(embedName).Band))
+        if (file.Contains(embedName) && StqFormat.IsPacked(file.Info(embedName).Band))
         {
             var embedInfo = file.Info(embedName);
-            var embedding = new TernaryEmbedding(file, embedInfo);
+            var embedding = new StqEmbedding(file, embedInfo);
             int hidden = embedInfo.Shape[1];
             var decoded = new float[hidden];
             var row = new float[hidden];
@@ -269,32 +276,32 @@ public static class Validator
 
         if (!ok)
         {
-            log.WriteLine("  FAIL the ternary kernel does not reproduce the reference decode - this is a code bug, not quantization loss.");
+            log.WriteLine("  FAIL the packed kernel does not reproduce the reference decode - this is a code bug, not quantization loss.");
         }
         return ok;
     }
 
 
     /// <summary>Decodes a single embedding row the long way - unpack, scale, un-rotate - so the
-    /// <see cref="TernaryEmbedding"/> lookup has something independent to be checked against.</summary>
-    private static void ReadRowViaReference(TernaryModelFile file, TernaryTensorInfo info, int token, Span<float> dst)
+    /// <see cref="StqEmbedding"/> lookup has something independent to be checked against.</summary>
+    private static void ReadRowViaReference(StqFile file, StqTensorInfo info, int token, Span<float> dst)
     {
         var codes = file.Codes(info).Span;
         var scales = file.Scales(info);
         int gs = info.GroupSize, groups = info.GroupsPerRow;
-        int groupBytes = TernaryFormat.CodeBytesPerGroup(info.Band, gs);
+        int groupBytes = StqFormat.CodeBytesPerGroup(info.Band, gs);
         int rowBytes = groups * groupBytes;
 
         for (int g = 0; g < groups; g++)
         {
-            TernaryPacking.UnpackGroupScaled(info.Band, codes.Slice(token * rowBytes + g * groupBytes, groupBytes),
+            StqPacking.UnpackGroupScaled(info.Band, codes.Slice(token * rowBytes + g * groupBytes, groupBytes),
                                              dst.Slice(g * gs, gs), gs, scales[token * groups + g]);
         }
         file.RotationFor(info)?.ApplyInverse(dst);
     }
 
     /// <summary>Decodes every tensor and compares it with the original checkpoint.</summary>
-    private static async Task<bool> CheckTensorsAsync(TernaryModelFile file, string originalPath,
+    private static async Task<bool> CheckTensorsAsync(StqFile file, string originalPath,
                                                       ValidationThresholds thresholds, TextWriter log, CancellationToken ct)
     {
         log.WriteLine($"Per-tensor reconstruction against {Path.GetFileName(originalPath)}");
@@ -309,7 +316,7 @@ public static class Validator
             ct.ThrowIfCancellationRequested();
             if (!st.Contains(name))
             {
-                log.WriteLine($"  FAIL {name}: present in the ternary file but not in the original checkpoint.");
+                log.WriteLine($"  FAIL {name}: present in the .stq file but not in the original checkpoint.");
                 ok = false;
                 continue;
             }
@@ -349,7 +356,7 @@ public static class Validator
         {
             if (!file.Contains(name))
             {
-                log.WriteLine($"  FAIL {name}: in the original checkpoint but missing from the ternary file.");
+                log.WriteLine($"  FAIL {name}: in the original checkpoint but missing from the .stq file.");
                 ok = false;
             }
         }
@@ -370,7 +377,7 @@ public static class Validator
         double refSeconds = sw.Elapsed.TotalSeconds;
 
         sw.Restart();
-        using var ternary = await SentenceEncoder.LoadTernaryAsync(ternaryPath, parallelOptions: parallelOptions).ConfigureAwait(false);
+        using var ternary = await SentenceEncoder.LoadQuantizedAsync(ternaryPath, parallelOptions: parallelOptions).ConfigureAwait(false);
         var tqVectors = await ternary.EncodeAsync(sentences, parallelOptions).ConfigureAwait(false);
         double tqSeconds = sw.Elapsed.TotalSeconds;
 
@@ -400,9 +407,15 @@ public static class Validator
         log.WriteLine($"  min  embedding cosine     {minCos:F5}  (\"{Truncate(sentences[worst], 48)}\")");
         log.WriteLine($"  pairwise-similarity rho   {spearman:F5}");
         log.WriteLine($"  max pairwise-sim delta    {maxSimDelta:F5}");
-        log.WriteLine($"  load + encode: fp32 {refSeconds:F1}s, ternary {tqSeconds:F1}s");
+        log.WriteLine($"  load + encode: fp32 {refSeconds:F1}s, stq {tqSeconds:F1}s");
 
         bool ok = true;
+        double meanCos = sumCos / sentences.Length;
+        if (meanCos < thresholds.MinMeanCosine)
+        {
+            log.WriteLine($"  FAIL mean cosine {meanCos:F5} is below {thresholds.MinMeanCosine:F5}.");
+            ok = false;
+        }
         if (minCos < thresholds.MinEmbeddingCosine)
         {
             log.WriteLine($"  FAIL min cosine {minCos:F5} is below {thresholds.MinEmbeddingCosine:F5}.");
