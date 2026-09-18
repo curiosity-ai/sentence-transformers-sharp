@@ -190,7 +190,9 @@ internal sealed class StqMatrix : IWeightMatrix
                                                    int groups, int groupBytes, int rowBytes,
                                                    int tiles, int tileGroupBytes, ParallelOptions parallelOptions)
     {
-        var blocked = new byte[(long)tiles * groups * tileGroupBytes];
+        // Pinned: the kernel takes a raw pointer into this to prefetch the next group, and it is a
+        // long-lived, large, never-resized array - exactly what the pinned object heap is for.
+        var blocked = GC.AllocateArray<byte>(checked((int)((long)tiles * groups * tileGroupBytes)), pinned: true);
         int tileCodeCount = TileOut * groupSize;
         int quads = groupSize / 4;
 
@@ -468,12 +470,24 @@ internal sealed class StqMatrix : IWeightMatrix
             StqPacking.UnpackGroup(_band, _codes.AsSpan((int)(codeBase + (long)g * _tileGroupBytes), _tileGroupBytes), w, tileCodes);
             ForwardProfile.StageStop(ForwardProfile.Stage.UnpackWeights, unpackTs);
 
+            // The dot below is long and touches no new memory - the weights it reads are the 4 KB
+            // just unpacked. That is the window in which to fetch the next group's codes. Measured in
+            // isolation the unpack runs at 20.5 GB/s streaming from L3 against 35.1 GB/s when its
+            // source is already hot, and this recovers part of the difference (584 -> 428 ms/iter).
+            // One group ahead, not two: two prefetches every line twice and measured slower overall.
+            Prefetch(codeBase + (long)(g + 1) * _tileGroupBytes, _tileGroupBytes);
+
             long dotTs = ForwardProfile.StageStart();
             nuint scaleBase = (nuint)((long)g * _scaleStride + o0);
+
             int s = 0;
             for (; s + TilePos <= seq; s += TilePos)
             {
                 Dot4(ref uaRef, ref wRef, ref accRef, ref scaleRef, scaleBase, g, s, gs, inDim);
+            }
+            for (; s + 2 <= seq; s += 2)
+            {
+                Dot2(ref uaRef, ref wRef, ref accRef, ref scaleRef, scaleBase, g, s, gs, inDim);
             }
             for (; s < seq; s++)
             {
@@ -545,6 +559,51 @@ internal sealed class StqMatrix : IWeightMatrix
         Accumulate(ref accRef, p3 + (nuint)(2 * Blk), s2, c32); Accumulate(ref accRef, p3 + (nuint)(3 * Blk), s3, c33);
     }
 
+    /// <summary>Two positions, for the part of a sequence that does not fill a four-position tile.
+    /// Without it those positions fall to <see cref="Dot1"/>, which reloads the same four weight
+    /// vectors for a quarter of the work.</summary>
+    private void Dot2(ref byte uaRef, ref sbyte wRef, ref float accRef, ref float scaleRef,
+                      nuint scaleBase, int g, int s, int gs, int inDim)
+    {
+        int quads = gs >> 2;
+        int k0 = g * gs;
+        int u0 = s * inDim + k0, u1 = u0 + inDim;
+
+        var c00 = Vector256<int>.Zero; var c01 = Vector256<int>.Zero; var c02 = Vector256<int>.Zero; var c03 = Vector256<int>.Zero;
+        var c10 = Vector256<int>.Zero; var c11 = Vector256<int>.Zero; var c12 = Vector256<int>.Zero; var c13 = Vector256<int>.Zero;
+
+        for (int q = 0; q < quads; q++)
+        {
+            nuint wo = (nuint)(q * (TileOut * 4));
+            var w0 = Vector256.LoadUnsafe(ref wRef, wo);
+            var w1 = Vector256.LoadUnsafe(ref wRef, wo + 32);
+            var w2 = Vector256.LoadUnsafe(ref wRef, wo + 64);
+            var w3 = Vector256.LoadUnsafe(ref wRef, wo + 96);
+
+            int k = q * 4;
+            var a0 = Bcast(ref uaRef, (nuint)(u0 + k));
+            var a1 = Bcast(ref uaRef, (nuint)(u1 + k));
+
+            c00 = Vnni.DotAccumulate(c00, a0, w0); c01 = Vnni.DotAccumulate(c01, a0, w1);
+            c02 = Vnni.DotAccumulate(c02, a0, w2); c03 = Vnni.DotAccumulate(c03, a0, w3);
+
+            c10 = Vnni.DotAccumulate(c10, a1, w0); c11 = Vnni.DotAccumulate(c11, a1, w1);
+            c12 = Vnni.DotAccumulate(c12, a1, w2); c13 = Vnni.DotAccumulate(c13, a1, w3);
+        }
+
+        var s0 = Vector256.LoadUnsafe(ref scaleRef, scaleBase);
+        var s1 = Vector256.LoadUnsafe(ref scaleRef, scaleBase + Blk);
+        var s2 = Vector256.LoadUnsafe(ref scaleRef, scaleBase + (nuint)(2 * Blk));
+        var s3 = Vector256.LoadUnsafe(ref scaleRef, scaleBase + (nuint)(3 * Blk));
+
+        nuint p0 = (nuint)(s * TileOut), p1 = p0 + TileOut;
+        Accumulate(ref accRef, p0, s0, c00); Accumulate(ref accRef, p0 + Blk, s1, c01);
+        Accumulate(ref accRef, p0 + (nuint)(2 * Blk), s2, c02); Accumulate(ref accRef, p0 + (nuint)(3 * Blk), s3, c03);
+
+        Accumulate(ref accRef, p1, s0, c10); Accumulate(ref accRef, p1 + Blk, s1, c11);
+        Accumulate(ref accRef, p1 + (nuint)(2 * Blk), s2, c12); Accumulate(ref accRef, p1 + (nuint)(3 * Blk), s3, c13);
+    }
+
     /// <summary>The tail: one position, four accumulators.</summary>
     private void Dot1(ref byte uaRef, ref sbyte wRef, ref float accRef, ref float scaleRef,
                       nuint scaleBase, int g, int s, int gs, int inDim)
@@ -566,21 +625,19 @@ internal sealed class StqMatrix : IWeightMatrix
         }
 
         nuint o = (nuint)(s * TileOut);
-        Accumulate(ref accRef, o,                    Vector256.LoadUnsafe(ref scaleRef, scaleBase),                    c0);
-        Accumulate(ref accRef, o + Blk,              Vector256.LoadUnsafe(ref scaleRef, scaleBase + Blk),              c1);
+        Accumulate(ref accRef, o,                    Vector256.LoadUnsafe(ref scaleRef, scaleBase), c0);
+        Accumulate(ref accRef, o + Blk,              Vector256.LoadUnsafe(ref scaleRef, scaleBase + Blk), c1);
         Accumulate(ref accRef, o + (nuint)(2 * Blk), Vector256.LoadUnsafe(ref scaleRef, scaleBase + (nuint)(2 * Blk)), c2);
         Accumulate(ref accRef, o + (nuint)(3 * Blk), Vector256.LoadUnsafe(ref scaleRef, scaleBase + (nuint)(3 * Blk)), c3);
     }
 
-    /// <summary>Broadcasts the four activations at <paramref name="offset"/> into all eight lanes,
-    /// which is the operand shape the blocked weight layout needs.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector256<byte> Bcast(ref byte p, nuint offset)
-        => Vector256.Create(Unsafe.ReadUnaligned<uint>(ref Unsafe.Add(ref p, offset))).AsByte();
-
     /// <summary>A group's contribution for eight channels of one position: convert and multiply-add.
     /// This is the whole per-group tail - what a row-major layout would need a horizontal reduction
-    /// for, done here by the lanes already being the right channels.</summary>
+    /// for, done here by the lanes already being the right channels.
+    ///
+    /// <para>Folding the final bias-and-scale pass in here, so the last group writes <c>y</c>
+    /// directly, was tried and reverted: carrying the extra state into the dot cost it more than the
+    /// pass it removed (2125 against 1996 ms/iter, measured in one profile).</para></summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void Accumulate(ref float accRef, nuint offset, Vector256<float> scale, Vector256<int> dot)
     {
@@ -588,6 +645,36 @@ internal sealed class StqMatrix : IWeightMatrix
         var d = Vector256.ConvertToSingle(dot);
         (Fma.IsSupported ? Fma.MultiplyAdd(scale, d, f) : f + scale * d).StoreUnsafe(ref accRef, offset);
     }
+
+    /// <summary>Asks for a run of the code array to be pulled into L1. A prefetch of an address past
+    /// the end of the array would be harmless (prefetches never fault) but the range is clamped anyway
+    /// so the loop count stays honest, and <c>_codes</c> is pinned so the pointer cannot go stale.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private unsafe void Prefetch(long offset, int bytes)
+    {
+        if (!Sse.IsSupported)
+        {
+            return;
+        }
+
+        long end = Math.Min(offset + bytes, _codes.LongLength);
+        if (offset >= end)
+        {
+            return;
+        }
+
+        ref byte start = ref MemoryMarshal.GetArrayDataReference(_codes);
+        for (long o = offset; o < end; o += 64)
+        {
+            Sse.Prefetch0(Unsafe.AsPointer(ref Unsafe.Add(ref start, (nint)o)));
+        }
+    }
+
+    /// <summary>Broadcasts the four activations at <paramref name="offset"/> into all eight lanes,
+    /// which is the operand shape the blocked weight layout needs.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<byte> Bcast(ref byte p, nuint offset)
+        => Vector256.Create(Unsafe.ReadUnaligned<uint>(ref Unsafe.Add(ref p, offset))).AsByte();
 
     /// <summary>Applies the per-channel zero-point bias and the per-position activation scale, and
     /// writes the tile out. Channels past <paramref name="outDim"/> are the tile padding and are

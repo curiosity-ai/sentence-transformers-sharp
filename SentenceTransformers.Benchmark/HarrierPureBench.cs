@@ -246,9 +246,14 @@ public static class HarrierPureBench
         if (profile)
         {
             ForwardProfile.ResetStages();
+            ForwardProfile.Reset();
             ForwardProfile.Enabled = true;
             await encoder.EncodeAsync(corpus, Options());
             ForwardProfile.Enabled = false;
+            // Both reports, because they answer different questions: the named stages cover the whole
+            // forward pass and so are comparable between modes, while the Stage enum only the packed
+            // kernel emits and breaks its matmul down internally.
+            ForwardProfile.Report(label);
             ForwardProfile.ReportStages(label);
             Console.WriteLine();
         }

@@ -204,10 +204,12 @@ How close it gets to ONNX depends on the CPU's int8 instruction set. ONNX Runtim
 assembly with **4-bit weights** and **int8-VNNI** (`vpdpbusd`/`vpdpbsud`). The pure build emits int8-VNNI
 too when the runtime exposes it: `AvxVnni` (256-bit, Alder Lake and newer client CPUs) or
 `AvxVnniInt8.V512` (512-bit, AVX10.2 / Granite Rapids-class CPUs) — on those it is within ~1.5–2× of ONNX
-and can approach parity with the 512-bit path. The one gap is "classic" AVX-512 servers that report the
-`avx512_vnni` CPUID flag but not `AvxVnni`/`AvxVnniInt8`/AVX10: .NET 10 has no standalone `Avx512Vnni`
-intrinsic, so there the pure build must fall back to widen + `vpmaddwd` (~6× the instructions) and lands
-~2.5× off ONNX. Either way the pure build's case is **zero native dependencies** (trim/AOT/WASM/mobile,
+and can approach parity with the 512-bit path. The gap is 512-bit `vpdpbusd` on "classic" AVX-512
+servers: .NET 10 reaches it only through `AvxVnniInt8.V512`, which is a *different* extension
+(AVX-VNNI-INT8). A CPU reporting the `avx512_vnni` CPUID flag does not get it — there is no standalone
+`Avx512Vnni` class, and `Avx10v1`/`Avx10v1.V512`, even where supported, expose no
+`MultiplyWideningAndAdd` (checked on such a host). So those CPUs use 256-bit `AvxVnni` if they have it,
+or widen + `vpmaddwd` (~6× the instructions, ~2.5× off ONNX) if they do not. Either way the pure build's case is **zero native dependencies** (trim/AOT/WASM/mobile,
 one managed package) and **higher fidelity**, at a CPU-inference cost within a small multiple of ONNX.
 
 ### Comparing two texts (cosine similarity)
@@ -336,16 +338,17 @@ Benchmark test split the default conversion matches fp32 while being far smaller
 | | size | STS Spearman | emb/s, 1 thread | emb/s, 4 threads |
 |---|---|---|---|---|
 | fp32 | 511 MB | 0.8177 | — | 12.0 |
-| `Int8`, load-time | ~540 MB resident | 0.8179 | 46.7 | 56.9 |
+| `Int8`, load-time | ~540 MB resident | 0.8179 | 46.3 | 60.3 |
 | `Int4`, load-time | ~519 MB resident | 0.8144 | — | 14.2 |
-| **`.stq` default** | **132 MB** | **0.8177** | **51.8** | **80.4** |
+| **`.stq` default** | **132 MB** | **0.8177** | **52.2** | **80.9** |
 | `.stq --embed-band tq1_0` | 89 MB | 0.8088 | — | — |
 
-`.stq` is **1.11× faster than `Int8` on one thread and 1.41× on four**, in 388 MB resident against
-1046 — despite having to unpack 4-bit codes and rotate its activations, which `Int8` does not. It
-wins because its weights are laid out so that a `vpdpbusd` accumulator's eight lanes are eight
-different output channels, which removes the horizontal reduction its per-group scales would
-otherwise force every 128 weights. `QUANTIZATION.md` has the full account.
+`.stq` is **1.34× faster than `Int8` at the default parallelism** (1.11× pinned to one thread), in
+388 MB resident against 1046 — despite having to unpack 4-bit codes and rotate its activations, which
+`Int8` does not. It wins because its weights are laid out so that a `vpdpbusd` accumulator's eight
+lanes are eight different output channels, which removes the horizontal reduction its per-group
+scales would otherwise force every 128 weights. `QUANTIZATION.md` has the full account, including why
+the single-thread lead is bounded near 1.18× and why the multi-thread one is larger.
 
 Read [QUANTIZATION.md §4](QUANTIZATION.md) before converting with ternary projections: the released
 Harrier Small weights compress 9.11× that way (511 MB → 56 MB) but do **not** survive it, because
