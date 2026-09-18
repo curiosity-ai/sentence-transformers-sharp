@@ -29,6 +29,8 @@
     <InternalsVisibleTo Include="SentenceTransformers.Tests" />
     <!-- The converter reuses this package's safetensors reader and inspects the loaded model. -->
     <InternalsVisibleTo Include="SentenceTransformers.Quantize" />
+    <!-- The benchmark prints which SIMD kernels this host dispatches to. -->
+    <InternalsVisibleTo Include="SentenceTransformers.Benchmark" />
   </ItemGroup>
 
   <ItemGroup>

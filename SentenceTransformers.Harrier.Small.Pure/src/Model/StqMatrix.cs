@@ -119,7 +119,6 @@ internal sealed class StqMatrix : IWeightMatrix
         {
             if (_rotation is not null)
             {
-                long rotTs = ForwardProfile.Start();
                 // Rotate into scratch rather than in place: `x` is the caller's activation buffer and is
                 // reused by sibling projections (q, k and v all read the same normed hidden state).
                 rotated = ArrayPool<float>.Shared.Rent(seq * InDim);
@@ -127,15 +126,40 @@ internal sealed class StqMatrix : IWeightMatrix
                 var dst = rotated;
                 int inDim = InDim;
                 var rot = _rotation;
-                await ParallelExecution.ForAsync(0, seq, parallelOptions, (s, _) =>
+
+                // A fork/join per rotation is not worth it at sentence-sized sequences. The transform is
+                // O(seq * inDim * log block) - a few percent of the matmul it precedes - but a parallel
+                // loop here runs once per projection, so seven per layer, and each one allocates its
+                // scheduling state. Measured, that was ~14 MB of garbage per encode pass for work that
+                // finishes in microseconds. Fan out only when the sequence is long enough to pay for it.
+                if ((long)seq * inDim >= RotationParallelThreshold && parallelOptions.MaxDegreeOfParallelism > 1)
                 {
-                    var row = dst.AsSpan(s * inDim, inDim);
-                    src.AsSpan(s * inDim, inDim).CopyTo(row);
-                    rot.Apply(row);
-                    return ValueTask.CompletedTask;
-                }).ConfigureAwait(false);
+                    // Timed inside the body, not around the await: wrapping a parallel loop on the
+                    // calling thread measures its wall time, which is a quarter of its CPU cost on
+                    // four threads and is not comparable with the stages that are timed inline. That
+                    // mistake made the rotation look like 6% of the profile when it is nearer 25%.
+                    await ParallelExecution.ForAsync(0, seq, parallelOptions, (sIdx, _) =>
+                    {
+                        long ts = ForwardProfile.StageStart();
+                        var row = dst.AsSpan(sIdx * inDim, inDim);
+                        src.AsSpan(sIdx * inDim, inDim).CopyTo(row);
+                        rot.Apply(row);
+                        ForwardProfile.StageStop(ForwardProfile.Stage.Rotate, ts);
+                        return ValueTask.CompletedTask;
+                    }).ConfigureAwait(false);
+                }
+                else
+                {
+                    long ts = ForwardProfile.StageStart();
+                    for (int sIdx = 0; sIdx < seq; sIdx++)
+                    {
+                        var row = dst.AsSpan(sIdx * inDim, inDim);
+                        src.AsSpan(sIdx * inDim, inDim).CopyTo(row);
+                        rot.Apply(row);
+                    }
+                    ForwardProfile.StageStop(ForwardProfile.Stage.Rotate, ts);
+                }
                 x = rotated;
-                ForwardProfile.Stop("stq_rotate", rotTs);
             }
 
             if (Vnni.IsSupported)
@@ -159,7 +183,12 @@ internal sealed class StqMatrix : IWeightMatrix
     private async ValueTask MultiplyVnniAsync(float[] x, float[] y, int seq, ParallelOptions parallelOptions)
     {
         int inDim = InDim, outDim = OutDim;
+        // Timed around the await because the quantizer is shared with the Int8 path and is not ours
+        // to instrument internally. It therefore reads as wall time of a parallel loop rather than CPU
+        // time, so this stage is under-reported relative to the other three - read it as a floor.
+        long quantTs = ForwardProfile.StageStart();
         var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, inDim, parallelOptions).ConfigureAwait(false);
+        ForwardProfile.StageStop(ForwardProfile.Stage.QuantizeActivations, quantTs);
         try
         {
             int tiles = (outDim + TileOut - 1) / TileOut;
@@ -190,6 +219,19 @@ internal sealed class StqMatrix : IWeightMatrix
     private const int TileOut = 4;
 
     /// <summary>
+    /// Activation elements (seq * inDim) below which the rotation runs on the calling thread instead
+    /// of through a parallel loop. Zero - always fan out - because that is what measured fastest.
+    ///
+    /// <para>Serializing it looks attractive: the rotation is a few percent of the profile and each
+    /// parallel loop allocates scheduling state (~9 MB per encode pass here). Measured A/B inside one
+    /// process it is a 1.53x <i>loss</i> - 8191 ms/iter inline against 5356 parallel - because the
+    /// forward pass runs one sequence at a time, so an inline rotation is a serial section in an
+    /// otherwise parallel pipeline and Amdahl does the rest. Left settable so the trade can be
+    /// re-measured rather than re-argued.</para>
+    /// </summary>
+    internal static long RotationParallelThreshold;
+
+    /// <summary>
     /// The hot kernel: four output channels and two positions at a time, giving eight independent
     /// int32 accumulator chains.
     ///
@@ -207,11 +249,14 @@ internal sealed class StqMatrix : IWeightMatrix
     private void Tile(byte[] ua, float[] aScale, float[] y, int o0, int seq, int inDim, int outDim)
     {
         Span<sbyte> w = stackalloc sbyte[TileOut * inDim];
+        long unpackTs = ForwardProfile.StageStart();
         for (int k = 0; k < TileOut; k++)
         {
             UnpackRow(o0 + k, w.Slice(k * inDim, inDim));
         }
+        ForwardProfile.StageStop(ForwardProfile.Stage.UnpackWeights, unpackTs);
 
+        long dotTs = ForwardProfile.StageStart();
         int groups = _groups, gs = _groupSize;
         int width = Vector256<byte>.Count;
         ref byte uaRef = ref MemoryMarshal.GetArrayDataReference(ua);
@@ -291,6 +336,7 @@ internal sealed class StqMatrix : IWeightMatrix
                 y[yb1] = as1 * f10; y[yb1 + 1] = as1 * f11; y[yb1 + 2] = as1 * f12; y[yb1 + 3] = as1 * f13;
             }
         }
+        ForwardProfile.StageStop(ForwardProfile.Stage.Dot, dotTs);
     }
 
     /// <summary>Unpacks one output row's packed codes into signed bytes.</summary>
