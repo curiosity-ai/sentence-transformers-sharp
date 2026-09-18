@@ -65,7 +65,7 @@ can stream a row's scales contiguously.
 
 ```json
 {
-  "__metadata__":  { "format": "stq", "format_version": "1", "architecture": "gemma3-text", ... },
+  "__metadata__":  { "format": "stq", "format_version": "2", "architecture": "gemma3-text", ... },
   "__rotations__": { "h640": { "dim": 640, "block": 128, "signs": [0, 80] } },
 
   "embed_tokens.weight": {
@@ -80,6 +80,13 @@ Bands: `tq1_0` and `tq2_0` are the ternary ones (matching `PTQ1_0` / `PQ2_0`); `
 4-bit with codes in `[-8, +7]`, at 4.5 bits/weight for a group of 32 or 4.125 for 128; `f32`, `f16`
 and `bf16` store a tensor verbatim, so norm vectors live in the same file. The band is per tensor, so
 one file can mix them — which is what the measurements below end up wanting.
+
+`q4_0`'s two nibbles per byte are **half a group apart**, not adjacent: byte `j` holds code `j` low
+and code `j + groupSize/2` high, as llama.cpp's `q4_0` does. Adjacent nibbles make a vector of bytes
+decode into interleaved codes, which costs a duplicate-shuffle and a lane-wise merge per vector; half
+a group apart it falls out as two contiguous vectors, so unpacking is a mask and a shift. That is
+what `format_version` 2 means — a v1 file's ternary tensors still load, its 4-bit ones are rejected
+with a message saying to re-run the converter.
 
 `q4_0` is not a Bonsai band. It is here because ternary turned out to be viable for this model's
 embedding table and not for its projections (§4), and everything else about the container — group
@@ -302,43 +309,93 @@ at 32 and at 128), so the default takes the coarser, smaller one.
 
 Encode throughput matters as much as size, and the packed path started out badly: it was the
 *slowest* way to run the model per embedding, which made the winning quantization the one nobody
-would want to serve. Measured over 192 distinct sentences per iteration on 4 cores, after three full
-warm-up passes (`harrier-pure-bench`):
+would want to serve. Everything below is measured over 192 distinct sentences per iteration on a
+4-core host, after three full warm-up passes, with every mode timed in the same process so a VM or
+frequency change cannot land between the baseline and the candidate (`harrier-pure-bench`).
 
-| mode | ms/iter | emb/s | resident |
+Two thread counts matter, and they say different things, so both are reported. Single thread is how
+the library is meant to be consumed here — callers parallelize across documents, not inside one.
+
+| mode | 1 thread ms/iter | 4 threads ms/iter | resident |
 |---|---|---|---|
-| fp32 | 15938 | 12.0 | 1332 MB |
-| `Int8`, load-time | 3371 | 57.0 | 540 MB |
-| `Int4`, load-time | 13545 | 14.2 | 519 MB |
-| `.stq` q4, group 32 — *before* | 14180 | 13.5 | 415 MB |
-| **`.stq` q4, group 128 — after** | **5158** | **37.2** | **396 MB** |
+| fp32 | 15938 | — | 1332 MB |
+| `Int8`, load-time | **4042** | **2955** | 1046 / 540 MB |
+| `Int4`, load-time | 13545 | — | 519 MB |
+| `.stq` q4 g128 — first working version | 11538 | 5068 | 388 MB |
+| **`.stq` q4 g128 — now** | **4981** | **3117** | **388 MB** |
 
-**2.75× faster**, and the file is smaller too (132.1 MB against 136.5). Three things were tried, and
-the order they are listed in is the order of intuition, not of payoff:
+**2.32× faster single-threaded.** Absolute times drift with what else the box is doing, so read the
+ratio, which is taken in-process: the gap to `Int8` is down from 2.13× to **1.23×** on one thread
+(1.22–1.25× over four runs) and **1.06×** on four (1.04–1.09×). It is not zero, and the subsection
+after this one explains why it cannot be.
 
-| change | gain |
+The order things were tried in is the order of intuition; the order of payoff was different.
+
+| change | what it was worth |
 |---|---|
 | vectorizing the 4-bit nibble unpack | ~1% |
-| widening the scale groups, 32 → 128 | ~7% |
-| **tiling the kernel** | **1.63×** |
+| widening the scale groups, 32 → 128 | ~7% (67% once the chains below were covered) |
+| **tiling the kernel, 4 channels × 4 positions** | **1.63×, then a further 1.20×** |
+| 4-way `vphaddd` group reduction + group-major scales | 1.25× |
+| **vectorizing activation quantization** | **1531 → 84 ms/iter** |
+| sharing one activation quantization across q/k/v and gate/up | (part of the above) |
+| vectorizing the Walsh–Hadamard stages narrower than a vector | 775 → 247 ms/iter |
+| row-level 4-bit unpack + the split-nibble layout | 1124 → 687 ms/iter |
+| folding the zero-point correction into a per-channel bias, and the group scale-accumulate into one FMA | ~3% |
+| `SkipLocalsInit` on the tile kernels | a memset of the weight matrix per matmul |
 
-The kernel computed one output channel at a time, so `acc = DotAccumulate(acc, ...)` formed a single
-serial dependency chain and stalled on its own ~5-cycle latency no matter how cheap the unpack was.
-`Int8Matrix` had always avoided this with a register tile; the packed kernel now does the same, four
-output channels by two positions, giving eight independent chains.
+Three of those deserve a note, because the mistake each corrects is easy to repeat.
 
-The fixes compose, and the group size matters far more once the chains are covered: after tiling,
-32 → 128 is worth 67% rather than 7%, because the per-group reduce-and-rescale is what is left. That
-is why 4-bit now defaults to group 128 — it is smaller, faster, and costs nothing measurable
-(0.8181 STS Spearman at 128 against 0.8184 at 32, either side of fp32's 0.8177).
+**The kernel computed one output channel at a time**, so `acc = DotAccumulate(acc, ...)` formed a
+single serial dependency chain and stalled on its own ~5-cycle latency no matter how cheap the unpack
+was. That is why vectorizing the unpack first was worth 1%. Four channels by four positions gives
+sixteen independent chains, and on an AVX-512 host the JIT has 32 vector registers to hold them.
 
-What is left is a 1.53× gap to `Int8`, down from 3.9×. `Int8Matrix` uses 512-bit tiles on an AVX-512
-host while the packed kernel is still 256-bit only, so that is the next thing to close.
+**Activation quantization was scalar**, and at 22% of a packed forward pass it was larger than the
+nibble unpacking the whole exercise was about. It is shared with the `Int8` path, so fixing it moved
+that baseline too — from 5497 to 4098 ms/iter. A comparison is only worth making once both sides have
+had the obvious work done to them.
+
+**The Walsh–Hadamard stages with `len < 8`** pair elements inside one aligned group of eight, so the
+general loop was building a pair of spans to add and subtract a single float — 64 times per
+128-element block. Those three stages were three quarters of the rotation's cost and all of them fit
+in one register.
 
 Two notes on measuring this. `EncodeAsync` memoizes the last 16 vectors by input hash, so a benchmark
-that re-encodes one small batch in a loop times a dictionary lookup rather than inference - the
+that re-encodes one small batch in a loop times a dictionary lookup rather than inference — the
 corpus here is deliberately far larger than that cache. And run-to-run spread on a shared 4-core box
-is around 10%, so only differences well beyond that are worth reading.
+is around 10%, so only differences well beyond that are worth reading; that is why each run prints
+the host's SIMD capabilities and times both modes back to back.
+
+### Why the packed path will not overtake `Int8` on one thread
+
+It is worth stating plainly, because it is a property of the arithmetic rather than of the kernel, and
+chasing it further is wasted effort.
+
+Both kernels feed the same instruction. `vpdpbusd` multiplies unsigned bytes by signed bytes, 32 MACs
+per 256-bit operation, and .NET 10 exposes no AVX-512 VNNI as a standalone ISA, so neither path can
+issue wider or fewer of them (`Vnni.Use512` is `False` on this host by design: the 512-bit fallback is
+widen-and-`vpmaddwd`, which is slower than 256-bit `vpdpbusd`). Four-bit weights cannot be fed to it
+packed either: a byte holding two codes contributes `lo + 16·hi` to one scalar sum, and no shuffle
+recovers the two products from that. So the packed path must do **all** of `Int8`'s multiply-accumulate
+work, and then two things `Int8` never does:
+
+| extra work, 1 thread | ms/iter | why it is not removable |
+|---|---|---|
+| unpack 4-bit codes to int8 | 687 | the operand the dot needs is a byte; 100M weights per sequence |
+| rotate the activations | 247 | `Wx = (WR^T)(Rx)` — the rotation is what makes 4-bit accurate (§4) |
+| | **934** | against an `Int8` baseline of 4098 — a 23% floor |
+
+The measured gap is 1039 ms, so those two account for 90% of it and the remaining ~105 ms is the
+per-group reduce-and-rescale that per-group scales force every 128 weights. The floor moves only if
+the format gives something up: storing unrotated removes the 247 ms and costs 0.98 → 0.96 mean cosine,
+and one scale per row would remove most of the reduction and cost more.
+
+Where the packed path *does* win is memory, and the advantage narrows the gap as thread count rises and
+weight traffic starts to matter more than the ALU: 2.13× slower than `Int8` on one thread at the start
+of this work, 1.23× now, and 1.06× on four — in 388 MB against 1046, from a file 3.87× smaller. That
+trend is the thing to re-measure on a host with more cores than four. It is the only direction in which
+the packed path can come out ahead, and on these four cores it never did.
 
 ### Keeping it honest in CI
 
@@ -388,3 +445,7 @@ the run rather than blessing a conversion like the all-ternary one above.
   `Int4` mode that ships today scores slightly lower at roughly three times the memory.
 - Judge builds with `eval` on a real task, not with cosine against fp32 - cosine consistently
   overstates how much a conversion costs.
+- On speed the packed path went from 2.13x slower than `Int8` to 1.23x single-threaded (1.06x on four
+  threads) at 388 MB against 1046. The rest of that gap is unpacking and the activation rotation, and
+  neither is removable without giving up the format - see "Why the packed path will not overtake
+  `Int8` on one thread".

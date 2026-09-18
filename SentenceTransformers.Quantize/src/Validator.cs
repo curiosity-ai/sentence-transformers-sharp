@@ -68,7 +68,7 @@ public static class Validator
         "public static void Main(string[] args) { Console.WriteLine(\"hi\"); }",
         "L'intelligence artificielle transforme de nombreux secteurs.",
         "人工智能正在改变许多行业。",
-        "Артификальный интеллект меняет многие отрасли.",
+        "Искусственный интеллект меняет многие отрасли.",
         "It was the best of times, it was the worst of times.",
     };
 

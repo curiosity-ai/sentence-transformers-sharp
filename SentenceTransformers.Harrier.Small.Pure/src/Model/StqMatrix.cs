@@ -395,10 +395,10 @@ internal sealed class StqMatrix : IWeightMatrix
 
             var sc = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_scales), (nuint)(g * outDim + o0));
 
-            f0 += sc * Vector128.ConvertToSingle(Sum4(a00, a01, a02, a03));
-            f1 += sc * Vector128.ConvertToSingle(Sum4(a10, a11, a12, a13));
-            f2 += sc * Vector128.ConvertToSingle(Sum4(a20, a21, a22, a23));
-            f3 += sc * Vector128.ConvertToSingle(Sum4(a30, a31, a32, a33));
+            f0 = Scale(sc, Sum4(a00, a01, a02, a03), f0);
+            f1 = Scale(sc, Sum4(a10, a11, a12, a13), f1);
+            f2 = Scale(sc, Sum4(a20, a21, a22, a23), f2);
+            f3 = Scale(sc, Sum4(a30, a31, a32, a33), f3);
         }
 
         var bias = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_zeroBias), (nuint)o0);
@@ -434,7 +434,7 @@ internal sealed class StqMatrix : IWeightMatrix
             }
 
             var sc = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_scales), (nuint)(g * outDim + o0));
-            f0 += sc * Vector128.ConvertToSingle(Sum4(a00, a01, a02, a03));
+            f0 = Scale(sc, Sum4(a00, a01, a02, a03), f0);
         }
 
         var bias = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_zeroBias), (nuint)o0);
@@ -466,6 +466,16 @@ internal sealed class StqMatrix : IWeightMatrix
     /// channel. This matters here in a way it does not for the Int8 kernel: per-group scales force a
     /// reduction every 128 weights rather than one at the end of the row.</para>
     /// </summary>
+    /// <summary>Converts a group's four dot products to float and accumulates them scaled, as one FMA
+    /// where the host has it. The per-group scales make this the tail of every 128 weights rather than
+    /// of every row, so its instruction count is worth caring about.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector128<float> Scale(Vector128<float> scale, Vector128<int> dot, Vector128<float> acc)
+    {
+        var f = Vector128.ConvertToSingle(dot);
+        return Fma.IsSupported ? Fma.MultiplyAdd(scale, f, acc) : acc + scale * f;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector128<int> Sum4(Vector256<int> a, Vector256<int> b, Vector256<int> c, Vector256<int> d)
     {
