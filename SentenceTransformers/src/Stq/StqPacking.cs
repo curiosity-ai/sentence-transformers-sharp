@@ -15,7 +15,12 @@ namespace SentenceTransformers.Stq;
 /// <c>trit + 1</c> in <c>{0, 1, 2}</c> (the fourth code point is unused), least-significant pair
 /// first. 32 bytes per 128-weight group.</item>
 /// <item><see cref="StqBand.Q4_0"/>: two codes per byte, four bits each, stored as
-/// <c>code + 8</c> in <c>[0, 15]</c>, low nibble first. <c>groupSize/2</c> bytes per group.</item>
+/// <c>code + 8</c> in <c>[0, 15]</c>. <c>groupSize/2</c> bytes per group. The two nibbles of a byte
+/// are <i>half a group apart</i>, not adjacent: byte <c>j</c> carries code <c>j</c> in its low
+/// nibble and code <c>j + half</c> in its high nibble (the layout llama.cpp's <c>q4_0</c> uses).
+/// Adjacent-nibble packing forces the unpacker to interleave two shuffled halves back together;
+/// this layout makes a vector of bytes fall out as two contiguous vectors of codes, so unpacking a
+/// group is a mask and a shift with no shuffle at all.</item>
 /// <item><see cref="StqBand.TQ1_0"/>: five codes per byte in base 3 -
 /// <c>b = t0 + 3*t1 + 9*t2 + 27*t3 + 81*t4</c> with each <c>t = trit + 1</c>, so the largest byte
 /// value is 242. 128 codes need 25 full bytes plus one byte carrying the last three (zero-padded),
@@ -28,7 +33,6 @@ public static class StqPacking
     // both stay resident in L1 across a whole matmul.
     private static readonly sbyte[] _tq2Table = BuildTq2Table();
     private static readonly sbyte[] _tq1Table = BuildTq1Table();
-    private static readonly sbyte[] _q4Table = BuildQ4Table();
 
     private static sbyte[] BuildTq2Table()
     {
@@ -54,17 +58,6 @@ public static class StqPacking
                 t[b * 5 + j] = (sbyte)((v % 3) - 1);
                 v /= 3;
             }
-        }
-        return t;
-    }
-
-    private static sbyte[] BuildQ4Table()
-    {
-        var t = new sbyte[256 * 2];
-        for (int b = 0; b < 256; b++)
-        {
-            t[b * 2]     = (sbyte)((b & 0x0F) - 8);
-            t[b * 2 + 1] = (sbyte)((b >> 4) - 8);
         }
         return t;
     }
@@ -108,12 +101,15 @@ public static class StqPacking
             }
             case StqBand.Q4_0:
             {
-                int bytes = (codes.Length + 1) / 2;
-                dst[..bytes].Clear();
-                for (int i = 0; i < codes.Length; i++)
+                int half = (codes.Length + 1) / 2;
+                dst[..half].Clear();
+                for (int i = 0; i < half; i++)
                 {
-                    int nibble = (codes[i] + 8) & 0x0F;   // {-8..7} -> {0..15}
-                    dst[i >> 1] |= (byte)((i & 1) == 0 ? nibble : nibble << 4);
+                    dst[i] = (byte)((codes[i] + 8) & 0x0F);       // {-8..7} -> {0..15}
+                }
+                for (int i = half; i < codes.Length; i++)
+                {
+                    dst[i - half] |= (byte)(((codes[i] + 8) & 0x0F) << 4);
                 }
                 break;
             }
@@ -180,24 +176,30 @@ public static class StqPacking
             }
             case StqBand.Q4_0:
             {
-                int i = 0;
-                int fullBytes = count >> 1;
-                if (Vector128.IsHardwareAccelerated && fullBytes >= 16)
+                // Low nibbles fill dst[0 .. half), high nibbles dst[half .. count). Only the first
+                // `pairs` bytes carry a high nibble that is in range, which is every byte except the
+                // odd-count tail one.
+                int half  = (count + 1) >> 1;
+                int pairs = count - half;
+                int j = 0;
+                if (Vector256.IsHardwareAccelerated && pairs >= Vector256<byte>.Count)
                 {
-                    i = UnpackQ4Vectorized(src, dst, fullBytes) * 2;
+                    j = UnpackQ4Split256(src, dst, half, pairs);
+                }
+                else if (Vector128.IsHardwareAccelerated && pairs >= Vector128<byte>.Count)
+                {
+                    j = UnpackQ4Split128(src, dst, half, pairs);
                 }
 
-                var table = _q4Table;
-                for (int b = i >> 1; b < fullBytes; b++)
+                for (; j < pairs; j++)
                 {
-                    int t = src[b] * 2;
-                    dst[i]     = table[t];
-                    dst[i + 1] = table[t + 1];
-                    i += 2;
+                    byte b = src[j];
+                    dst[j]        = (sbyte)((b & 0x0F) - 8);
+                    dst[j + half] = (sbyte)((b >> 4) - 8);
                 }
-                if (i < count)
+                for (; j < half; j++)
                 {
-                    dst[i] = table[src[fullBytes] * 2];
+                    dst[j] = (sbyte)((src[j] & 0x0F) - 8);
                 }
                 break;
             }
@@ -206,42 +208,96 @@ public static class StqPacking
         }
     }
 
-    // Nibble extraction, 16 source bytes -> 32 codes per iteration. Each source byte is duplicated into
-    // an adjacent lane pair, then the even lane takes the low nibble and the odd lane the high one, so
-    // the codes come out already in order and no cross-lane merge is needed. Subtracting 8 in byte
-    // space produces the right two's-complement sbyte directly, because every nibble is in [0, 15].
-    private static readonly Vector128<byte> _q4DupLow  = Vector128.Create((byte)0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7);
-    private static readonly Vector128<byte> _q4DupHigh = Vector128.Create((byte)8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15);
-    private static readonly Vector128<byte> _q4EvenLane = Vector128.Create((byte)0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0);
-
-    /// <summary>Unpacks whole 16-byte blocks; returns how many source bytes were consumed.</summary>
-    private static int UnpackQ4Vectorized(ReadOnlySpan<byte> src, Span<sbyte> dst, int fullBytes)
+    /// <summary>
+    /// Unpacks a whole row of <see cref="StqBand.Q4_0"/> groups in one pass.
+    ///
+    /// <para>A 128-weight group is only two 256-bit steps, so going through
+    /// <see cref="UnpackGroup"/> per group paid a band switch, two span slices and a call for every
+    /// two vector operations. Walking the row directly lets the groups' work interleave, which is
+    /// what the loop needs to reach store bandwidth rather than call overhead. Falls back to the
+    /// per-group path for odd group sizes and groups too short to vectorize.</para>
+    /// </summary>
+    public static void UnpackQ4Row(ReadOnlySpan<byte> src, Span<sbyte> dst, int groups, int groupSize)
     {
-        ref byte s0 = ref MemoryMarshal.GetReference(src);
-        ref sbyte d0 = ref MemoryMarshal.GetReference(dst);
+        int half = groupSize >> 1;
+        if ((groupSize & 1) != 0 || !Vector256.IsHardwareAccelerated || half < Vector256<byte>.Count)
+        {
+            for (int g = 0; g < groups; g++)
+            {
+                UnpackGroup(StqBand.Q4_0, src.Slice(g * ((groupSize + 1) >> 1), (groupSize + 1) >> 1),
+                            dst.Slice(g * groupSize, groupSize), groupSize);
+            }
+            return;
+        }
 
+        ref byte  s0 = ref MemoryMarshal.GetReference(src);
+        ref sbyte d0 = ref MemoryMarshal.GetReference(dst);
+        var mask = Vector256.Create((byte)0x0F);
+        var bias = Vector256.Create((byte)8);
+        int width = Vector256<byte>.Count;
+
+        for (int g = 0; g < groups; g++)
+        {
+            nuint sBase = (nuint)(g * half);
+            nuint dBase = (nuint)(g * groupSize);
+            int j = 0;
+            for (; j + width <= half; j += width)
+            {
+                var v = Vector256.LoadUnsafe(ref s0, sBase + (nuint)j);
+                ((v & mask) - bias).AsSByte().StoreUnsafe(ref d0, dBase + (nuint)j);
+                (Vector256.ShiftRightLogical(v, 4) - bias).AsSByte().StoreUnsafe(ref d0, dBase + (nuint)(j + half));
+            }
+            for (; j < half; j++)
+            {
+                byte b = Unsafe.Add(ref s0, sBase + (nuint)j);
+                Unsafe.Add(ref d0, dBase + (nuint)j)          = (sbyte)((b & 0x0F) - 8);
+                Unsafe.Add(ref d0, dBase + (nuint)(j + half)) = (sbyte)((b >> 4) - 8);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Unpacks the byte pairs of a split-layout group with 256-bit vectors: one load produces
+    /// thirty-two low codes and thirty-two high codes, each already contiguous in the destination.
+    /// Subtracting 8 in byte space yields the right two's-complement sbyte directly, because every
+    /// nibble is in [0, 15]. Returns how many source bytes were consumed.
+    /// </summary>
+    private static int UnpackQ4Split256(ReadOnlySpan<byte> src, Span<sbyte> dst, int half, int pairs)
+    {
+        ref byte  s0 = ref MemoryMarshal.GetReference(src);
+        ref sbyte d0 = ref MemoryMarshal.GetReference(dst);
+        var mask = Vector256.Create((byte)0x0F);
+        var bias = Vector256.Create((byte)8);
+
+        int width = Vector256<byte>.Count;
+        int j = 0;
+        for (; j + width <= pairs; j += width)
+        {
+            var v = Vector256.LoadUnsafe(ref s0, (nuint)j);
+            ((v & mask) - bias).AsSByte().StoreUnsafe(ref d0, (nuint)j);
+            (Vector256.ShiftRightLogical(v, 4) - bias).AsSByte().StoreUnsafe(ref d0, (nuint)(j + half));
+        }
+        return j;
+    }
+
+    /// <summary>128-bit form of <see cref="UnpackQ4Split256"/>, for groups too short for a 256-bit
+    /// step or hosts without one.</summary>
+    private static int UnpackQ4Split128(ReadOnlySpan<byte> src, Span<sbyte> dst, int half, int pairs)
+    {
+        ref byte  s0 = ref MemoryMarshal.GetReference(src);
+        ref sbyte d0 = ref MemoryMarshal.GetReference(dst);
         var mask = Vector128.Create((byte)0x0F);
         var bias = Vector128.Create((byte)8);
-        var even = _q4EvenLane;
 
-        int b = 0;
-        for (; b + 16 <= fullBytes; b += 16)
+        int width = Vector128<byte>.Count;
+        int j = 0;
+        for (; j + width <= pairs; j += width)
         {
-            var v = Vector128.LoadUnsafe(ref s0, (nuint)b);
-            Emit(Vector128.Shuffle(v, _q4DupLow),  ref d0, (nuint)(b * 2),      mask, bias, even);
-            Emit(Vector128.Shuffle(v, _q4DupHigh), ref d0, (nuint)(b * 2 + 16), mask, bias, even);
+            var v = Vector128.LoadUnsafe(ref s0, (nuint)j);
+            ((v & mask) - bias).AsSByte().StoreUnsafe(ref d0, (nuint)j);
+            (Vector128.ShiftRightLogical(v, 4) - bias).AsSByte().StoreUnsafe(ref d0, (nuint)(j + half));
         }
-        return b;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void Emit(Vector128<byte> dup, ref sbyte dst, nuint offset,
-                         Vector128<byte> mask, Vector128<byte> bias, Vector128<byte> even)
-        {
-            var lo = dup & mask;
-            var hi = Vector128.ShiftRightLogical(dup, 4) & mask;
-            var codes = Vector128.ConditionalSelect(even, lo, hi) - bias;
-            codes.AsSByte().StoreUnsafe(ref dst, offset);
-        }
+        return j;
     }
 
     /// <summary>Unpacks a group straight to float, scaled: <c>dst[i] = scale * trit_i</c>. The float

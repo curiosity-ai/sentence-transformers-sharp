@@ -213,36 +213,67 @@ internal sealed class Gemma3Model
     /// the benchmark can A/B the grouping inside one process instead of across runs.</summary>
     internal static bool ShareGroupRotation = true;
 
+    /// <summary>When false, each projection quantizes its own copy of the shared activation, as before
+    /// the grouping. Exists so the benchmark can A/B it inside one process.</summary>
+    internal static bool ShareGroupQuantization = true;
+
     private static async ValueTask ProjectGroupAsync(float[] x, int seq, ParallelOptions parallelOptions,
                                                      IWeightMatrix a, float[] ya,
                                                      IWeightMatrix b, float[] yb,
                                                      IWeightMatrix c = null, float[] yc = null)
     {
         var shared = ShareGroupRotation ? StqMatrix.SharedRotation(a, b, c) : null;
-        if (shared is null)
+        float[] rotated = shared is null
+            ? null
+            : await StqMatrix.RentRotatedAsync(shared, x, seq, a.InDim, parallelOptions).ConfigureAwait(false);
+        try
         {
+            // Whatever basis the group reads in, it reads the same buffer, so the int8 quantization of
+            // it is the same for every projection in the group and is worth doing once.
+            float[] input = rotated ?? x;
+            if (ShareGroupQuantization && SharedActivations.CanShare(a, b, c))
+            {
+                var (ua, aScale) = await VnniActivations.QuantizeAsync(input, seq, a.InDim, parallelOptions).ConfigureAwait(false);
+                try
+                {
+                    await SharedActivations.MultiplyAsync(a, ua, aScale, ya, seq, parallelOptions).ConfigureAwait(false);
+                    await SharedActivations.MultiplyAsync(b, ua, aScale, yb, seq, parallelOptions).ConfigureAwait(false);
+                    if (c is not null)
+                    {
+                        await SharedActivations.MultiplyAsync(c, ua, aScale, yc, seq, parallelOptions).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    VnniActivations.Return(ua, aScale);
+                }
+                return;
+            }
+
+            if (rotated is not null)
+            {
+                await ((StqMatrix)a).MultiplyRotatedAsync(rotated, ya, seq, parallelOptions).ConfigureAwait(false);
+                await ((StqMatrix)b).MultiplyRotatedAsync(rotated, yb, seq, parallelOptions).ConfigureAwait(false);
+                if (c is not null)
+                {
+                    await ((StqMatrix)c).MultiplyRotatedAsync(rotated, yc, seq, parallelOptions).ConfigureAwait(false);
+                }
+                return;
+            }
+
             await a.MultiplyAsync(x, ya, seq, parallelOptions).ConfigureAwait(false);
             await b.MultiplyAsync(x, yb, seq, parallelOptions).ConfigureAwait(false);
             if (c is not null)
             {
                 await c.MultiplyAsync(x, yc, seq, parallelOptions).ConfigureAwait(false);
             }
-            return;
-        }
-
-        float[] rotated = await StqMatrix.RentRotatedAsync(shared, x, seq, a.InDim, parallelOptions).ConfigureAwait(false);
-        try
-        {
-            await ((StqMatrix)a).MultiplyRotatedAsync(rotated, ya, seq, parallelOptions).ConfigureAwait(false);
-            await ((StqMatrix)b).MultiplyRotatedAsync(rotated, yb, seq, parallelOptions).ConfigureAwait(false);
-            if (c is not null)
-            {
-                await ((StqMatrix)c).MultiplyRotatedAsync(rotated, yc, seq, parallelOptions).ConfigureAwait(false);
-            }
         }
         finally
         {
-            ArrayPool<float>.Shared.Return(rotated);
+            if (rotated is not null)
+            {
+                ArrayPool<float>.Shared.Return(rotated);
+            }
         }
     }
 

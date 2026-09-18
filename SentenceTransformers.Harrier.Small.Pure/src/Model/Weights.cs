@@ -172,21 +172,64 @@ internal static class VnniActivations
         return (ua, scale);
     }
 
+    /// <summary>
+    /// Quantizes one activation row. Both passes are vectorized: the magnitude scan through
+    /// <see cref="TensorPrimitives"/>, and the scale-round-clamp-offset pass through 256-bit lanes that
+    /// narrow four int32 vectors down to one 32-byte store.
+    ///
+    /// <para>This runs once per position per projection per layer and showed up at ~22% of a packed
+    /// forward pass while it was scalar - more than the nibble unpacking it was meant to be dwarfed by.
+    /// Both quantized paths share it, so both get the speed-up.</para>
+    ///
+    /// <para><see cref="Vector256.Round(Vector256{float})"/> is round-half-to-even, which is what
+    /// <see cref="MathF.Round(float)"/> does, so the vector and scalar paths produce identical codes
+    /// rather than merely similar ones.</para>
+    /// </summary>
     private static void QuantizeRow(float[] x, byte[] ua, float[] scale, int s, int inDim, int zp, int qmax)
     {
         int b = s * inDim;
-        float amax = 0f;
-        for (int i = 0; i < inDim; i++)
-        {
-            amax = MathF.Max(amax, MathF.Abs(x[b + i]));
-        }
+        float amax = MathF.Abs(TensorPrimitives.MaxMagnitude(new ReadOnlySpan<float>(x, b, inDim)));
         float sc = amax > 0 ? amax / qmax : 1f;
         float inv = 1f / sc;
         scale[s] = sc;
-        for (int i = 0; i < inDim; i++)
+
+        int i = 0;
+        if (Vector256.IsHardwareAccelerated && inDim >= 32)
+        {
+            ref float xRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(x), b);
+            ref byte uaRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(ua), b);
+            var invV  = Vector256.Create(inv);
+            var loV   = Vector256.Create(-qmax);
+            var hiV   = Vector256.Create(qmax);
+            var zpV   = Vector256.Create(zp);
+
+            for (; i + 32 <= inDim; i += 32)
+            {
+                var q0 = Code(ref xRef, (nuint)i,       invV, loV, hiV, zpV);
+                var q1 = Code(ref xRef, (nuint)(i + 8), invV, loV, hiV, zpV);
+                var q2 = Code(ref xRef, (nuint)(i + 16), invV, loV, hiV, zpV);
+                var q3 = Code(ref xRef, (nuint)(i + 24), invV, loV, hiV, zpV);
+
+                // Every lane is in [1, 255] after the clamp and offset, so the two narrowing steps are
+                // pure truncation and need no saturation.
+                var packed = Vector256.Narrow(Vector256.Narrow(q0, q1).AsUInt16(), Vector256.Narrow(q2, q3).AsUInt16());
+                packed.StoreUnsafe(ref uaRef, (nuint)i);
+            }
+        }
+
+        for (; i < inDim; i++)
         {
             int q = Math.Clamp((int)MathF.Round(x[b + i] * inv), -qmax, qmax);
             ua[b + i] = (byte)(q + zp);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static Vector256<int> Code(ref float xRef, nuint offset, Vector256<float> invV,
+                                   Vector256<int> loV, Vector256<int> hiV, Vector256<int> zpV)
+        {
+            var v = Vector256.Round(Vector256.LoadUnsafe(ref xRef, offset) * invV);
+            var q = Vector256.ConvertToInt32(v);
+            return Vector256.Min(Vector256.Max(q, loV), hiV) + zpV;
         }
     }
 
@@ -195,6 +238,39 @@ internal static class VnniActivations
         ArrayPool<byte>.Shared.Return(ua);
         ArrayPool<float>.Shared.Return(scale);
     }
+}
+
+/// <summary>
+/// Lets a group of projections that read the same activation quantize it once between them.
+///
+/// <para>q, k and v all consume the post-norm hidden state, and gate and up both consume the
+/// post-attention one, so quantizing inside each projection did that work three times and twice over
+/// respectively - about 30% of all activation quantization in the model, for a result that is
+/// bit-identical each time. Both quantized kernels take the shared buffers, so this is not a packed-path
+/// trick: the Int8 path saves exactly the same work.</para>
+/// </summary>
+internal static class SharedActivations
+{
+    /// <summary>True when every projection in the group takes the VNNI kernel over the same input
+    /// width, which is what makes one quantization valid for all of them.</summary>
+    public static bool CanShare(IWeightMatrix a, IWeightMatrix b, IWeightMatrix c)
+        => Supports(a) && Supports(b) && (c is null || Supports(c))
+           && a.InDim == b.InDim && (c is null || a.InDim == c.InDim);
+
+    private static bool Supports(IWeightMatrix m) => m switch
+    {
+        Int8Matrix i8 => i8.UsesVnni,
+        StqMatrix stq => stq.UsesVnni,
+        _ => false,
+    };
+
+    public static ValueTask MultiplyAsync(IWeightMatrix m, byte[] ua, float[] aScale, float[] y, int seq, ParallelOptions parallelOptions)
+        => m switch
+        {
+            Int8Matrix i8 => i8.MultiplyQuantizedAsync(ua, aScale, y, seq, parallelOptions),
+            StqMatrix stq => stq.MultiplyQuantizedAsync(ua, aScale, y, seq, parallelOptions),
+            _ => throw new InvalidOperationException($"{m.GetType().Name} cannot consume pre-quantized activations; guard with CanShare."),
+        };
 }
 
 /// <summary>Plain float32 weights. Delegates to <see cref="Ops.LinearAsync"/>.</summary>
@@ -279,39 +355,72 @@ internal sealed class Int8Matrix : IWeightMatrix
     /// traffic is the dominant speed-up. The eight accumulators fit in the 16 AVX YMM registers.</summary>
     private async ValueTask MultiplyVnniAsync(float[] x, float[] y, int seq, ParallelOptions parallelOptions)
     {
-        int inDim = InDim, outDim = OutDim;
-        var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, inDim, parallelOptions).ConfigureAwait(false);
+        var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, InDim, parallelOptions).ConfigureAwait(false);
         try
         {
-            bool use512 = Vnni.Use512 && (inDim % 64 == 0);
-            int oTiles = (outDim + 3) / 4;
-            await ParallelExecution.ForAsync(0, oTiles, parallelOptions, (ot, _) =>
-            {
-                int o0 = ot * 4;
-                if (o0 + 4 <= outDim)
-                {
-                    if (use512)
-                    {
-                        Tile4_512(ua, aScale, y, o0, seq, inDim, outDim);
-                    }
-                    else
-                    {
-                        Tile4(ua, aScale, y, o0, seq, inDim, outDim);
-                    }
-                }
-                else
-                {
-                    for (int o = o0; o < outDim; o++)
-                    {
-                        SingleChannel(ua, aScale, y, o, seq, inDim, outDim);
-                    }
-                }
-                return ValueTask.CompletedTask;
-            }).ConfigureAwait(false);
+            await MultiplyQuantizedAsync(ua, aScale, y, seq, parallelOptions).ConfigureAwait(false);
         }
         finally
         {
             VnniActivations.Return(ua, aScale);
+        }
+    }
+
+    /// <summary>True when this matrix takes the VNNI kernel and can therefore consume activations that
+    /// were quantized by someone else.</summary>
+    internal bool UsesVnni => UseVnni(InDim);
+
+    /// <summary>
+    /// The matmul from the point where the activations are already quantized, so a group of sibling
+    /// projections reading one activation can share that work instead of repeating it per projection.
+    ///
+    /// <para>The single-thread branch matches the packed kernel's: at
+    /// <c>MaxDegreeOfParallelism = 1</c> <see cref="ParallelExecution.ForAsync"/> already runs the
+    /// tiles in order, so going through it only buys a closure, a delegate and an async state machine
+    /// per projection per layer.</para>
+    /// </summary>
+    internal ValueTask MultiplyQuantizedAsync(byte[] ua, float[] aScale, float[] y, int seq, ParallelOptions parallelOptions)
+    {
+        int inDim = InDim, outDim = OutDim;
+        bool use512 = Vnni.Use512 && (inDim % 64 == 0);
+        int oTiles = (outDim + 3) / 4;
+
+        if (parallelOptions is null || parallelOptions.MaxDegreeOfParallelism <= 1)
+        {
+            for (int ot = 0; ot < oTiles; ot++)
+            {
+                RunTile(ua, aScale, y, ot, seq, inDim, outDim, use512);
+            }
+            return ValueTask.CompletedTask;
+        }
+
+        return new ValueTask(ParallelExecution.ForAsync(0, oTiles, parallelOptions, (ot, _) =>
+        {
+            RunTile(ua, aScale, y, ot, seq, inDim, outDim, use512);
+            return ValueTask.CompletedTask;
+        }));
+    }
+
+    private void RunTile(byte[] ua, float[] aScale, float[] y, int ot, int seq, int inDim, int outDim, bool use512)
+    {
+        int o0 = ot * 4;
+        if (o0 + 4 <= outDim)
+        {
+            if (use512)
+            {
+                Tile4_512(ua, aScale, y, o0, seq, inDim, outDim);
+            }
+            else
+            {
+                Tile4(ua, aScale, y, o0, seq, inDim, outDim);
+            }
+        }
+        else
+        {
+            for (int o = o0; o < outDim; o++)
+            {
+                SingleChannel(ua, aScale, y, o, seq, inDim, outDim);
+            }
         }
     }
 
@@ -682,6 +791,7 @@ internal sealed class Int4Matrix : IWeightMatrix
 
     // Sync (stackalloc) per-channel kernel: unpack this output row's nibbles to signed int8 once,
     // reused across all positions, then int8-dot each group with its own scale.
+    [SkipLocalsInit]
     private void VnniColumn(byte[] ua, float[] aScale, float[] y, int o, int seq, int inDim, int outDim)
     {
         int numGroups = _numGroups;

@@ -2,6 +2,9 @@
 
 using System.Numerics;
 using System.Numerics.Tensors;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace SentenceTransformers.Stq;
 
@@ -45,8 +48,9 @@ public sealed class HadamardRotation
     /// <summary>Packed +/-1 diagonal, one bit per position, LSB first; a set bit means -1.</summary>
     public byte[] SignBits { get; }
 
-    private readonly float[] _signs; // unpacked, Dim long, each +1 or -1
-    private readonly float _norm;    // 1 / sqrt(Block)
+    private readonly float[] _signs;     // unpacked, Dim long, each +1 or -1
+    private readonly float[] _signsNorm; // _signs scaled by _norm, so neither direction needs a second pass
+    private readonly float _norm;        // 1 / sqrt(Block)
 
     /// <summary>Wraps an existing sign mask (the file-loading path).</summary>
     public HadamardRotation(int dim, int block, byte[] signBits)
@@ -61,9 +65,11 @@ public sealed class HadamardRotation
         SignBits = signBits;
         _norm = 1f / MathF.Sqrt(block);
         _signs = new float[dim];
+        _signsNorm = new float[dim];
         for (int i = 0; i < dim; i++)
         {
             _signs[i] = (signBits[i >> 3] & (1 << (i & 7))) != 0 ? -1f : 1f;
+            _signsNorm[i] = _signs[i] * _norm;
         }
     }
 
@@ -113,15 +119,13 @@ public sealed class HadamardRotation
     {
         if (v.Length != Dim) throw new ArgumentException($"Expected a {Dim}-element vector, got {v.Length}.", nameof(v));
 
-        for (int i = 0; i < Dim; i++)
-        {
-            v[i] *= _signs[i];
-        }
+        // The 1/sqrt(n) rides along with the signs: scaling commutes with the (linear) butterfly, so
+        // folding it in here costs nothing and saves a whole second pass over the vector.
+        TensorPrimitives.Multiply(v, _signsNorm, v);
         for (int off = 0; off < Dim; off += Block)
         {
             Fwht(v.Slice(off, Block));
         }
-        TensorPrimitives.Multiply(v, _norm, v);
     }
 
     /// <summary>Applies <c>R^T v</c> in place: the butterfly, then signs, then 1/sqrt(n). Recovers an
@@ -134,10 +138,7 @@ public sealed class HadamardRotation
         {
             Fwht(v.Slice(off, Block));
         }
-        for (int i = 0; i < Dim; i++)
-        {
-            v[i] *= _signs[i] * _norm;
-        }
+        TensorPrimitives.Multiply(v, _signsNorm, v);
     }
 
     /// <summary>
@@ -149,7 +150,21 @@ public sealed class HadamardRotation
     {
         int n = v.Length;
         int w = Vector<float>.Count;
-        for (int len = 1; len < n; len <<= 1)
+
+        // Stages with len < 8 only ever pair elements inside one aligned group of eight, so they are a
+        // full 8-point Hadamard on each such group and can be done entirely in registers. Left to the
+        // general loop below they were the whole cost of a rotation: at len = 1 a 128-element block
+        // means 64 two-element butterflies, each constructing a pair of spans to add and subtract one
+        // float. On a 640-wide activation the three sub-vector stages were doing three quarters of the
+        // adds with none of the width.
+        int start = 1;
+        if (n >= 8)
+        {
+            Hadamard8(v);
+            start = 8;
+        }
+
+        for (int len = start; len < n; len <<= 1)
         {
             for (int i = 0; i < n; i += len << 1)
             {
@@ -176,6 +191,64 @@ public sealed class HadamardRotation
                 }
             }
         }
+    }
+
+    // Lane permutations for the three sub-vector stages, and the mask picking which lane of each pair
+    // takes the difference rather than the sum.
+    private static readonly Vector256<int> _swap1 = Vector256.Create(1, 0, 3, 2, 5, 4, 7, 6);
+    private static readonly Vector256<int> _swap2 = Vector256.Create(2, 3, 0, 1, 6, 7, 4, 5);
+    private static readonly Vector256<int> _swap4 = Vector256.Create(4, 5, 6, 7, 0, 1, 2, 3);
+    private static readonly Vector256<int> _diff1 = Vector256.Create(0, -1, 0, -1, 0, -1, 0, -1);
+    private static readonly Vector256<int> _diff2 = Vector256.Create(0, 0, -1, -1, 0, 0, -1, -1);
+    private static readonly Vector256<int> _diff4 = Vector256.Create(0, 0, 0, 0, -1, -1, -1, -1);
+
+    /// <summary>Runs the <c>len = 1, 2, 4</c> butterfly stages over every aligned group of eight.</summary>
+    private static void Hadamard8(Span<float> v)
+    {
+        int n = v.Length;
+        ref float p = ref MemoryMarshal.GetReference(v);
+
+        if (Vector256.IsHardwareAccelerated)
+        {
+            for (int i = 0; i + 8 <= n; i += 8)
+            {
+                var x = Vector256.LoadUnsafe(ref p, (nuint)i);
+                x = Butterfly(x, _swap1, _diff1);
+                x = Butterfly(x, _swap2, _diff2);
+                x = Butterfly(x, _swap4, _diff4);
+                x.StoreUnsafe(ref p, (nuint)i);
+            }
+            return;
+        }
+
+        // Same three stages, unrolled and kept in locals: still scalar, but without a span per pair.
+        for (int i = 0; i + 8 <= n; i += 8)
+        {
+            float a0 = Unsafe.Add(ref p, i),     a1 = Unsafe.Add(ref p, i + 1);
+            float a2 = Unsafe.Add(ref p, i + 2), a3 = Unsafe.Add(ref p, i + 3);
+            float a4 = Unsafe.Add(ref p, i + 4), a5 = Unsafe.Add(ref p, i + 5);
+            float a6 = Unsafe.Add(ref p, i + 6), a7 = Unsafe.Add(ref p, i + 7);
+
+            float b0 = a0 + a1, b1 = a0 - a1, b2 = a2 + a3, b3 = a2 - a3;
+            float b4 = a4 + a5, b5 = a4 - a5, b6 = a6 + a7, b7 = a6 - a7;
+
+            float c0 = b0 + b2, c1 = b1 + b3, c2 = b0 - b2, c3 = b1 - b3;
+            float c4 = b4 + b6, c5 = b5 + b7, c6 = b4 - b6, c7 = b5 - b7;
+
+            Unsafe.Add(ref p, i)     = c0 + c4; Unsafe.Add(ref p, i + 1) = c1 + c5;
+            Unsafe.Add(ref p, i + 2) = c2 + c6; Unsafe.Add(ref p, i + 3) = c3 + c7;
+            Unsafe.Add(ref p, i + 4) = c0 - c4; Unsafe.Add(ref p, i + 5) = c1 - c5;
+            Unsafe.Add(ref p, i + 6) = c2 - c6; Unsafe.Add(ref p, i + 7) = c3 - c7;
+        }
+    }
+
+    /// <summary>One butterfly stage: every lane pairs with the lane <paramref name="idx"/> names, and
+    /// <paramref name="diff"/> says which of the two keeps the difference.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<float> Butterfly(Vector256<float> x, Vector256<int> idx, Vector256<int> diff)
+    {
+        var t = Vector256.Shuffle(x, idx);
+        return Vector256.ConditionalSelect(diff.AsSingle(), t - x, x + t);
     }
 
     private static bool IsPowerOfTwo(int x) => x > 0 && (x & (x - 1)) == 0;

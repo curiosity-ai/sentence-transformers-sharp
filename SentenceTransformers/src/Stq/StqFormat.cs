@@ -84,8 +84,17 @@ public static class StqFormat
     /// <summary>File magic. Bumped only for a breaking container change.</summary>
     public const string Magic = "STQ1";
 
-    /// <summary>Header schema version. Readers reject anything newer than they understand.</summary>
-    public const int FormatVersion = 1;
+    /// <summary>Header schema version. Readers reject anything newer than they understand.
+    ///
+    /// <para>Version 2 changed the <see cref="StqBand.Q4_0"/> nibble order from adjacent to
+    /// half-a-group apart (see <c>StqPacking</c>), so a v1 file's 4-bit tensors decode to garbage
+    /// under this build and are rejected rather than silently mis-read. The ternary bands are
+    /// unchanged, so v1 files that use only those still load.</para></summary>
+    public const int FormatVersion = 2;
+
+    /// <summary>First version whose <see cref="StqBand.Q4_0"/> tensors use the split nibble
+    /// layout.</summary>
+    public const int SplitNibbleQ4Version = 2;
 
     /// <summary>Weights per scale group. 128 matches the Bonsai g128 packings and divides every
     /// Harrier input dimension (640, 1024, 2048).</summary>

@@ -106,6 +106,7 @@ public sealed class StqFile
         var metadata  = new Dictionary<string, string>(StringComparer.Ordinal);
 
         long dataStart = StqFormat.AlignUp(8 + headerLen);
+        int fileVersion = 1;
 
         using (var doc = JsonDocument.Parse(bytes.AsMemory(8, (int)headerLen)))
         {
@@ -119,10 +120,11 @@ public sealed class StqFile
                 }
             }
 
-            if (metadata.TryGetValue("format_version", out var fv) && int.TryParse(fv, out int v) && v > StqFormat.FormatVersion)
+            fileVersion = metadata.TryGetValue("format_version", out var fv) && int.TryParse(fv, out int v) ? v : 1;
+            if (fileVersion > StqFormat.FormatVersion)
             {
                 throw new InvalidDataException(
-                    $"'{path}' was written by a newer format (version {v}); this build reads up to {StqFormat.FormatVersion}.");
+                    $"'{path}' was written by a newer format (version {fileVersion}); this build reads up to {StqFormat.FormatVersion}.");
             }
 
             // Rotations are parsed first: a tensor entry may reference one by id.
@@ -187,6 +189,22 @@ public sealed class StqFile
                     };
 
                 tensors[p.Name] = info;
+            }
+        }
+
+        // v1 wrote Q4_0 with adjacent nibbles; v2 puts them half a group apart. The header is
+        // otherwise identical, so such a file parses cleanly and would decode to noise. Refuse it.
+        if (fileVersion < StqFormat.SplitNibbleQ4Version)
+        {
+            foreach (var t in tensors.Values)
+            {
+                if (t.Band == StqBand.Q4_0)
+                {
+                    throw new InvalidDataException(
+                        $"'{path}' is a format version {fileVersion} file and its 4-bit tensors (e.g. '{t.Name}') use the " +
+                        $"old adjacent-nibble Q4_0 layout, which this build cannot decode. Re-run the converter to " +
+                        $"produce a version {StqFormat.SplitNibbleQ4Version} file.");
+                }
             }
         }
 

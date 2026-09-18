@@ -41,7 +41,12 @@ internal sealed class StqMatrix : IWeightMatrix
     // channels are contiguous for one group and load as a single Vector128. In row-major order they
     // are strided by `groups`, which would need a gather per group and undo the point of the tile.
     private readonly float[] _scales;        // [groups * outDim]
-    private readonly int[] _groupSum;        // [groups * outDim], sum of the group's codes
+    // The activation zero-point correction, folded per output channel: sum over groups of
+    // scale[g,o] * ZeroPoint * (sum of group g's codes). Every term of it is position-independent, so
+    // subtracting it once at the end of a row is exactly equivalent to subtracting each group's share
+    // inside the group loop - and takes a load, a multiply and four subtracts per group out of the
+    // hottest loop in the kernel, where per-group scales already force a reduction every 128 weights.
+    private readonly float[] _zeroBias;      // [outDim]
     private readonly HadamardRotation _rotation; // null when the tensor is stored unrotated
     private readonly int _groupSize;
     private readonly int _groups;
@@ -51,13 +56,13 @@ internal sealed class StqMatrix : IWeightMatrix
     public int InDim { get; }
     public int OutDim { get; }
 
-    private StqMatrix(StqBand band, byte[] codes, float[] scales, int[] groupSum, HadamardRotation rotation,
+    private StqMatrix(StqBand band, byte[] codes, float[] scales, float[] zeroBias, HadamardRotation rotation,
                           int groupSize, int groups, int groupBytes, int outDim, int inDim)
     {
         _band = band;
         _codes = codes;
         _scales = scales;
-        _groupSum = groupSum;
+        _zeroBias = zeroBias;
         _rotation = rotation;
         _groupSize = groupSize;
         _groups = groups;
@@ -69,8 +74,8 @@ internal sealed class StqMatrix : IWeightMatrix
 
     /// <summary>
     /// Wraps a tensor from an already-loaded <c>.stq</c> file. The packed codes are referenced as-is;
-    /// the only derived state is the per-group code sum, which the VNNI path needs to undo the
-    /// activation zero-point offset and which is far cheaper to compute once here than per matmul.
+    /// the only derived state is the per-channel zero-point bias, which the VNNI path needs to undo
+    /// the activation offset and which is far cheaper to compute once here than per matmul.
     /// </summary>
     public static async Task<StqMatrix> CreateAsync(StqFile file, StqTensorInfo info, ParallelOptions parallelOptions)
     {
@@ -96,12 +101,13 @@ internal sealed class StqMatrix : IWeightMatrix
         var codes = file.Codes(info).ToArray();
         var rowMajorScales = file.Scales(info);
         var scales = new float[(long)groups * outDim];
-        var groupSum = new int[(long)groups * outDim];
+        var zeroBias = new float[outDim];
         var band = info.Band;
 
         await ParallelExecution.ForAsync(0, outDim, parallelOptions, (o, _) =>
         {
             Span<sbyte> group = stackalloc sbyte[groupSize];
+            float bias = 0f;
             for (int g = 0; g < groups; g++)
             {
                 StqPacking.UnpackGroup(band, codes.AsSpan(o * rowBytes + g * groupBytes, groupBytes), group, groupSize);
@@ -110,13 +116,15 @@ internal sealed class StqMatrix : IWeightMatrix
                 {
                     sum += group[i];
                 }
-                groupSum[(long)g * outDim + o] = sum;
-                scales[(long)g * outDim + o] = rowMajorScales[(long)o * groups + g];
+                float scale = rowMajorScales[(long)o * groups + g];
+                scales[(long)g * outDim + o] = scale;
+                bias += scale * (Vnni.ZeroPoint * sum);
             }
+            zeroBias[o] = bias;
             return ValueTask.CompletedTask;
         }).ConfigureAwait(false);
 
-        return new StqMatrix(band, codes, scales, groupSum, file.RotationFor(info), groupSize, groups, groupBytes, outDim, inDim);
+        return new StqMatrix(band, codes, scales, zeroBias, file.RotationFor(info), groupSize, groups, groupBytes, outDim, inDim);
     }
 
     public async ValueTask MultiplyAsync(float[] x, float[] y, int seq, ParallelOptions parallelOptions)
@@ -217,36 +225,48 @@ internal sealed class StqMatrix : IWeightMatrix
 
     private async ValueTask MultiplyVnniAsync(float[] x, float[] y, int seq, ParallelOptions parallelOptions)
     {
-        int inDim = InDim, outDim = OutDim;
         // Timed around the await because the quantizer is shared with the Int8 path and is not ours
         // to instrument internally. It therefore reads as wall time of a parallel loop rather than CPU
         // time, so this stage is under-reported relative to the other three - read it as a floor.
         long quantTs = ForwardProfile.StageStart();
-        var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, inDim, parallelOptions).ConfigureAwait(false);
+        var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, InDim, parallelOptions).ConfigureAwait(false);
         ForwardProfile.StageStop(ForwardProfile.Stage.QuantizeActivations, quantTs);
         try
         {
-            int tiles = (outDim + TileOut - 1) / TileOut;
-            if (RunInline(parallelOptions))
-            {
-                for (int t = 0; t < tiles; t++)
-                {
-                    RunTile(ua, aScale, y, t, seq, inDim, outDim);
-                }
-            }
-            else
-            {
-                await ParallelExecution.ForAsync(0, tiles, parallelOptions, (t, _) =>
-                {
-                    RunTile(ua, aScale, y, t, seq, inDim, outDim);
-                    return ValueTask.CompletedTask;
-                }).ConfigureAwait(false);
-            }
+            await MultiplyQuantizedAsync(ua, aScale, y, seq, parallelOptions).ConfigureAwait(false);
         }
         finally
         {
             VnniActivations.Return(ua, aScale);
         }
+    }
+
+    /// <summary>True when this matrix can consume already-quantized activations - i.e. when the host
+    /// has a VNNI-style int8 dot at all.</summary>
+    internal bool UsesVnni => Vnni.IsSupported;
+
+    /// <summary>
+    /// The matmul from the point where the activations are already quantized, so a group of sibling
+    /// projections reading one activation can share that work instead of repeating it per projection.
+    /// </summary>
+    internal ValueTask MultiplyQuantizedAsync(byte[] ua, float[] aScale, float[] y, int seq, ParallelOptions parallelOptions)
+    {
+        int inDim = InDim, outDim = OutDim;
+        int tiles = (outDim + TileOut - 1) / TileOut;
+        if (RunInline(parallelOptions))
+        {
+            for (int t = 0; t < tiles; t++)
+            {
+                RunTile(ua, aScale, y, t, seq, inDim, outDim);
+            }
+            return ValueTask.CompletedTask;
+        }
+
+        return new ValueTask(ParallelExecution.ForAsync(0, tiles, parallelOptions, (t, _) =>
+        {
+            RunTile(ua, aScale, y, t, seq, inDim, outDim);
+            return ValueTask.CompletedTask;
+        }));
     }
 
     /// <summary>Output channels computed together per tile.</summary>
@@ -297,6 +317,10 @@ internal sealed class StqMatrix : IWeightMatrix
     /// be reduced and scaled separately, so the accumulators are reset per group rather than run the
     /// length of the row.</para>
     /// </summary>
+    // SkipLocalsInit: `w` is a few kilobytes and UnpackRow writes every byte of it before anything
+    // reads it, so the implicit zeroing is a memset of the entire weight matrix per matmul - about as
+    // much store traffic as the unpacking itself.
+    [SkipLocalsInit]
     private void Tile(byte[] ua, float[] aScale, float[] y, int o0, int seq, int inDim, int outDim)
     {
         Span<sbyte> w = stackalloc sbyte[TileOut * inDim];
@@ -369,21 +393,20 @@ internal sealed class StqMatrix : IWeightMatrix
                 a32 = Vnni.DotAccumulate(a32, av3, w2); a33 = Vnni.DotAccumulate(a33, av3, w3);
             }
 
-            int gBase = g * outDim + o0;
-            var sc = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_scales), (nuint)gBase);
-            var zp = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_groupSum), (nuint)gBase) * Vnni.ZeroPoint;
+            var sc = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_scales), (nuint)(g * outDim + o0));
 
-            f0 += sc * Vector128.ConvertToSingle(Sum4(a00, a01, a02, a03) - zp);
-            f1 += sc * Vector128.ConvertToSingle(Sum4(a10, a11, a12, a13) - zp);
-            f2 += sc * Vector128.ConvertToSingle(Sum4(a20, a21, a22, a23) - zp);
-            f3 += sc * Vector128.ConvertToSingle(Sum4(a30, a31, a32, a33) - zp);
+            f0 += sc * Vector128.ConvertToSingle(Sum4(a00, a01, a02, a03));
+            f1 += sc * Vector128.ConvertToSingle(Sum4(a10, a11, a12, a13));
+            f2 += sc * Vector128.ConvertToSingle(Sum4(a20, a21, a22, a23));
+            f3 += sc * Vector128.ConvertToSingle(Sum4(a30, a31, a32, a33));
         }
 
+        var bias = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_zeroBias), (nuint)o0);
         ref float yRef = ref MemoryMarshal.GetArrayDataReference(y);
-        (f0 * aScale[s]).StoreUnsafe(ref yRef, (nuint)(s * outDim + o0));
-        (f1 * aScale[s + 1]).StoreUnsafe(ref yRef, (nuint)((s + 1) * outDim + o0));
-        (f2 * aScale[s + 2]).StoreUnsafe(ref yRef, (nuint)((s + 2) * outDim + o0));
-        (f3 * aScale[s + 3]).StoreUnsafe(ref yRef, (nuint)((s + 3) * outDim + o0));
+        ((f0 - bias) * aScale[s]).StoreUnsafe(ref yRef, (nuint)(s * outDim + o0));
+        ((f1 - bias) * aScale[s + 1]).StoreUnsafe(ref yRef, (nuint)((s + 1) * outDim + o0));
+        ((f2 - bias) * aScale[s + 2]).StoreUnsafe(ref yRef, (nuint)((s + 2) * outDim + o0));
+        ((f3 - bias) * aScale[s + 3]).StoreUnsafe(ref yRef, (nuint)((s + 3) * outDim + o0));
     }
 
     /// <summary>The tail: four output channels for a single position.</summary>
@@ -410,19 +433,23 @@ internal sealed class StqMatrix : IWeightMatrix
                 a03 = Vnni.DotAccumulate(a03, av0, Vector256.LoadUnsafe(ref wRef, (nuint)(3 * inDim + off)));
             }
 
-            int gBase = g * outDim + o0;
-            var sc = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_scales), (nuint)gBase);
-            var zp = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_groupSum), (nuint)gBase) * Vnni.ZeroPoint;
-            f0 += sc * Vector128.ConvertToSingle(Sum4(a00, a01, a02, a03) - zp);
+            var sc = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_scales), (nuint)(g * outDim + o0));
+            f0 += sc * Vector128.ConvertToSingle(Sum4(a00, a01, a02, a03));
         }
 
-        (f0 * aScale[s]).StoreUnsafe(ref MemoryMarshal.GetArrayDataReference(y), (nuint)(s * outDim + o0));
+        var bias = Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_zeroBias), (nuint)o0);
+        ((f0 - bias) * aScale[s]).StoreUnsafe(ref MemoryMarshal.GetArrayDataReference(y), (nuint)(s * outDim + o0));
     }
 
     /// <summary>Unpacks one output row's packed codes into signed bytes.</summary>
     private void UnpackRow(int o, Span<sbyte> dst)
     {
         int rowBase = o * _rowBytes;
+        if (_band == StqBand.Q4_0)
+        {
+            StqPacking.UnpackQ4Row(_codes.AsSpan(rowBase, _rowBytes), dst, _groups, _groupSize);
+            return;
+        }
         for (int g = 0; g < _groups; g++)
         {
             StqPacking.UnpackGroup(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
@@ -474,6 +501,7 @@ internal sealed class StqMatrix : IWeightMatrix
     /// accumulator cannot overflow: a uint8 activation is at most 255 and a code at most 8 in
     /// magnitude, so even a 128-wide 4-bit group contributes at most 16 * 255 * 8 = 32,640 per
     /// lane.</summary>
+    [SkipLocalsInit]
     private void VnniColumn(byte[] ua, float[] aScale, float[] y, int o, int seq, int inDim, int outDim)
     {
         Span<sbyte> wbuf = stackalloc sbyte[inDim];
@@ -498,10 +526,9 @@ internal sealed class StqMatrix : IWeightMatrix
                         Vector256.LoadUnsafe(ref ua[sBase + gStart + c]),
                         Vector256.LoadUnsafe(ref wbuf[gStart + c]));
                 }
-                int dot = Vector256.Sum(acc) - Vnni.ZeroPoint * _groupSum[g * OutDim + o];
-                facc += _scales[g * OutDim + o] * dot;
+                facc += _scales[g * OutDim + o] * Vector256.Sum(acc);
             }
-            y[s * outDim + o] = aScale[s] * facc;
+            y[s * outDim + o] = aScale[s] * (facc - _zeroBias[o]);
         }
     }
 
@@ -524,6 +551,7 @@ internal sealed class StqMatrix : IWeightMatrix
         }));
     }
 
+    [SkipLocalsInit]
     private void FloatColumn(float[] x, float[] y, int seq, int inDim, int outDim, int o)
     {
         Span<float> buf = stackalloc float[inDim];
@@ -539,8 +567,8 @@ internal sealed class StqMatrix : IWeightMatrix
         }
     }
 
-    /// <summary>Bytes this matrix occupies in memory (codes + scales + the derived group sums).</summary>
-    public long ResidentBytes => _codes.LongLength + _scales.LongLength * 4 + _groupSum.LongLength * 4;
+    /// <summary>Bytes this matrix occupies in memory (codes + scales + the derived zero-point bias).</summary>
+    public long ResidentBytes => _codes.LongLength + _scales.LongLength * 4 + _zeroBias.LongLength * 4;
 }
 
 /// <summary>Builds the right <see cref="IWeightMatrix"/> for a tensor in an <c>.stq</c> file,
