@@ -1,5 +1,9 @@
 #nullable enable
 
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+
 namespace SentenceTransformers.Stq;
 
 /// <summary>
@@ -176,10 +180,15 @@ public static class StqPacking
             }
             case StqBand.Q4_0:
             {
-                var table = _q4Table;
                 int i = 0;
                 int fullBytes = count >> 1;
-                for (int b = 0; b < fullBytes; b++)
+                if (Vector128.IsHardwareAccelerated && fullBytes >= 16)
+                {
+                    i = UnpackQ4Vectorized(src, dst, fullBytes) * 2;
+                }
+
+                var table = _q4Table;
+                for (int b = i >> 1; b < fullBytes; b++)
                 {
                     int t = src[b] * 2;
                     dst[i]     = table[t];
@@ -194,6 +203,44 @@ public static class StqPacking
             }
             default:
                 throw new ArgumentOutOfRangeException(nameof(band), band, "Not a packed band.");
+        }
+    }
+
+    // Nibble extraction, 16 source bytes -> 32 codes per iteration. Each source byte is duplicated into
+    // an adjacent lane pair, then the even lane takes the low nibble and the odd lane the high one, so
+    // the codes come out already in order and no cross-lane merge is needed. Subtracting 8 in byte
+    // space produces the right two's-complement sbyte directly, because every nibble is in [0, 15].
+    private static readonly Vector128<byte> _q4DupLow  = Vector128.Create((byte)0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7);
+    private static readonly Vector128<byte> _q4DupHigh = Vector128.Create((byte)8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15);
+    private static readonly Vector128<byte> _q4EvenLane = Vector128.Create((byte)0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0);
+
+    /// <summary>Unpacks whole 16-byte blocks; returns how many source bytes were consumed.</summary>
+    private static int UnpackQ4Vectorized(ReadOnlySpan<byte> src, Span<sbyte> dst, int fullBytes)
+    {
+        ref byte s0 = ref MemoryMarshal.GetReference(src);
+        ref sbyte d0 = ref MemoryMarshal.GetReference(dst);
+
+        var mask = Vector128.Create((byte)0x0F);
+        var bias = Vector128.Create((byte)8);
+        var even = _q4EvenLane;
+
+        int b = 0;
+        for (; b + 16 <= fullBytes; b += 16)
+        {
+            var v = Vector128.LoadUnsafe(ref s0, (nuint)b);
+            Emit(Vector128.Shuffle(v, _q4DupLow),  ref d0, (nuint)(b * 2),      mask, bias, even);
+            Emit(Vector128.Shuffle(v, _q4DupHigh), ref d0, (nuint)(b * 2 + 16), mask, bias, even);
+        }
+        return b;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void Emit(Vector128<byte> dup, ref sbyte dst, nuint offset,
+                         Vector128<byte> mask, Vector128<byte> bias, Vector128<byte> even)
+        {
+            var lo = dup & mask;
+            var hi = Vector128.ShiftRightLogical(dup, 4) & mask;
+            var codes = Vector128.ConditionalSelect(even, lo, hi) - bias;
+            codes.AsSByte().StoreUnsafe(ref dst, offset);
         }
     }
 

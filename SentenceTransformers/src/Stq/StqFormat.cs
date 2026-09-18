@@ -121,9 +121,15 @@ public static class StqFormat
         _ => throw new ArgumentOutOfRangeException(nameof(band), band, "Not a packed band."),
     };
 
-    /// <summary>The default group size for a band: 128 for the ternary bands (matching Bonsai's
-    /// g128 packings), 32 for 4-bit, where the finer grouping is worth its 0.375 bits/weight.</summary>
-    public static int DefaultGroupSizeFor(StqBand band) => band == StqBand.Q4_0 ? 32 : DefaultGroupSize;
+    /// <summary>
+    /// The default group size for every band: 128, matching Bonsai's g128 packings.
+    ///
+    /// <para>4-bit used to default to 32, on the reasoning that a finer grouping is worth its extra
+    /// 0.375 bits/weight. Measured, it is not: the quality difference is negligible, while the packed
+    /// kernel reduces and rescales once per group, so quadrupling the group count costs real time -
+    /// 8610 ms/iter at 32 against 5158 at 128 on the same weights. Fewer, larger groups it is.</para>
+    /// </summary>
+    public static int DefaultGroupSizeFor(StqBand band) => DefaultGroupSize;
 
     /// <summary>Total bits per weight including the FP16 group scale - the number quoted in the
     /// band docs (2.125 for TQ2_0, 1.75 for TQ1_0 at group 128).</summary>

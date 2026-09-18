@@ -27,8 +27,9 @@ public sealed record ConversionOptions
     /// <summary>Group size for the ternary bands.</summary>
     public int GroupSize { get; init; } = StqFormat.DefaultGroupSize;
 
-    /// <summary>Group size for the 4-bit band. Finer than the ternary default because 4-bit spends
-    /// its scale budget better: 32 costs 4.5 bits/weight against 128's 4.125.</summary>
+    /// <summary>Group size for the 4-bit band. 128 by default: it is both smaller on disk (4.125
+    /// bits/weight against 32's 4.5) and substantially faster to run, because the kernel reduces and
+    /// rescales once per group. Finer groups buy no measurable quality here.</summary>
     public int Int4GroupSize { get; init; } = StqFormat.DefaultGroupSizeFor(StqBand.Q4_0);
 
     public TernaryMethod Method { get; init; } = TernaryMethod.Optimal;

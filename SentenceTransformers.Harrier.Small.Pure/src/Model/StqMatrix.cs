@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Numerics.Tensors;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using SentenceTransformers;
 using SentenceTransformers.Stq;
@@ -118,6 +119,7 @@ internal sealed class StqMatrix : IWeightMatrix
         {
             if (_rotation is not null)
             {
+                long rotTs = ForwardProfile.Start();
                 // Rotate into scratch rather than in place: `x` is the caller's activation buffer and is
                 // reused by sibling projections (q, k and v all read the same normed hidden state).
                 rotated = ArrayPool<float>.Shared.Rent(seq * InDim);
@@ -133,6 +135,7 @@ internal sealed class StqMatrix : IWeightMatrix
                     return ValueTask.CompletedTask;
                 }).ConfigureAwait(false);
                 x = rotated;
+                ForwardProfile.Stop("stq_rotate", rotTs);
             }
 
             if (Vnni.IsSupported)
@@ -159,15 +162,145 @@ internal sealed class StqMatrix : IWeightMatrix
         var (ua, aScale) = await VnniActivations.QuantizeAsync(x, seq, inDim, parallelOptions).ConfigureAwait(false);
         try
         {
-            await ParallelExecution.ForAsync(0, outDim, parallelOptions, (o, _) =>
+            int tiles = (outDim + TileOut - 1) / TileOut;
+            await ParallelExecution.ForAsync(0, tiles, parallelOptions, (t, _) =>
             {
-                VnniColumn(ua, aScale, y, o, seq, inDim, outDim);
+                int o0 = t * TileOut;
+                if (o0 + TileOut <= outDim)
+                {
+                    Tile(ua, aScale, y, o0, seq, inDim, outDim);
+                }
+                else
+                {
+                    for (int o = o0; o < outDim; o++)
+                    {
+                        VnniColumn(ua, aScale, y, o, seq, inDim, outDim);
+                    }
+                }
                 return ValueTask.CompletedTask;
             }).ConfigureAwait(false);
         }
         finally
         {
             VnniActivations.Return(ua, aScale);
+        }
+    }
+
+    /// <summary>Output channels computed together per tile.</summary>
+    private const int TileOut = 4;
+
+    /// <summary>
+    /// The hot kernel: four output channels and two positions at a time, giving eight independent
+    /// int32 accumulator chains.
+    ///
+    /// <para>This is what the naive one-channel-at-a-time loop gets wrong, and it costs far more than
+    /// the packing does. <c>acc = DotAccumulate(acc, ...)</c> is a serial dependency: each step waits
+    /// on the previous one's ~5-cycle latency, so a single chain runs at a fraction of the unit's
+    /// throughput no matter how cheap the unpack is. Eight chains cover that latency. Measured on a
+    /// 640-wide projection this is worth several times more than vectorizing the nibble unpack (~1%)
+    /// or widening the scale groups (~7%), both of which were tried first.</para>
+    ///
+    /// <para>The per-group scales are what stop this being a plain int8 GEMM: each group's dot has to
+    /// be reduced and scaled separately, so the accumulators are reset per group rather than run the
+    /// length of the row.</para>
+    /// </summary>
+    private void Tile(byte[] ua, float[] aScale, float[] y, int o0, int seq, int inDim, int outDim)
+    {
+        Span<sbyte> w = stackalloc sbyte[TileOut * inDim];
+        for (int k = 0; k < TileOut; k++)
+        {
+            UnpackRow(o0 + k, w.Slice(k * inDim, inDim));
+        }
+
+        int groups = _groups, gs = _groupSize;
+        int width = Vector256<byte>.Count;
+        ref byte uaRef = ref MemoryMarshal.GetArrayDataReference(ua);
+        ref sbyte wRef = ref MemoryMarshal.GetReference(w);
+
+        for (int s = 0; s < seq; s += 2)
+        {
+            bool two = s + 1 < seq;
+            int sb0 = s * inDim;
+            int sb1 = two ? sb0 + inDim : sb0;
+
+            float f00 = 0, f01 = 0, f02 = 0, f03 = 0;
+            float f10 = 0, f11 = 0, f12 = 0, f13 = 0;
+
+            for (int g = 0; g < groups; g++)
+            {
+                int gStart = g * gs;
+                var a00 = Vector256<int>.Zero; var a01 = Vector256<int>.Zero;
+                var a02 = Vector256<int>.Zero; var a03 = Vector256<int>.Zero;
+                var a10 = Vector256<int>.Zero; var a11 = Vector256<int>.Zero;
+                var a12 = Vector256<int>.Zero; var a13 = Vector256<int>.Zero;
+
+                for (int c = 0; c < gs; c += width)
+                {
+                    int off = gStart + c;
+                    var w0 = Vector256.LoadUnsafe(ref wRef, (nuint)off);
+                    var w1 = Vector256.LoadUnsafe(ref wRef, (nuint)(inDim + off));
+                    var w2 = Vector256.LoadUnsafe(ref wRef, (nuint)(2 * inDim + off));
+                    var w3 = Vector256.LoadUnsafe(ref wRef, (nuint)(3 * inDim + off));
+
+                    var av0 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb0 + off));
+                    a00 = Vnni.DotAccumulate(a00, av0, w0);
+                    a01 = Vnni.DotAccumulate(a01, av0, w1);
+                    a02 = Vnni.DotAccumulate(a02, av0, w2);
+                    a03 = Vnni.DotAccumulate(a03, av0, w3);
+
+                    if (two)
+                    {
+                        var av1 = Vector256.LoadUnsafe(ref uaRef, (nuint)(sb1 + off));
+                        a10 = Vnni.DotAccumulate(a10, av1, w0);
+                        a11 = Vnni.DotAccumulate(a11, av1, w1);
+                        a12 = Vnni.DotAccumulate(a12, av1, w2);
+                        a13 = Vnni.DotAccumulate(a13, av1, w3);
+                    }
+                }
+
+                int gi = g;
+                float sc0 = _scales[(o0) * groups + gi],     sc1 = _scales[(o0 + 1) * groups + gi];
+                float sc2 = _scales[(o0 + 2) * groups + gi], sc3 = _scales[(o0 + 3) * groups + gi];
+                int z0 = Vnni.ZeroPoint * _groupSum[(o0) * groups + gi];
+                int z1 = Vnni.ZeroPoint * _groupSum[(o0 + 1) * groups + gi];
+                int z2 = Vnni.ZeroPoint * _groupSum[(o0 + 2) * groups + gi];
+                int z3 = Vnni.ZeroPoint * _groupSum[(o0 + 3) * groups + gi];
+
+                f00 += sc0 * (Vector256.Sum(a00) - z0);
+                f01 += sc1 * (Vector256.Sum(a01) - z1);
+                f02 += sc2 * (Vector256.Sum(a02) - z2);
+                f03 += sc3 * (Vector256.Sum(a03) - z3);
+
+                if (two)
+                {
+                    f10 += sc0 * (Vector256.Sum(a10) - z0);
+                    f11 += sc1 * (Vector256.Sum(a11) - z1);
+                    f12 += sc2 * (Vector256.Sum(a12) - z2);
+                    f13 += sc3 * (Vector256.Sum(a13) - z3);
+                }
+            }
+
+            float as0 = aScale[s];
+            int yb0 = s * outDim + o0;
+            y[yb0] = as0 * f00; y[yb0 + 1] = as0 * f01; y[yb0 + 2] = as0 * f02; y[yb0 + 3] = as0 * f03;
+
+            if (two)
+            {
+                float as1 = aScale[s + 1];
+                int yb1 = (s + 1) * outDim + o0;
+                y[yb1] = as1 * f10; y[yb1 + 1] = as1 * f11; y[yb1 + 2] = as1 * f12; y[yb1 + 3] = as1 * f13;
+            }
+        }
+    }
+
+    /// <summary>Unpacks one output row's packed codes into signed bytes.</summary>
+    private void UnpackRow(int o, Span<sbyte> dst)
+    {
+        int rowBase = o * _rowBytes;
+        for (int g = 0; g < _groups; g++)
+        {
+            StqPacking.UnpackGroup(_band, _codes.AsSpan(rowBase + g * _groupBytes, _groupBytes),
+                                   dst.Slice(g * _groupSize, _groupSize), _groupSize);
         }
     }
 

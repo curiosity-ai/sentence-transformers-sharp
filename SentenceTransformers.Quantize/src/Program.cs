@@ -13,7 +13,7 @@ SentenceTransformers.Quantize - convert Harrier checkpoints to ternary .stq file
            [--embed-band <band>|f32]     band for the embedding table       (default q4_0)
                                          f32 leaves it unquantized (ablation)
            [--group <n>]                 weights per ternary scale group    (default 128)
-           [--int4-group <n>]            weights per 4-bit scale group      (default 32)
+           [--int4-group <n>]            weights per 4-bit scale group      (default 128)
            [--embed-group <n>]           scale group for the embedding table (default 128)
            [--method optimal|absmean|twn] ternary group quantization rule   (default optimal)
            [--no-rotate]                 store in the original basis (ablation only)
