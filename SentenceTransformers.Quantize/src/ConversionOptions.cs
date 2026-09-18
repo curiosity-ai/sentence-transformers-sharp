@@ -3,7 +3,7 @@ using SentenceTransformers.Stq;
 namespace SentenceTransformers.Quantize;
 
 /// <summary>Everything the converter needs to turn a safetensors checkpoint into an <c>.stq</c> file.</summary>
-public sealed class ConversionOptions
+public sealed record ConversionOptions
 {
     public required string InputPath { get; init; }
     public required string OutputPath { get; init; }
