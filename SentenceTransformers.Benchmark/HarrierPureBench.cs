@@ -39,6 +39,7 @@ public static class HarrierPureBench
         var stqPaths = (args ?? Array.Empty<string>()).Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList();
         bool profile = (args ?? Array.Empty<string>()).Contains("--profile");
         bool abRotation = (args ?? Array.Empty<string>()).Contains("--ab-rotation");
+        bool abSharing = (args ?? Array.Empty<string>()).Contains("--ab-sharing");
         if (stqPaths.Count == 0 && Environment.GetEnvironmentVariable("HARRIER_STQ_PATH") is { Length: > 0 } fromEnv)
         {
             stqPaths.Add(fromEnv);
@@ -50,7 +51,7 @@ public static class HarrierPureBench
         Console.WriteLine($"Corpus: {corpus.Length} distinct sentences, ~{corpus[0].Split(' ').Length} words each");
         Console.WriteLine($"Warm-up rounds: {WarmupRounds}, timed rounds: {TimedRounds}");
         Console.WriteLine();
-        Console.WriteLine($"  {"mode",-26} {"load s",8} {"ms/iter",10} {"emb/s",9} {"MB res.",9} {"MB alloc/it",12} {"GC 0/1/2",10}");
+        Console.WriteLine($"  {"mode",-26} {"load s",8} {"ms/iter",10} {"emb/s",9} {"par",5} {"MB res.",9} {"MB alloc/it",12} {"GC 0/1/2",10}");
 
         // fp32 and Int4 are deliberately not run. fp32 is three times slower than anything else here
         // and Int4 is superseded by the .stq 4-bit path, so both only cost wall clock on every
@@ -68,6 +69,27 @@ public static class HarrierPureBench
             }
 
             string name = Path.GetFileNameWithoutExtension(stqPath);
+
+            if (abSharing)
+            {
+                // A/B rotating once per projection group against once per projection, in this one
+                // process, because the difference is small enough to be swamped by run-to-run spread.
+                try
+                {
+                    Gemma3Model.ShareGroupRotation = false;
+                    await MeasureAsync($"stq {name} rot/proj", corpus,
+                        () => SentenceEncoder.LoadQuantizedAsync(stqPath, parallelOptions: Options()), profile);
+
+                    Gemma3Model.ShareGroupRotation = true;
+                    await MeasureAsync($"stq {name} rot/group", corpus,
+                        () => SentenceEncoder.LoadQuantizedAsync(stqPath, parallelOptions: Options()), profile);
+                }
+                finally
+                {
+                    Gemma3Model.ShareGroupRotation = true;
+                }
+                continue;
+            }
 
             if (!abRotation)
             {
@@ -170,19 +192,24 @@ public static class HarrierPureBench
         long allocBefore = GC.GetTotalAllocatedBytes(precise: true);
         int g0 = GC.CollectionCount(0), g1 = GC.CollectionCount(1), g2 = GC.CollectionCount(2);
 
+        // CPU time over wall time is the average number of cores actually busy. It answers directly
+        // whether a mode is using the threads it was given, rather than leaving it to be inferred
+        // from the ParallelOptions that were passed in.
+        var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
         var sw = Stopwatch.StartNew();
         for (int i = 0; i < TimedRounds; i++)
         {
             await encoder.EncodeAsync(corpus, Options());
         }
         sw.Stop();
+        double parallelism = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds / sw.Elapsed.TotalMilliseconds;
 
         double allocMbPerIter = (GC.GetTotalAllocatedBytes(precise: true) - allocBefore) / 1024.0 / 1024.0 / TimedRounds;
         string gc = $"{GC.CollectionCount(0) - g0}/{GC.CollectionCount(1) - g1}/{GC.CollectionCount(2) - g2}";
         double ms = sw.Elapsed.TotalMilliseconds / TimedRounds;
 
         Console.WriteLine($"  {label,-26} {loadSw.Elapsed.TotalSeconds,8:F1} {ms,10:F1} {1000.0 * corpus.Length / ms,9:F1} " +
-                          $"{managedMb,9:F0} {allocMbPerIter,12:F1} {gc,10}");
+                          $"{parallelism,5:F1} {managedMb,9:F0} {allocMbPerIter,12:F1} {gc,10}");
 
         if (profile)
         {

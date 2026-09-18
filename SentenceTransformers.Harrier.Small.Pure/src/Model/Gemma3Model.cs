@@ -198,6 +198,54 @@ internal sealed class Gemma3Model
     /// <summary>Value the converter writes into the file's <c>architecture</c> metadata field.</summary>
     public const string TernaryArchitecture = "gemma3-text";
 
+    /// <summary>
+    /// Runs two or three projections that read the same activation, rotating it once for the group
+    /// rather than once per projection.
+    ///
+    /// <para>Only the packed (<c>.stq</c>) path has a rotation at all, and only when its projections
+    /// share one - which they do here, because the converter creates a single rotation per input width
+    /// and q/k/v (and gate/up) all consume the same width. Rotating per projection repeated the same
+    /// transform three times for q/k/v and twice for gate/up: seven per layer where four distinct ones
+    /// suffice, against a stage measured at ~16% of packed-matmul CPU time. Everything else falls
+    /// through to the ordinary per-matrix call.</para>
+    /// </summary>
+    /// <summary>When false, each projection rotates its own input, as before the grouping. Exists so
+    /// the benchmark can A/B the grouping inside one process instead of across runs.</summary>
+    internal static bool ShareGroupRotation = true;
+
+    private static async ValueTask ProjectGroupAsync(float[] x, int seq, ParallelOptions parallelOptions,
+                                                     IWeightMatrix a, float[] ya,
+                                                     IWeightMatrix b, float[] yb,
+                                                     IWeightMatrix c = null, float[] yc = null)
+    {
+        var shared = ShareGroupRotation ? StqMatrix.SharedRotation(a, b, c) : null;
+        if (shared is null)
+        {
+            await a.MultiplyAsync(x, ya, seq, parallelOptions).ConfigureAwait(false);
+            await b.MultiplyAsync(x, yb, seq, parallelOptions).ConfigureAwait(false);
+            if (c is not null)
+            {
+                await c.MultiplyAsync(x, yc, seq, parallelOptions).ConfigureAwait(false);
+            }
+            return;
+        }
+
+        float[] rotated = await StqMatrix.RentRotatedAsync(shared, x, seq, a.InDim, parallelOptions).ConfigureAwait(false);
+        try
+        {
+            await ((StqMatrix)a).MultiplyRotatedAsync(rotated, ya, seq, parallelOptions).ConfigureAwait(false);
+            await ((StqMatrix)b).MultiplyRotatedAsync(rotated, yb, seq, parallelOptions).ConfigureAwait(false);
+            if (c is not null)
+            {
+                await ((StqMatrix)c).MultiplyRotatedAsync(rotated, yc, seq, parallelOptions).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(rotated);
+        }
+    }
+
     internal static ArrayPool<float> _pooledArray = ArrayPool<float>.Create(512000, 24);
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -254,9 +302,8 @@ internal sealed class Gemma3Model
                 ForwardProfile.Stop("norm+resid", ts);
 
                 ts = ForwardProfile.Start();
-                await layer.QProj.MultiplyAsync(normed, q, seq, parallelOptions).ConfigureAwait(false);
-                await layer.KProj.MultiplyAsync(normed, k, seq, parallelOptions).ConfigureAwait(false);
-                await layer.VProj.MultiplyAsync(normed, v, seq, parallelOptions).ConfigureAwait(false);
+                await ProjectGroupAsync(normed, seq, parallelOptions,
+                                        layer.QProj, q, layer.KProj, k, layer.VProj, v).ConfigureAwait(false);
                 ForwardProfile.Stop("qkv_proj", ts);
 
                 ts = ForwardProfile.Start();
@@ -287,8 +334,8 @@ internal sealed class Gemma3Model
                 ForwardProfile.Stop("norm+resid", ts);
 
                 ts = ForwardProfile.Start();
-                await layer.GateProj.MultiplyAsync(normed, gate, seq, parallelOptions).ConfigureAwait(false);
-                await layer.UpProj.MultiplyAsync(normed, up, seq, parallelOptions).ConfigureAwait(false);
+                await ProjectGroupAsync(normed, seq, parallelOptions,
+                                        layer.GateProj, gate, layer.UpProj, up).ConfigureAwait(false);
                 ForwardProfile.Stop("mlp_proj", ts);
 
                 ts = ForwardProfile.Start();

@@ -114,69 +114,97 @@ internal sealed class StqMatrix : IWeightMatrix
 
     public async ValueTask MultiplyAsync(float[] x, float[] y, int seq, ParallelOptions parallelOptions)
     {
-        float[] rotated = null;
+        if (_rotation is null)
+        {
+            await MultiplyRotatedAsync(x, y, seq, parallelOptions).ConfigureAwait(false);
+            return;
+        }
+
+        float[] rotated = await RentRotatedAsync(_rotation, x, seq, InDim, parallelOptions).ConfigureAwait(false);
         try
         {
-            if (_rotation is not null)
-            {
-                // Rotate into scratch rather than in place: `x` is the caller's activation buffer and is
-                // reused by sibling projections (q, k and v all read the same normed hidden state).
-                rotated = ArrayPool<float>.Shared.Rent(seq * InDim);
-                var src = x;
-                var dst = rotated;
-                int inDim = InDim;
-                var rot = _rotation;
-
-                // A fork/join per rotation is not worth it at sentence-sized sequences. The transform is
-                // O(seq * inDim * log block) - a few percent of the matmul it precedes - but a parallel
-                // loop here runs once per projection, so seven per layer, and each one allocates its
-                // scheduling state. Measured, that was ~14 MB of garbage per encode pass for work that
-                // finishes in microseconds. Fan out only when the sequence is long enough to pay for it.
-                if ((long)seq * inDim >= RotationParallelThreshold && parallelOptions.MaxDegreeOfParallelism > 1)
-                {
-                    // Timed inside the body, not around the await: wrapping a parallel loop on the
-                    // calling thread measures its wall time, which is a quarter of its CPU cost on
-                    // four threads and is not comparable with the stages that are timed inline. That
-                    // mistake made the rotation look like 6% of the profile when it is nearer 25%.
-                    await ParallelExecution.ForAsync(0, seq, parallelOptions, (sIdx, _) =>
-                    {
-                        long ts = ForwardProfile.StageStart();
-                        var row = dst.AsSpan(sIdx * inDim, inDim);
-                        src.AsSpan(sIdx * inDim, inDim).CopyTo(row);
-                        rot.Apply(row);
-                        ForwardProfile.StageStop(ForwardProfile.Stage.Rotate, ts);
-                        return ValueTask.CompletedTask;
-                    }).ConfigureAwait(false);
-                }
-                else
-                {
-                    long ts = ForwardProfile.StageStart();
-                    for (int sIdx = 0; sIdx < seq; sIdx++)
-                    {
-                        var row = dst.AsSpan(sIdx * inDim, inDim);
-                        src.AsSpan(sIdx * inDim, inDim).CopyTo(row);
-                        rot.Apply(row);
-                    }
-                    ForwardProfile.StageStop(ForwardProfile.Stage.Rotate, ts);
-                }
-                x = rotated;
-            }
-
-            if (Vnni.IsSupported)
-            {
-                await MultiplyVnniAsync(x, y, seq, parallelOptions).ConfigureAwait(false);
-            }
-            else
-            {
-                await MultiplyFloatAsync(x, y, seq, parallelOptions).ConfigureAwait(false);
-            }
+            await MultiplyRotatedAsync(rotated, y, seq, parallelOptions).ConfigureAwait(false);
         }
         finally
         {
-            if (rotated is not null)
+            ArrayPool<float>.Shared.Return(rotated);
+        }
+    }
+
+    /// <summary>The basis this matrix's weights are stored in, or null when they are unrotated.</summary>
+    internal HadamardRotation Rotation => _rotation;
+
+    /// <summary>
+    /// The rotation shared by a group of projections that read the same activation, or null if they do
+    /// not all share one. Sibling projections normally do - the converter creates one rotation per
+    /// input width and every tensor of that width references it - which is what lets the caller rotate
+    /// once for the group instead of once per projection.
+    /// </summary>
+    internal static HadamardRotation SharedRotation(IWeightMatrix a, IWeightMatrix b, IWeightMatrix c = null)
+    {
+        if (a is not StqMatrix sa || sa._rotation is null || b is not StqMatrix sb || !ReferenceEquals(sa._rotation, sb._rotation))
+        {
+            return null;
+        }
+        if (c is not null && (c is not StqMatrix sc || !ReferenceEquals(sa._rotation, sc._rotation)))
+        {
+            return null;
+        }
+        return sa._rotation;
+    }
+
+    /// <summary>
+    /// Rotates <paramref name="x"/> into a pooled buffer the caller must return. Public to the model so
+    /// a group of projections sharing a rotation can pay for it once.
+    /// </summary>
+    internal static async ValueTask<float[]> RentRotatedAsync(HadamardRotation rotation, float[] x, int seq, int inDim, ParallelOptions parallelOptions)
+    {
+        // Rotate into scratch rather than in place: `x` is the caller's activation buffer and is still
+        // needed afterwards (the residual stream, and any sibling projection reading the same input).
+        float[] dst = ArrayPool<float>.Shared.Rent(seq * inDim);
+        var src = x;
+
+        if ((long)seq * inDim >= RotationParallelThreshold && parallelOptions.MaxDegreeOfParallelism > 1)
+        {
+            // Timed inside the body, not around the await: wrapping a parallel loop on the calling
+            // thread measures its wall time, which is a quarter of its CPU cost on four threads and is
+            // not comparable with the stages that are timed inline. That mistake made the rotation
+            // look like 6% of the profile when it is nearer 16%.
+            await ParallelExecution.ForAsync(0, seq, parallelOptions, (sIdx, _) =>
             {
-                ArrayPool<float>.Shared.Return(rotated);
+                long ts = ForwardProfile.StageStart();
+                var row = dst.AsSpan(sIdx * inDim, inDim);
+                src.AsSpan(sIdx * inDim, inDim).CopyTo(row);
+                rotation.Apply(row);
+                ForwardProfile.StageStop(ForwardProfile.Stage.Rotate, ts);
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
+        }
+        else
+        {
+            long ts = ForwardProfile.StageStart();
+            for (int sIdx = 0; sIdx < seq; sIdx++)
+            {
+                var row = dst.AsSpan(sIdx * inDim, inDim);
+                src.AsSpan(sIdx * inDim, inDim).CopyTo(row);
+                rotation.Apply(row);
             }
+            ForwardProfile.StageStop(ForwardProfile.Stage.Rotate, ts);
+        }
+        return dst;
+    }
+
+    /// <summary>Multiplies activations that are <b>already</b> in this matrix's basis - either because
+    /// the weights are unrotated, or because the caller rotated once for a group of projections.</summary>
+    internal async ValueTask MultiplyRotatedAsync(float[] x, float[] y, int seq, ParallelOptions parallelOptions)
+    {
+        if (Vnni.IsSupported)
+        {
+            await MultiplyVnniAsync(x, y, seq, parallelOptions).ConfigureAwait(false);
+        }
+        else
+        {
+            await MultiplyFloatAsync(x, y, seq, parallelOptions).ConfigureAwait(false);
         }
     }
 
