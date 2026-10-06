@@ -38,6 +38,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.LoraTr
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.Bert.Pure", "SentenceTransformers.Bert.Pure\SentenceTransformers.Bert.Pure.csproj", "{BDA7E314-193B-4B1E-8B51-8314B204D05C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SentenceTransformers.EmbeddingGemma2", "SentenceTransformers.EmbeddingGemma2\SentenceTransformers.EmbeddingGemma2.csproj", "{86A24EAE-5D35-4FFC-A251-F596CD097CEC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -216,6 +218,18 @@ Global
 		{BDA7E314-193B-4B1E-8B51-8314B204D05C}.Release|x64.Build.0 = Release|Any CPU
 		{BDA7E314-193B-4B1E-8B51-8314B204D05C}.Release|x86.ActiveCfg = Release|Any CPU
 		{BDA7E314-193B-4B1E-8B51-8314B204D05C}.Release|x86.Build.0 = Release|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Debug|x64.Build.0 = Debug|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Debug|x86.Build.0 = Debug|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Release|x64.ActiveCfg = Release|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Release|x64.Build.0 = Release|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Release|x86.ActiveCfg = Release|Any CPU
+		{86A24EAE-5D35-4FFC-A251-F596CD097CEC}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

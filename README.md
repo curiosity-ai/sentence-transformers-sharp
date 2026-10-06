@@ -46,6 +46,7 @@ float[][] vectors = await encoder.EncodeAsync(new[]
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Medium.svg?label=SentenceTransformers.Harrier.Medium)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Medium/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Harrier.Medium.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Medium/) | [harrier-oss-v1-0.6b](https://huggingface.co/onnx-community/harrier-oss-v1-0.6b-ONNX) | 1024 | 32768 | Multilingual | Downloaded on first use |
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Small.svg?label=SentenceTransformers.Harrier.Small)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Harrier.Small.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small/) | [harrier-oss-v1-270m](https://huggingface.co/onnx-community/harrier-oss-v1-270m-ONNX) | 640 | 32768 | Multilingual | Downloaded on first use |
 | [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.Harrier.Small.Pure.svg?label=SentenceTransformers.Harrier.Small.Pure)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small.Pure/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.Harrier.Small.Pure.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.Harrier.Small.Pure/) | [harrier-oss-v1-270m](https://huggingface.co/microsoft/harrier-oss-v1-270m) (**pure C#, no ONNX**) | 640 | 32768 | Multilingual | Downloaded on first use |
+| [![NuGet](https://img.shields.io/nuget/v/SentenceTransformers.EmbeddingGemma2.svg?label=SentenceTransformers.EmbeddingGemma2)](https://www.nuget.org/packages/SentenceTransformers.EmbeddingGemma2/) [![Downloads](https://img.shields.io/nuget/dt/SentenceTransformers.EmbeddingGemma2.svg?label=)](https://www.nuget.org/packages/SentenceTransformers.EmbeddingGemma2/) | EmbeddingGemma 2: [text-270m](https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm), [text-vision-440m](https://huggingface.co/litert-community/embeddinggemma-2-text-vision-440m-litert-lm), [740m](https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm) (**pure C#**; text, images, audio) | 768 (MRL: 512/256/128) | 1024 | Multilingual | Downloaded on first use |
 
 - **Embedded** models bundle the ONNX weights inside the NuGet package, so the encoder is ready
   immediately after construction.
@@ -68,6 +69,7 @@ dotnet add package SentenceTransformers.ArcticXs
 dotnet add package SentenceTransformers.Qwen3
 dotnet add package SentenceTransformers.Harrier.Medium
 dotnet add package SentenceTransformers.Harrier.Small
+dotnet add package SentenceTransformers.EmbeddingGemma2
 ```
 
 Targets **.NET 10**.
@@ -208,6 +210,78 @@ and can approach parity with the 512-bit path. The one gap is "classic" AVX-512 
 intrinsic, so there the pure build must fall back to widen + `vpmaddwd` (~6× the instructions) and lands
 ~2.5× off ONNX. Either way the pure build's case is **zero native dependencies** (trim/AOT/WASM/mobile,
 one managed package) and **higher fidelity**, at a CPU-inference cost within a small multiple of ONNX.
+
+### EmbeddingGemma 2 — multimodal (text, images, audio), pure C#
+
+`SentenceTransformers.EmbeddingGemma2` runs Google's **EmbeddingGemma 2** family from the official
+LiteRT-LM bundles (`.litertlm`), in a single package with **no native dependencies** — no LiteRT /
+TFLite runtime, no native tokenizer, no image or audio codec libraries:
+
+| `EmbeddingGemma2Model` | Bundle | Download | Inputs |
+| --- | --- | ---: | --- |
+| `Text270M` (default) | [embeddinggemma-2-text-270m](https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm) | 165 MB | text |
+| `TextVision440M` | [embeddinggemma-2-text-vision-440m](https://huggingface.co/litert-community/embeddinggemma-2-text-vision-440m-litert-lm) | 388 MB | text, images |
+| `Multimodal740M` | [embeddinggemma-2-740m](https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm) | 485 MB | text, images, audio |
+
+All three share the same text tower, so text embeddings are identical across bundles, and images and
+audio land in the same 768-d space as text.
+
+```csharp
+using SentenceTransformers.EmbeddingGemma2;
+
+// Downloads the bundle once (cached under the temp folder), then loads it.
+using var encoder = await SentenceEncoder.CreateAsync(EmbeddingGemma2Model.Multimodal740M);
+
+// Retrieval: task prompt for queries, "title: … | text: …" for documents.
+float[][] queries = await encoder.EncodeQueriesAsync(new[] { "What causes the northern lights?" });
+float[][] docs = await encoder.EncodeDocumentsAsync(
+    new[] { "Auroras are caused by charged particles from the sun." }, titles: new[] { "Aurora" });
+
+// Images (PNG / JPEG / BMP, or raw RGB/RGBA/BGRA pixels) and audio (WAV, PCM16 or float samples).
+float[] photo = await encoder.EncodeImageAsync(EmbeddingGemma2Image.FromFile("photo.jpg"));
+float[] clip = await encoder.EncodeAudioAsync(EmbeddingGemma2Audio.FromFile("speech.wav"));
+
+// Interleaved content → one embedding (strings convert implicitly).
+float[] mixed = await encoder.EncodeContentAsync(new EmbeddingGemma2Content[]
+{
+    "A photo of", EmbeddingGemma2Image.FromFile("photo.jpg"), "taken at night",
+});
+
+// Matryoshka: shorter vectors (re-normalized) for cheaper storage.
+encoder.OutputDimension = 256;
+```
+
+Other task prompts are in `SentenceEncoder.Prompts` (question answering, fact checking, code retrieval,
+classification, clustering, sentence similarity). Inputs longer than 1024 tokens are truncated by default.
+Set `OverflowStrategy` to `ChunkAndAverage` or `Error` to change that; the long-document chunking helpers
+(`ChunkAndEncodeAsync`, …) work as with every other encoder. Use `VisionTokensPerImage = 70` to halve
+the image cost (the default is 140 soft tokens per image).
+
+**Fidelity.** The package is a port of the `litert-lm` runtime's embedding engine, not an approximation.
+- **Text:** the SentencePiece tokenizer is token-for-token identical to the reference.
+- **Images:** decoding (PNG / JPEG / BMP) and the sRGB Catmull-Rom resize reproduce `stb_image` /
+  `stb_image_resize2` byte for byte.
+- **Audio:** the log-mel front-end matches to 1e-7.
+- **Model graphs:** the int4 / int2 / int8 weights are executed with the same dynamic (`qd8`) and static
+  int8 activation quantization that XNNPACK uses.
+
+Every layer is verified against the TFLite reference, teacher-forced so each comparison isolates one
+layer: text layers agree to ~1e-7, and every audio graph op to 1e-5. End-to-end cosine similarity with
+the LiteRT-LM engine is ≥ 0.996 for text, images and audio. That is the same agreement the reference's
+own TFLite interpreter reaches with the engine, because XNNPACK's int8 rounding differs slightly between
+its two execution paths.
+
+**Performance** (4-vCPU AVX-512 VM; LiteRT-LM engine on the same machine for comparison):
+
+| Workload | Pure C#, 1 thread | Pure C#, 4 threads | LiteRT-LM, 1 thread | LiteRT-LM, 4 threads |
+| --- | ---: | ---: | ---: | ---: |
+| Short query (15 tokens) | 67 ms | 43 ms | 131 ms | 64 ms |
+| Batch of 32 sentences | 1.6 s | 0.65 s | 4.2 s | 1.9 s |
+| One 1003-token document | 4.8 s | 2.0 s | 2.5 s | 0.88 s |
+
+The int8 GEMMs use `AvxVnni` (256-bit), an AVX-512BW or AVX2 `vpmaddubsw`/`vpmaddwd` sequence, or ARM
+`sdot`. On long sequences LiteRT-LM is still ahead on AVX-512 servers, because .NET 10 does not expose
+their 512-bit `vpdpbusd`.
 
 ### Comparing two texts (cosine similarity)
 
@@ -440,6 +514,16 @@ pooling) on [`TensorPrimitives`](https://learn.microsoft.com/dotnet/api/system.n
 and tokenizes with a from-scratch Gemma byte-level BPE tokenizer — so it depends only on the .NET base
 class library and `System.Numerics.Tensors`.
 
+`SentenceTransformers.EmbeddingGemma2` is also pure managed code. It reads the `.litertlm` container
+and the TFLite flatbuffers inside it, with weights taken directly from the int4 / int2 / int8 tensors.
+- **Text tower:** a dedicated SIMD implementation of the Gemma encoder (per-layer embeddings,
+  local/global attention with RoPE, GeGLU, mean pooling and projection) on a packed int8 GEMM and an
+  FMA SGEMM.
+- **Vision and audio towers:** executed op by op from their graphs by a small TFLite graph executor,
+  which routes the heavy `FULLY_CONNECTED` / `BATCH_MATMUL` ops through the same kernels.
+- **Inputs:** the SentencePiece BPE tokenizer, the image decoders and resizer, and the audio front-end
+  are C# ports of the libraries the reference runtime uses.
+
 ## Contributing & building
 
 ```bash
@@ -447,13 +531,23 @@ dotnet build SentenceTransformers.sln -c Release
 dotnet test  SentenceTransformers.sln
 ```
 
+The EmbeddingGemma 2 parity tests compare against fixtures generated with Google's `litert-lm` Python
+runtime by [`scripts/generate_embeddinggemma2_reference.py`](scripts/generate_embeddinggemma2_reference.py).
+The tests that need model weights are opt-in:
+- Point `EMBEDDINGGEMMA2_MODELS_DIR` at the `.litertlm` files, or set `EMBEDDINGGEMMA2_DOWNLOAD=1` to
+  fetch them.
+- For the per-layer comparisons, also set `EMBEDDINGGEMMA2_REFERENCE_DIR` to the script's dump
+  directory.
+
 NuGet packages are produced and published by the Azure DevOps pipeline in
 [`.devops/azure-pipelines.yml`](.devops/azure-pipelines.yml) on pushes to `main`.
 
 ## License
 
 [MIT](https://opensource.org/licenses/MIT). The BERT tokenizers are derived from
-[BERTTokenizers](https://github.com/NMZivkovic/BertTokenizers) (MIT, © 2021 Othneil Drew). Each wrapped
+[BERTTokenizers](https://github.com/NMZivkovic/BertTokenizers) (MIT, © 2021 Othneil Drew). The
+EmbeddingGemma 2 image decoders and resizer are ports of [stb_image / stb_image_resize2](https://github.com/nothings/stb)
+(public domain / MIT, Sean Barrett). Each wrapped
 model is distributed under its own upstream license — see the linked Hugging Face model pages. The
 [Google Patent Phrase Similarity](https://www.kaggle.com/datasets/google/google-patent-phrase-similarity-dataset)
 dataset bundled with the `SentenceTransformers.LoraTraining` example is © Google, licensed

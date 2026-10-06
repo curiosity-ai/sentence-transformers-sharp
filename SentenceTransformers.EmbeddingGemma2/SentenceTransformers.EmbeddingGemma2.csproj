@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>AnyCPU</Platforms>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>SentenceTransformers.EmbeddingGemma2</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Authors>Curiosity GmbH</Authors>
+    <Copyright>(c) Copyright 2026 Curiosity GmbH - all right reserved</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>www.curiosity.ai</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/curiosity-ai/sentence-transformers-sharp</RepositoryUrl>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageId>SentenceTransformers.EmbeddingGemma2</PackageId>
+    <Description>A 100% managed, dependency-free (no LiteRT / TFLite runtime, no native tokenizer) port of Google's EmbeddingGemma 2 multimodal embedding family: embeddinggemma-2-text-270m, embeddinggemma-2-text-vision-440m and embeddinggemma-2-740m. Loads the official LiteRT-LM (.litertlm) bundles and runs the SentencePiece tokenizer, the int4 text encoder, the int8 vision encoder and the audio encoder in pure SIMD-vectorized C#.</Description>
+    <PackageTags>EmbeddingGemma, EmbeddingGemma2, Gemma, Gemma4, Multimodal, Multilingual, Vision, Audio, Natural Language Processing, NLP, Machine Learning, ML, Embeddings, Sentence Embeddings, Sentence Transformers, LiteRT, Pure CSharp, No ONNX, AOT, SIMD, Quantization, Data Science, Artificial Intelligence, AI, Deep Learning</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SentenceTransformers\SentenceTransformers.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SentenceTransformers.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pure-managed SIMD primitives (TensorPrimitives). No native dependency. -->
+    <PackageReference Include="System.Numerics.Tensors" Version="10.0.9" />
+  </ItemGroup>
+</Project>
