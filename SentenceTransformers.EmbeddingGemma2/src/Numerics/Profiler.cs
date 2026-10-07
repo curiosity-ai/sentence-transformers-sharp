@@ -8,6 +8,7 @@ internal static class Profiler
 {
     public static bool Enabled;
     private static readonly ConcurrentDictionary<string, long> _ticks = new();
+    private static readonly ConcurrentDictionary<string, long> _calls = new();
 
     public readonly struct Scope : IDisposable
     {
@@ -26,18 +27,23 @@ internal static class Profiler
             {
                 long elapsed = Stopwatch.GetTimestamp() - _start;
                 _ticks.AddOrUpdate(_name, elapsed, (_, v) => v + elapsed);
+                _calls.AddOrUpdate(_name, 1, (_, v) => v + 1);
             }
         }
     }
 
     public static Scope Measure(string name) => new(Enabled ? name : null);
 
-    public static void Reset() => _ticks.Clear();
+    public static void Reset()
+    {
+        _ticks.Clear();
+        _calls.Clear();
+    }
 
     public static string Report()
     {
         var total = _ticks.Values.Sum();
         return string.Join(Environment.NewLine, _ticks.OrderByDescending(k => k.Value)
-            .Select(k => $"{k.Key,-24} {k.Value * 1000.0 / Stopwatch.Frequency,10:F2} ms"));
+            .Select(k => $"{k.Key,-24} {k.Value * 1000.0 / Stopwatch.Frequency,10:F2} ms {_calls.GetValueOrDefault(k.Key),8} calls"));
     }
 }

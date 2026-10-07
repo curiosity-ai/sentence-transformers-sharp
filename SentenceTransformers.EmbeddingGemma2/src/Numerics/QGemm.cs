@@ -190,6 +190,7 @@ internal static class QGemm
     public static void Multiply(QuantizedActivations x, QuantizedMatrix w, Span<float> y, int ldy, ParallelOptions po = null, Requantization requant = null)
     {
         using var _ = Profiler.Measure("qgemm");
+        using var __ = Profiler.Enabled ? Profiler.Measure($"qg {x.Rows}x{x.Cols}x{w.Rows}{(requant is null ? "" : " rq")}") : default;
         if (x.Cols != w.Cols)
         {
             throw new ArgumentException($"Inner dimensions differ: {x.Cols} vs {w.Cols}.");
@@ -218,7 +219,7 @@ internal static class QGemm
                 }
                 else
                 {
-                    Parallel.For(0, blocks, po, b => RunBlock(x, w, (float*)yPtr, ldy, b / mBlocks, b % mBlocks, requant));
+                    WorkerPool.For(blocks, po, b => RunBlock(x, w, (float*)yPtr, ldy, b / mBlocks, b % mBlocks, requant));
                 }
             }
         }
@@ -259,10 +260,7 @@ internal static class QGemm
                         {
                             for (int a = 0; a < valid; a++)
                             {
-                                for (int b = 0; b < 4; b++)
-                                {
-                                    Store(x, w, y, ldy, i + a, j + b, acc16[a * 4 + b], rq);
-                                }
+                                Store1x4(x, w, y, ldy, i + a, j, Vector128.Load(acc16 + 4 * a), rq);
                             }
                         }
                     }
@@ -286,13 +284,8 @@ internal static class QGemm
                 {
                     sbyte* w0 = wBase + (long)j * k;
                     Dot2x4(x0, x1, w0, w0 + k, w0 + 2 * k, w0 + 3 * k, k, small, acc);
-                    for (int a = 0; a < TileN; a++)
-                    {
-                        for (int b = 0; b < TileM; b++)
-                        {
-                            Store(x, w, y, ldy, i + a, j + b, acc[a * TileM + b], rq);
-                        }
-                    }
+                    Store1x4(x, w, y, ldy, i, j, Vector128.Load(acc), rq);
+                    Store1x4(x, w, y, ldy, i + 1, j, Vector128.Load(acc + TileM), rq);
                 }
                 for (; j < m1; j++)
                 {
@@ -310,10 +303,7 @@ internal static class QGemm
                     sbyte* w0 = wBase + (long)j * k;
                     // Reuse the 2x4 kernel with the same row twice: still 4 outputs per pass.
                     Dot2x4(xr, xr, w0, w0 + k, w0 + 2 * k, w0 + 3 * k, k, small, acc);
-                    for (int b = 0; b < TileM; b++)
-                    {
-                        Store(x, w, y, ldy, i, j + b, acc[b], rq);
-                    }
+                    Store1x4(x, w, y, ldy, i, j, Vector128.Load(acc), rq);
                 }
                 for (; j < m1; j++)
                 {
@@ -327,32 +317,42 @@ internal static class QGemm
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static unsafe void Store4x4(QuantizedActivations x, QuantizedMatrix w, float* y, int ldy, int row, int col, int* acc, Requantization rq)
     {
-        if (rq is not null)
+        for (int a = 0; a < 4; a++)
         {
-            for (int a = 0; a < 4; a++)
-            {
-                for (int b = 0; b < 4; b++)
-                {
-                    Store(x, w, y, ldy, row + a, col + b, acc[a * 4 + b], rq);
-                }
-            }
-            return;
+            Store1x4(x, w, y, ldy, row + a, col, Vector128.Load(acc + 4 * a), rq);
         }
+    }
+
+    /// <summary>Epilogue for one row × 4 consecutive columns: the arithmetic of <see cref="Store"/>, lane-wise
+    /// (round half to even, clamp and the integer round trip are all exact per lane, so the bits are the same).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void Store1x4(QuantizedActivations x, QuantizedMatrix w, float* y, int ldy, int row, int col, Vector128<int> acc, Requantization rq)
+    {
         fixed (int* rsp = w.RowSum)
-        fixed (float* swp = w.Scale)
         {
-            var rs = Vector128.Load(rsp + col);
-            var sw = Vector128.Load(swp + col);
-            var bias = w.Bias is null ? Vector128<float>.Zero : Vector128.Create(w.Bias[col], w.Bias[col + 1], w.Bias[col + 2], w.Bias[col + 3]);
-            for (int a = 0; a < 4; a++)
+            var corr = acc - Vector128.Create(128 + x.ZeroPoint[row]) * Vector128.Load(rsp + col);
+            float* dst = y + (long)row * ldy + col;
+            if (rq is not null)
             {
-                var corr = Vector128.Load(acc + 4 * a) - Vector128.Create(128 + x.ZeroPoint[row + a]) * rs;
-                var v = Vector128.ConvertToSingle(corr) * Vector128.Create(x.Scale[row + a]) * sw;
+                fixed (float* sp = rq.Scale)
+                {
+                    var v = Vector128.Round(Vector128.ConvertToSingle(corr) * Vector128.Load(sp + col));
+                    var r = Vector128.ConvertToInt32(Vector128.Min(Vector128.Max(v, Vector128.Create(-128f)), Vector128.Create(127f)));
+                    (Vector128.ConvertToSingle(r) * Vector128.Create(rq.OutputScale)).Store(dst);
+                }
+                return;
+            }
+            fixed (float* swp = w.Scale)
+            {
+                var v = Vector128.ConvertToSingle(corr) * Vector128.Create(x.Scale[row]) * Vector128.Load(swp + col);
                 if (w.Bias is not null)
                 {
-                    v += bias;
+                    fixed (float* bp = w.Bias)
+                    {
+                        v += Vector128.Load(bp + col);
+                    }
                 }
-                v.Store(y + (long)(row + a) * ldy + col);
+                v.Store(dst);
             }
         }
     }

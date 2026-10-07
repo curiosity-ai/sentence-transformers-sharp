@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -272,7 +273,12 @@ internal static class Xnn
     {
         float MagicBias = F(0x48C00000), Log2e = F(0x3FB8AA3B);
         float MinusLn2Hi = F(0xBF317218), MinusLn2Lo = F(0x3102E308), C2 = F(0x3F000000), C1 = F(0x3F80007B);
-        for (int i = 0; i < x.Length; i++)
+        int i = 0;
+        if (Avx2.IsSupported && x.Length >= 8)
+        {
+            i = SigmoidAvx2(x, y);
+        }
+        for (; i < x.Length; i++)
         {
             int xb = BitConverter.SingleToInt32Bits(x[i]);
             float z = BitConverter.Int32BitsToSingle(xb | int.MinValue);
@@ -294,6 +300,51 @@ internal static class Xnn
         }
     }
 
+    /// <summary>8 lanes at a time of <see cref="Sigmoid"/>, lane for lane the same operations: the table lookup is a
+    /// gather, and <c>scalef(p, ⌊n⌋)</c> is the exact product <c>p · 2^⌊n⌋</c> (n ≤ 0 and p &lt; 2, so whenever
+    /// <c>⌊n⌋ &lt; −126</c> the result is below the smallest normal and flushed to +0 anyway).
+    /// Returns the number of elements done.</summary>
+    private static unsafe int SigmoidAvx2(ReadOnlySpan<float> x, Span<float> y)
+    {
+        var magic = Vector256.Create(F(0x48C00000));
+        var log2e = Vector256.Create(F(0x3FB8AA3B));
+        var ln2Hi = Vector256.Create(F(0xBF317218));
+        var ln2Lo = Vector256.Create(F(0x3102E308));
+        var c2 = Vector256.Create(F(0x3F000000));
+        var c1 = Vector256.Create(F(0x3F80007B));
+        var minNormal = Vector256.Create(1.17549435E-38f);
+        var one = Vector256.Create(1f);
+        var signBit = Vector256.Create(int.MinValue);
+        int i = 0;
+        fixed (float* table = SigmoidTable)
+        {
+            ref float xr = ref MemoryMarshal.GetReference(x);
+            ref float yr = ref MemoryMarshal.GetReference(y);
+            for (; i + 8 <= x.Length; i += 8)
+            {
+                var xv = Vector256.LoadUnsafe(ref xr, (nuint)i);
+                var xb = xv.AsInt32();
+                var z = (xb | signBit).AsSingle();
+                var n = Vector256.FusedMultiplyAdd(z, log2e, magic);
+                var l = Avx2.GatherVector256(table, n.AsInt32() & Vector256.Create(31), 4);
+                n -= magic;
+                var t = Vector256.FusedMultiplyAdd(n, ln2Hi, z);
+                t = Vector256.FusedMultiplyAdd(n, ln2Lo, t);
+                var p = Vector256.FusedMultiplyAdd(t, c2, c1);
+                t *= l;
+                p = Vector256.FusedMultiplyAdd(t, p, l);
+                var fn = Vector256.Floor(n);
+                var pow2 = Vector256.ShiftLeft(Vector256.ConvertToInt32(fn) + Vector256.Create(127), 23).AsSingle();
+                var e = Vector256.ConditionalSelect(Vector256.LessThan(fn, Vector256.Create(-126f)), Vector256<float>.Zero, p * pow2);
+                e = Vector256.ConditionalSelect(Vector256.LessThan(Vector256.Abs(e), minNormal), Vector256<float>.Zero, e);
+                var f = e / (e + one);
+                var r = Vector256.ConditionalSelect(Vector256.GreaterThanOrEqual(xb, Vector256<int>.Zero).AsSingle(), one - f, f);
+                r.StoreUnsafe(ref yr, (nuint)i);
+            }
+        }
+        return i;
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Tanh: xnn_f32_vtanh_ukernel__avx512f_rational_9_8_div
     // ---------------------------------------------------------------------------------------------
@@ -304,7 +355,28 @@ internal static class Xnn
         const float MaxX = 7.9807181358e+00f, MinX = -7.9807181358e+00f;
         const float A3 = 1.3412411511e-01f, A5 = 3.5330520477e-03f, A7 = 2.1235626264e-05f, A9 = 1.4248920266e-08f;
         const float B2 = 4.6745735407e-01f, B4 = 2.6018999517e-02f, B6 = 3.3472978976e-04f, B8 = 8.1365948290e-07f;
-        for (int i = 0; i < x.Length; i++)
+        int i = 0;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            ref float xr = ref MemoryMarshal.GetReference(x);
+            ref float yr = ref MemoryMarshal.GetReference(y);
+            for (; i + 8 <= x.Length; i += 8)
+            {
+                var v = Vector256.Max(Vector256.Create(MinX), Vector256.Min(Vector256.Create(MaxX), Vector256.LoadUnsafe(ref xr, (nuint)i)));
+                var v2 = v * v;
+                var p = Vector256.FusedMultiplyAdd(v2, Vector256.Create(A9), Vector256.Create(A7));
+                p = Vector256.FusedMultiplyAdd(v2, p, Vector256.Create(A5));
+                p = Vector256.FusedMultiplyAdd(v2, p, Vector256.Create(A3));
+                p = Vector256.FusedMultiplyAdd(v2, p, Vector256.Create(1f));
+                p = v * p;
+                var q = Vector256.FusedMultiplyAdd(v2, Vector256.Create(B8), Vector256.Create(B6));
+                q = Vector256.FusedMultiplyAdd(v2, q, Vector256.Create(B4));
+                q = Vector256.FusedMultiplyAdd(v2, q, Vector256.Create(B2));
+                q = Vector256.FusedMultiplyAdd(v2, q, Vector256.Create(1f));
+                (p / q).StoreUnsafe(ref yr, (nuint)i);
+            }
+        }
+        for (; i < x.Length; i++)
         {
             float v = MathF.Max(MinX, MathF.Min(MaxX, x[i]));
             float v2 = v * v;
@@ -365,11 +437,7 @@ internal static class Xnn
     /// </summary>
     public static void Softmax(Span<float> row, bool maskedPrefix = false)
     {
-        float max = float.NegativeInfinity;
-        foreach (var v in row)
-        {
-            max = MathF.Max(max, v);
-        }
+        float max = TensorPrimitives.Max<float>(row);
         var vmax = Vector128.Create(max);
         int n = row.Length;
         // Elements handled by the 64-wide loop (alternating accumulators); the rest go to the folded accumulator.
@@ -377,6 +445,29 @@ internal static class Xnn
         Span<Vector128<float>> acc = stackalloc Vector128<float>[8];
         acc.Clear();
         int j = 0;
+        if (Vector256.IsHardwareAccelerated && blockEnd >= 32)
+        {
+            // Same lanes, two 256-bit halves per 16-lane accumulator: every lane sees the same operations in the
+            // same order, so the result is identical to the 128-bit loop below.
+            ref float r0 = ref MemoryMarshal.GetReference(row);
+            var vmax8 = Vector256.Create(max);
+            Vector256<float> aLo = default, aHi = default, bLo = default, bHi = default;
+            for (; j + 32 <= blockEnd; j += 32)
+            {
+                aLo += ExpStore(ref r0, j, vmax8);
+                aHi += ExpStore(ref r0, j + 8, vmax8);
+                bLo += ExpStore(ref r0, j + 16, vmax8);
+                bHi += ExpStore(ref r0, j + 24, vmax8);
+            }
+            acc[0] = aLo.GetLower();
+            acc[1] = aLo.GetUpper();
+            acc[2] = aHi.GetLower();
+            acc[3] = aHi.GetUpper();
+            acc[4] = bLo.GetLower();
+            acc[5] = bLo.GetUpper();
+            acc[6] = bHi.GetLower();
+            acc[7] = bHi.GetUpper();
+        }
         for (; j < blockEnd; j += 4)
         {
             acc[((j / Lanes) & 1) * 4 + (j % Lanes) / 4] += ExpGroup(row, j, vmax);
@@ -390,17 +481,28 @@ internal static class Xnn
             acc[(j % Lanes) / 4] += ExpGroup(row, j, vmax);
         }
         float scale = 1f / ReduceAdd(acc[0], acc[1], acc[2], acc[3]);
-        var vs = Vector128.Create(scale);
-        ref float r = ref MemoryMarshal.GetReference(row);
-        j = 0;
-        for (; j + 4 <= n; j += 4)
-        {
-            (Vector128.LoadUnsafe(ref r, (nuint)j) * vs).StoreUnsafe(ref r, (nuint)j);
-        }
-        for (; j < n; j++)
-        {
-            row[j] *= scale;
-        }
+        TensorPrimitives.Multiply(row, scale, row);
+    }
+
+    /// <summary>The 256-bit form of <see cref="ExpGroup"/> for 8 in-range elements.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<float> ExpStore(ref float row, int j, Vector256<float> vmax)
+    {
+        var x = Vector256.LoadUnsafe(ref row, (nuint)j) - vmax;
+        var n = Vector256.FusedMultiplyAdd(x, Vector256.Create(ExpLog2e.ToScalar()), Vector256.Create(ExpMagicBias.ToScalar()));
+        var sc = Vector256.ShiftLeft(n.AsInt32(), 23).AsSingle();
+        n -= Vector256.Create(ExpMagicBias.ToScalar());
+        var t = Vector256.FusedMultiplyAdd(n, Vector256.Create(ExpMinusLn2Hi.ToScalar()), x);
+        t = Vector256.FusedMultiplyAdd(n, Vector256.Create(ExpMinusLn2Lo.ToScalar()), t);
+        var p = Vector256.FusedMultiplyAdd(Vector256.Create(ExpC5.ToScalar()), t, Vector256.Create(ExpC4.ToScalar()));
+        p = Vector256.FusedMultiplyAdd(p, t, Vector256.Create(ExpC3.ToScalar()));
+        p = Vector256.FusedMultiplyAdd(p, t, Vector256.Create(ExpC2.ToScalar()));
+        p = Vector256.FusedMultiplyAdd(p, t, Vector256.Create(ExpC1.ToScalar()));
+        t *= sc;
+        var f = Vector256.FusedMultiplyAdd(t, p, sc);
+        f = Vector256.ConditionalSelect(Vector256.LessThan(x, Vector256.Create(ExpDenormCutoff.ToScalar())), Vector256<float>.Zero, f);
+        f.StoreUnsafe(ref row, (nuint)j);
+        return f;
     }
 
     /// <summary><c>exp(row[j..j+4] − max)</c> stored back in place; lanes past the end of the row count as masked

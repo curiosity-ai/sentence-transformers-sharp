@@ -1,4 +1,6 @@
 using System.Numerics.Tensors;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using SentenceTransformers.EmbeddingGemma2.Numerics;
 
 namespace SentenceTransformers.EmbeddingGemma2.LiteRt;
@@ -26,7 +28,13 @@ internal sealed class GraphTensor
         }
     }
 
-    public static GraphTensor Float(int[] shape, float[] data = null) => new() { Shape = shape, F = data ?? new float[Count(shape)] };
+    /// <summary>The arena of the <see cref="GraphExecutor.Run"/> executing on this thread (null elsewhere).</summary>
+    [ThreadStatic]
+    internal static TensorArena CurrentArena;
+
+    public static GraphTensor Float(int[] shape, float[] data = null) => new() { Shape = shape, F = data ?? NewFloats(Count(shape)) };
+
+    private static float[] NewFloats(int n) => CurrentArena?.Rent(n) ?? new float[n];
     public static GraphTensor Int(int[] shape, int[] data = null) => new() { Shape = shape, I = data ?? new int[Count(shape)] };
     public static GraphTensor Bool(int[] shape, bool[] data = null) => new() { Shape = shape, B = data ?? new bool[Count(shape)] };
 
@@ -45,6 +53,80 @@ internal sealed class GraphTensor
     /// <summary>A copy that shares no storage with this tensor (graph outputs may alias each other through
     /// reshapes, so carried-over state must not be passed back by reference).</summary>
     public GraphTensor Clone() => new() { Shape = (int[])Shape.Clone(), F = (float[])F?.Clone(), I = (int[])I?.Clone(), B = (bool[])B?.Clone() };
+}
+
+/// <summary>
+/// Recycles the float buffers of a <see cref="GraphExecutor"/> run: every activation is rented from exact-size free
+/// lists and returned as soon as the last op reading it has run (reference counted per array, because reshapes
+/// alias their input's storage). A streaming encoder therefore reuses the same few cache-warm buffers for every
+/// chunk instead of allocating hundreds of megabytes of short-lived arrays.
+/// </summary>
+internal sealed class TensorArena
+{
+    private readonly Dictionary<int, Stack<float[]>> _free = new();
+    private readonly Dictionary<float[], int> _refs = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A zeroed buffer of exactly <paramref name="length"/> floats.</summary>
+    public float[] Rent(int length)
+    {
+        float[] a;
+        if (_free.TryGetValue(length, out var stack) && stack.Count > 0)
+        {
+            a = stack.Pop();
+            Array.Clear(a);
+        }
+        else
+        {
+            a = new float[length];
+        }
+        _refs[a] = 0;
+        return a;
+    }
+
+    /// <summary>Records one more tensor slot holding <paramref name="a"/> (no-op for arrays not rented here).</summary>
+    public void AddRef(float[] a)
+    {
+        if (a is not null && _refs.TryGetValue(a, out int c))
+        {
+            _refs[a] = c + 1;
+        }
+    }
+
+    /// <summary>Drops one slot's reference; the buffer is recycled when none remain.</summary>
+    public void Release(float[] a)
+    {
+        if (a is null || !_refs.TryGetValue(a, out int c))
+        {
+            return;
+        }
+        if (c > 1)
+        {
+            _refs[a] = c - 1;
+            return;
+        }
+        _refs.Remove(a);
+        Recycle(a);
+    }
+
+    /// <summary>End of a run: buffers still referenced (op temporaries, graph outputs already copied out) are
+    /// recycled for the next run.</summary>
+    public void EndRun()
+    {
+        foreach (var a in _refs.Keys)
+        {
+            Recycle(a);
+        }
+        _refs.Clear();
+    }
+
+    private void Recycle(float[] a)
+    {
+        if (!_free.TryGetValue(a.Length, out var stack))
+        {
+            _free[a.Length] = stack = new Stack<float[]>();
+        }
+        stack.Push(a);
+    }
 }
 
 /// <summary>
@@ -69,6 +151,9 @@ internal sealed class GraphExecutor
     private readonly TfLiteSubgraph _sg;
     private readonly GraphTensor[] _constants;
     private readonly Action<GraphTensor[], ParallelOptions>[] _ops;
+    private readonly int[][] _opOutputs;
+    private readonly int[][] _deadAfter;   // tensors whose last reader is op i
+    private readonly System.Collections.Concurrent.ConcurrentBag<TensorArena> _arenas = new();
     public TfLiteSignature Signature { get; }
 
     public GraphExecutor(TfLiteModel model, string signatureKey)
@@ -86,6 +171,41 @@ internal sealed class GraphExecutor
             }
         }
         _ops = _sg.Operators.Select(Compile).ToArray();
+
+        // Liveness: a tensor dies after the last op that reads it (or right after its producer if nothing does);
+        // signature outputs and inputs never die inside a run.
+        var lastUse = new int[_sg.Tensors.Length];
+        Array.Fill(lastUse, -1);
+        _opOutputs = new int[_sg.Operators.Length][];
+        for (int i = 0; i < _sg.Operators.Length; i++)
+        {
+            var op = _sg.Operators[i];
+            _opOutputs[i] = op.Outputs.Where(t => t >= 0).ToArray();
+            foreach (int t in _opOutputs[i])
+            {
+                lastUse[t] = Math.Max(lastUse[t], i);
+            }
+            foreach (int t in op.Inputs)
+            {
+                if (t >= 0)
+                {
+                    lastUse[t] = Math.Max(lastUse[t], i);
+                }
+            }
+        }
+        foreach (int t in Signature.Outputs.Values.Concat(Signature.Inputs.Values))
+        {
+            lastUse[t] = -1;
+        }
+        var dead = Enumerable.Range(0, _sg.Operators.Length).Select(_ => new List<int>()).ToArray();
+        for (int t = 0; t < lastUse.Length; t++)
+        {
+            if (lastUse[t] >= 0 && _constants[t] is null)
+            {
+                dead[lastUse[t]].Add(t);
+            }
+        }
+        _deadAfter = dead.Select(l => l.ToArray()).ToArray();
     }
 
     public IReadOnlyDictionary<string, int> InputIndices => Signature.Inputs;
@@ -136,17 +256,46 @@ internal sealed class GraphExecutor
             }
             values[index] = v;
         }
-        for (int i = 0; i < _ops.Length; i++)
+        // With a hook, intermediate tensors must stay intact for the caller: no recycling.
+        var arena = opHook is null ? (_arenas.TryTake(out var a) ? a : new TensorArena()) : null;
+        var previous = GraphTensor.CurrentArena;
+        GraphTensor.CurrentArena = arena;
+        try
         {
-            _ops[i](values, po);
-            opHook?.Invoke(i, values);
+            for (int i = 0; i < _ops.Length; i++)
+            {
+                _ops[i](values, po);
+                opHook?.Invoke(i, values);
+                if (arena is not null)
+                {
+                    foreach (int t in _opOutputs[i])
+                    {
+                        arena.AddRef(values[t]?.F);
+                    }
+                    foreach (int t in _deadAfter[i])
+                    {
+                        arena.Release(values[t]?.F);
+                        values[t] = null;
+                    }
+                }
+            }
+            var result = new Dictionary<string, GraphTensor>(StringComparer.Ordinal);
+            foreach (var (name, index) in Signature.Outputs)
+            {
+                // Outputs leave the run: copy them out of recycled storage.
+                result[name] = arena is null ? values[index] : values[index].Clone();
+            }
+            return result;
         }
-        var result = new Dictionary<string, GraphTensor>(StringComparer.Ordinal);
-        foreach (var (name, index) in Signature.Outputs)
+        finally
         {
-            result[name] = values[index];
+            GraphTensor.CurrentArena = previous;
+            if (arena is not null)
+            {
+                arena.EndRun();
+                _arenas.Add(arena);
+            }
         }
-        return result;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -193,11 +342,17 @@ internal sealed class GraphExecutor
     private Action<GraphTensor[], ParallelOptions> Compile(TfLiteOperator op)
     {
         var kernel = CompileKernel(op);
-        return op.Opcode switch
+        var compiled = op.Opcode switch
         {
             TfLiteOp.Add or TfLiteOp.Sub or TfLiteOp.Mul or TfLiteOp.Div or TfLiteOp.FullyConnected => WithActivation(op, 4, kernel),
             TfLiteOp.Concatenation => WithActivation(op, 6, kernel),
             _ => kernel,
+        };
+        string name = $"op.{op.Opcode} [{(op.Outputs.Length > 0 && op.Outputs[0] >= 0 ? string.Join(",", _sg.Tensors[op.Outputs[0]].Shape) : "")}]";
+        return (v, po) =>
+        {
+            using var _ = Profiler.Measure(name);
+            compiled(v, po);
         };
     }
 
@@ -224,12 +379,12 @@ internal sealed class GraphExecutor
                 var to = _sg.Tensors[o].Type;
                 return (v, po) => v[o] = Cast(v[ins[0]], to);
             }
-            case TfLiteOp.Add: return Binary(ins, o, (a, b) => a + b);
-            case TfLiteOp.Sub: return Binary(ins, o, (a, b) => a - b);
-            case TfLiteOp.Mul: return Binary(ins, o, (a, b) => a * b);
-            case TfLiteOp.Div: return Binary(ins, o, (a, b) => a / b);
-            case TfLiteOp.Maximum: return Binary(ins, o, MathF.Max);
-            case TfLiteOp.Minimum: return Binary(ins, o, MathF.Min);
+            case TfLiteOp.Add: return Binary(ins, o, BinaryOp.Add, (a, b) => a + b);
+            case TfLiteOp.Sub: return Binary(ins, o, BinaryOp.Sub, (a, b) => a - b);
+            case TfLiteOp.Mul: return Binary(ins, o, BinaryOp.Mul, (a, b) => a * b);
+            case TfLiteOp.Div: return Binary(ins, o, BinaryOp.Div, (a, b) => a / b);
+            case TfLiteOp.Maximum: return Binary(ins, o, BinaryOp.Max, MathF.Max);
+            case TfLiteOp.Minimum: return Binary(ins, o, BinaryOp.Min, MathF.Min);
             case TfLiteOp.Rsqrt: return Unary(ins, o, Xnn.ReciprocalSqrt);
             case TfLiteOp.Sqrt: return Unary(ins, o, MathF.Sqrt);
             case TfLiteOp.Logistic: return (v, po) => { var r = GraphTensor.Float(v[ins[0]].Shape); Xnn.Sigmoid(v[ins[0]].F.AsSpan(0, r.F.Length), r.F); v[o] = r; };
@@ -406,10 +561,26 @@ internal sealed class GraphExecutor
 
     private static GraphTensor FakeQuantize(GraphTensor x, float scale, int zp)
     {
-        // XNNPACK f32-qs8-vcvt: q = sat8(rint(x · (1/scale)) + zp), kept dequantized.
+        // XNNPACK f32-qs8-vcvt: q = sat8(sat16(rint(x · (1/scale))) + zp), kept dequantized.
         var r = GraphTensor.Float(x.Shape);
         float inv = 1f / scale;
-        for (int i = 0; i < r.F.Length; i++)
+        int i = 0;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            ref float xr = ref MemoryMarshal.GetReference(x.F.AsSpan());
+            ref float rr = ref MemoryMarshal.GetReference(r.F.AsSpan());
+            var vinv = Vector256.Create(inv);
+            var vscale = Vector256.Create(scale);
+            var vzp = Vector256.Create(zp);
+            for (; i + 8 <= r.F.Length; i += 8)
+            {
+                var q = Vector256.Round(Vector256.LoadUnsafe(ref xr, (nuint)i) * vinv);
+                q = Vector256.Min(Vector256.Max(q, Vector256.Create((float)short.MinValue)), Vector256.Create((float)short.MaxValue));
+                var qi = Vector256.Min(Vector256.Max(Vector256.ConvertToInt32(q) + vzp, Vector256.Create(-128)), Vector256.Create(127)) - vzp;
+                (Vector256.ConvertToSingle(qi) * vscale).StoreUnsafe(ref rr, (nuint)i);
+            }
+        }
+        for (; i < r.F.Length; i++)
         {
             // Through an integer like the real int8 tensor, so a quantized zero dequantizes to +0 (never -0).
             int q = (int)Math.Clamp(MathF.Round(x.F[i] * inv, MidpointRounding.ToEven), short.MinValue, short.MaxValue) + zp;
@@ -509,7 +680,64 @@ internal sealed class GraphExecutor
         }
     }
 
-    private static Action<GraphTensor[], ParallelOptions> Binary(int[] ins, int o, Func<float, float, float> f)
+    private enum BinaryOp { Add, Sub, Mul, Div, Max, Min }
+
+    /// <summary>Element-wise <paramref name="op"/> of two rows, or of a row and a scalar (a null span means
+    /// "use the scalar"); <see cref="TensorPrimitives"/> computes exactly the scalar IEEE operations.</summary>
+    private static void ApplyRow(BinaryOp op, ReadOnlySpan<float> a, float sa, ReadOnlySpan<float> b, float sb, Span<float> r, bool aScalar, bool bScalar)
+    {
+        if (!aScalar && !bScalar)
+        {
+            switch (op)
+            {
+                case BinaryOp.Add: TensorPrimitives.Add(a, b, r); break;
+                case BinaryOp.Sub: TensorPrimitives.Subtract(a, b, r); break;
+                case BinaryOp.Mul: TensorPrimitives.Multiply(a, b, r); break;
+                case BinaryOp.Div: TensorPrimitives.Divide(a, b, r); break;
+                case BinaryOp.Max: TensorPrimitives.Max(a, b, r); break;
+                case BinaryOp.Min: TensorPrimitives.Min(a, b, r); break;
+            }
+        }
+        else if (bScalar && !aScalar)
+        {
+            switch (op)
+            {
+                case BinaryOp.Add: TensorPrimitives.Add(a, sb, r); break;
+                case BinaryOp.Sub: TensorPrimitives.Subtract(a, sb, r); break;
+                case BinaryOp.Mul: TensorPrimitives.Multiply(a, sb, r); break;
+                case BinaryOp.Div: TensorPrimitives.Divide(a, sb, r); break;
+                case BinaryOp.Max: TensorPrimitives.Max(a, sb, r); break;
+                case BinaryOp.Min: TensorPrimitives.Min(a, sb, r); break;
+            }
+        }
+        else if (aScalar && !bScalar)
+        {
+            switch (op)
+            {
+                case BinaryOp.Add: TensorPrimitives.Add(b, sa, r); break;
+                case BinaryOp.Sub: TensorPrimitives.Subtract(sa, b, r); break;
+                case BinaryOp.Mul: TensorPrimitives.Multiply(b, sa, r); break;
+                case BinaryOp.Div: TensorPrimitives.Divide(sa, b, r); break;
+                case BinaryOp.Max: TensorPrimitives.Max(b, sa, r); break;
+                case BinaryOp.Min: TensorPrimitives.Min(b, sa, r); break;
+            }
+        }
+        else
+        {
+            float v = op switch
+            {
+                BinaryOp.Add => sa + sb,
+                BinaryOp.Sub => sa - sb,
+                BinaryOp.Mul => sa * sb,
+                BinaryOp.Div => sa / sb,
+                BinaryOp.Max => MathF.Max(sa, sb),
+                _ => MathF.Min(sa, sb),
+            };
+            r.Fill(v);
+        }
+    }
+
+    private static Action<GraphTensor[], ParallelOptions> Binary(int[] ins, int o, BinaryOp op, Func<float, float, float> f)
         => (v, po) =>
         {
             var a = v[ins[0]];
@@ -526,25 +754,47 @@ internal sealed class GraphExecutor
             }
             var shape = BroadcastShape(a.Shape, b.Shape);
             var r = GraphTensor.Float(shape);
-            int na = a.Length, nb = b.Length;
-            if (SameShape(a.Shape, b.Shape))
+            int n = r.F.Length, na = a.Length, nb = b.Length;
+            if (SameShape(a.Shape, b.Shape) || (na == n && nb == n))
             {
-                for (int i = 0; i < r.F.Length; i++) r.F[i] = f(a.F[i], b.F[i]);
+                ApplyRow(op, a.F.AsSpan(0, n), 0, b.F.AsSpan(0, n), 0, r.F, false, false);
             }
             else if (nb == 1)
             {
-                float s = b.F[0];
-                for (int i = 0; i < r.F.Length; i++) r.F[i] = f(a.F[i], s);
+                ApplyRow(op, a.F.AsSpan(0, n), 0, default, b.F[0], r.F, false, true);
             }
             else if (na == 1)
             {
-                float s = a.F[0];
-                for (int i = 0; i < r.F.Length; i++) r.F[i] = f(s, b.F[i]);
+                ApplyRow(op, default, a.F[0], b.F.AsSpan(0, n), 0, r.F, true, false);
             }
             else
             {
-                ForEachBroadcast(shape, BroadcastStrides(a.Shape, shape), BroadcastStrides(b.Shape, shape),
-                    (i, ia, ib) => r.F[i] = f(a.F[ia], b.F[ib]));
+                // Rows of the innermost output dimension: each input is either contiguous along it or broadcast.
+                int rank = shape.Length;
+                var sa = BroadcastStrides(a.Shape, shape);
+                var sb = BroadcastStrides(b.Shape, shape);
+                int inner = shape[rank - 1];
+                bool aScalar = sa[rank - 1] == 0, bScalar = sb[rank - 1] == 0;
+                var idx = new int[rank];
+                int ia = 0, ib = 0;
+                for (int i = 0; i < n; i += inner)
+                {
+                    ApplyRow(op, aScalar ? default : a.F.AsSpan(ia, inner), a.F[ia], bScalar ? default : b.F.AsSpan(ib, inner), b.F[ib],
+                        r.F.AsSpan(i, inner), aScalar, bScalar);
+                    for (int d = rank - 2; d >= 0; d--)
+                    {
+                        idx[d]++;
+                        ia += sa[d];
+                        ib += sb[d];
+                        if (idx[d] < shape[d])
+                        {
+                            break;
+                        }
+                        ia -= sa[d] * shape[d];
+                        ib -= sb[d] * shape[d];
+                        idx[d] = 0;
+                    }
+                }
             }
             v[o] = r;
         };
@@ -718,20 +968,27 @@ internal sealed class GraphExecutor
 
     private static GraphTensor Pad(GraphTensor x, int[] paddings, int[] outShape)
     {
-        // Constant padding with 0 (the zero point of every quantized tensor in these graphs).
+        // Constant padding with 0 (the zero point of every quantized tensor in these graphs): copy each innermost
+        // input row to its place in the zero-initialized output.
         var r = NewLike(x, outShape);
         int rank = x.Shape.Length;
-        var so = RowMajorStrides(outShape);
-        var idx = new int[rank];
-        for (int i = 0; i < x.Length; i++)
+        int n = x.Length;
+        if (n == 0)
         {
-            int to = 0;
-            for (int d = 0; d < rank; d++)
+            return r;
+        }
+        var so = RowMajorStrides(outShape);
+        int inner = x.Shape[rank - 1];
+        var idx = new int[rank];
+        for (int i = 0; i < n; i += inner)
+        {
+            int to = paddings[2 * (rank - 1)];
+            for (int d = 0; d < rank - 1; d++)
             {
                 to += (idx[d] + paddings[2 * d]) * so[d];
             }
-            CopyElement(x, i, r, to);
-            for (int d = rank - 1; d >= 0; d--)
+            CopyRow(x, i, r, to, inner);
+            for (int d = rank - 2; d >= 0; d--)
             {
                 if (++idx[d] < x.Shape[d])
                 {
@@ -741,6 +998,13 @@ internal sealed class GraphExecutor
             }
         }
         return r;
+    }
+
+    private static void CopyRow(GraphTensor src, int from, GraphTensor dst, int to, int count)
+    {
+        if (src.F is not null) Array.Copy(src.F, from, dst.F, to, count);
+        else if (src.I is not null) Array.Copy(src.I, from, dst.I, to, count);
+        else Array.Copy(src.B, from, dst.B, to, count);
     }
 
     private static GraphTensor Slice(GraphTensor x, int[] begin, int[] outShape)
@@ -789,13 +1053,38 @@ internal sealed class GraphExecutor
         {
             srcStride[d] = sx[perm[d]];
         }
+        if (r.F is not null) TransposeCore(x.F, r.F, outShape, srcStride);
+        else if (r.I is not null) TransposeCore(x.I, r.I, outShape, srcStride);
+        else TransposeCore(x.B, r.B, outShape, srcStride);
+        return r;
+    }
+
+    private static void TransposeCore<T>(T[] src, T[] dst, int[] outShape, int[] srcStride)
+    {
+        int rank = outShape.Length;
+        int n = GraphTensor.Count(outShape);
+        if (n == 0)
+        {
+            return;
+        }
+        int inner = outShape[rank - 1];
+        int innerStride = srcStride[rank - 1];
         var idx = new int[rank];
         int from = 0;
-        int n = r.Length;
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i += inner)
         {
-            CopyElement(x, from, r, i);
-            for (int d = rank - 1; d >= 0; d--)
+            if (innerStride == 1)
+            {
+                Array.Copy(src, from, dst, i, inner);
+            }
+            else
+            {
+                for (int j = 0, f = from; j < inner; j++, f += innerStride)
+                {
+                    dst[i + j] = src[f];
+                }
+            }
+            for (int d = rank - 2; d >= 0; d--)
             {
                 idx[d]++;
                 from += srcStride[d];
@@ -807,7 +1096,6 @@ internal sealed class GraphExecutor
                 idx[d] = 0;
             }
         }
-        return r;
     }
 
     private static GraphTensor Concat(GraphTensor[] parts, int axis, int[] outShape, float outScale, float[] inScales)

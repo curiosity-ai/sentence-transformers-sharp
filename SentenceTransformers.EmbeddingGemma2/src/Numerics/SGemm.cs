@@ -59,7 +59,7 @@ internal static class SGemm
             }
             else
             {
-                Parallel.For(0, chunks, po, ch =>
+                WorkerPool.For(chunks, po, ch =>
                     Chunk((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, ch * RowChunk, Math.Min(m, (ch + 1) * RowChunk), n, k, alpha, accumulate));
             }
         }
@@ -90,7 +90,7 @@ internal static class SGemm
         }
     }
 
-    private static unsafe void Chunk(float* a, int lda, float* b, int ldb, float* c, int ldc, int m0, int m1, int n, int k, float alpha, bool accumulate)
+    private static unsafe void Chunk(float* a, int lda, float* b, int ldb, float* c, int ldc, int m0, int m1, int n, int k, float alpha, bool accumulate, float* prepacked = null)
     {
         int nr = NR;
         var packArr = ArrayPool<float>.Shared.Rent(KC * nr + 16);
@@ -109,7 +109,15 @@ internal static class SGemm
                         int kc = Math.Min(KC, k - k0);
                         bool first = k0 == 0 && !accumulate;
                         bool last = k0 + kc >= k;
-                        PackB(b, ldb, k0, kc, j0, nc, nr, pack);
+                        float* panel = pack;
+                        if (prepacked != null)
+                        {
+                            panel = prepacked + ((long)(j0 / nr) * k + k0) * nr;
+                        }
+                        else
+                        {
+                            PackB(b, ldb, k0, kc, j0, nc, nr, pack);
+                        }
                         for (int i = m0; i < m1; i += MR)
                         {
                             int rows = Math.Min(MR, m1 - i);
@@ -136,11 +144,11 @@ internal static class SGemm
                             float* a5 = a0 + (long)Math.Min(5, rows - 1) * lda;
                             if (UseAvx512)
                             {
-                                Kernel6x32(a0, a1, a2, a3, a4, a5, pack, kc, cDst, cStride, first && full, last ? alpha : 1f);
+                                Kernel6x32(a0, a1, a2, a3, a4, a5, panel, kc, cDst, cStride, first && full, last ? alpha : 1f);
                             }
                             else
                             {
-                                Kernel6x16(a0, a1, a2, a3, a4, a5, pack, kc, cDst, cStride, first && full, last ? alpha : 1f);
+                                Kernel6x16(a0, a1, a2, a3, a4, a5, panel, kc, cDst, cStride, first && full, last ? alpha : 1f);
                             }
                             if (!full)
                             {
@@ -157,6 +165,77 @@ internal static class SGemm
         finally
         {
             ArrayPool<float>.Shared.Return(packArr);
+        }
+    }
+
+    /// <summary>True when <see cref="PackB(ReadOnlySpan{float}, int, int, int, bool, float[])"/> /
+    /// <see cref="MultiplyPacked"/> are available (the blocked FMA kernels); otherwise use <see cref="Multiply"/>.</summary>
+    public static bool SupportsPacking => Vector256.IsHardwareAccelerated && UseFma;
+
+    /// <summary>Floats needed by <see cref="PackB(ReadOnlySpan{float}, int, int, int, bool, float[])"/> for a
+    /// <paramref name="k"/> × <paramref name="n"/> B, including 64-byte alignment slack.</summary>
+    public static int PackedLength(int k, int n) => (n + NR - 1) / NR * NR * k + 16;
+
+    /// <summary>
+    /// Packs a whole <c>B[k, n]</c> once into the kernels' panel layout (<c>[n / NR][k][NR]</c>, zero padded), for
+    /// reuse across many <see cref="MultiplyPacked"/> calls (attention multiplies every row block of a head by
+    /// the same <c>Kᵀ</c> and <c>V</c>). With <paramref name="transposed"/>, <paramref name="b"/> holds
+    /// <c>Bᵀ[n, k]</c> (row stride <paramref name="ldb"/>), e.g. the keys for <c>Q·Kᵀ</c>. Returns the offset of
+    /// the panel data in <paramref name="dst"/>, chosen to be 64-byte aligned at packing time (the array is not
+    /// pinned, so the kernels use unaligned loads and alignment is only a performance hint).
+    /// </summary>
+    public static unsafe int PackB(ReadOnlySpan<float> b, int ldb, int k, int n, bool transposed, float[] dst)
+    {
+        int nr = NR;
+        int offset;
+        fixed (float* d0 = dst)
+        {
+            offset = (int)((((nint)d0 + 63) & ~(nint)63) - (nint)d0) / sizeof(float);
+        }
+        var d = dst.AsSpan(offset);
+        for (int j0 = 0, panel = 0; j0 < n; j0 += nr, panel++)
+        {
+            int nc = Math.Min(nr, n - j0);
+            var pd = d.Slice(panel * k * nr, k * nr);
+            if (nc < nr)
+            {
+                pd.Clear();
+            }
+            if (transposed)
+            {
+                for (int c = 0; c < nc; c++)
+                {
+                    var src = b.Slice((j0 + c) * ldb, k);
+                    for (int p = 0; p < k; p++)
+                    {
+                        pd[p * nr + c] = src[p];
+                    }
+                }
+            }
+            else
+            {
+                for (int p = 0; p < k; p++)
+                {
+                    b.Slice(p * ldb + j0, nc).CopyTo(pd.Slice(p * nr, nc));
+                }
+            }
+        }
+        return offset;
+    }
+
+    /// <summary><see cref="Multiply"/> (single-threaded, <c>C = alpha · A·B</c>) with a B packed by
+    /// <see cref="PackB(ReadOnlySpan{float}, int, int, int, bool, float[])"/>; same arithmetic, so the same bits.</summary>
+    public static unsafe void MultiplyPacked(ReadOnlySpan<float> a, int lda, float[] packed, int packedOffset, Span<float> c, int ldc, int m, int n, int k, float alpha = 1f)
+    {
+        if (m == 0 || n == 0)
+        {
+            return;
+        }
+        fixed (float* ap = a)
+        fixed (float* bp = packed)
+        fixed (float* cp = c)
+        {
+            Chunk(ap, lda, null, 0, cp, ldc, 0, m, n, k, alpha, accumulate: false, prepacked: bp + packedOffset);
         }
     }
 
@@ -206,8 +285,8 @@ internal static class SGemm
         }
         for (int p = 0; p < kc; p++)
         {
-            var b0 = Avx512F.LoadAlignedVector512(bp);
-            var b1 = Avx512F.LoadAlignedVector512(bp + 16);
+            var b0 = Avx512F.LoadVector512(bp);
+            var b1 = Avx512F.LoadVector512(bp + 16);
             bp += 32;
             var x = Vector512.Create(a0[p]);
             c00 = Avx512F.FusedMultiplyAdd(x, b0, c00);
@@ -266,8 +345,8 @@ internal static class SGemm
         }
         for (int p = 0; p < kc; p++)
         {
-            var b0 = Avx.LoadAlignedVector256(bp);
-            var b1 = Avx.LoadAlignedVector256(bp + 8);
+            var b0 = Avx.LoadVector256(bp);
+            var b1 = Avx.LoadVector256(bp + 8);
             bp += 16;
             var x = Vector256.Create(a0[p]);
             c00 = Fma.MultiplyAdd(x, b0, c00);

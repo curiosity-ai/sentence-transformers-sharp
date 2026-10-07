@@ -1,6 +1,6 @@
 namespace SentenceTransformers.EmbeddingGemma2.Numerics;
 
-/// <summary>Splits row-wise elementwise work into chunks for <see cref="Parallel.For(int, int, ParallelOptions, Action{int})"/>;
+/// <summary>Splits row-wise elementwise work into chunks for <see cref="WorkerPool"/>;
 /// small tensors (or single-threaded options) run inline to avoid scheduling overhead.</summary>
 internal static class ParallelRows
 {
@@ -22,7 +22,7 @@ internal static class ParallelRows
             return;
         }
         int per = (rows + chunks - 1) / chunks;
-        Parallel.For(0, chunks, po, c =>
+        WorkerPool.For(chunks, po, c =>
         {
             int r0 = c * per, r1 = Math.Min(rows, r0 + per);
             if (r0 < r1)

@@ -10,7 +10,7 @@ namespace SentenceTransformers.EmbeddingGemma2.Numerics;
 /// <para>
 /// Work is split into (sequence, head, block of 64 query rows) items so even a single long document
 /// spreads over every core: each item computes its score block <c>Q_blk·Kᵀ</c>, the row softmax and
-/// <c>P·V</c> while the block is still cache-resident. <c>Kᵀ</c> is materialized once per KV head.
+/// <c>P·V</c> while the block is still cache-resident. <c>Kᵀ</c> and <c>V</c> are packed once per KV head.
 /// </para>
 /// </summary>
 internal static class Attention
@@ -37,8 +37,13 @@ internal static class Attention
         int kvStride = kvHeads * hd;
         var pool = ArrayPool<float>.Shared;
 
-        // Kᵀ per (sequence, KV head): [hd, nPad] with zero padding so score rows stay 16-float aligned.
+        // Per (sequence, KV head): Kᵀ and V packed once into the GEMM kernels' panel layout (shared by every row
+        // block of every query head that reads the KV head), or, without the blocked kernels, Kᵀ as [hd, nPad].
+        bool packed = SGemm.SupportsPacking;
         var kt = new float[sequences * kvHeads][];
+        var vp = packed ? new float[sequences * kvHeads][] : null;
+        var ktOff = new int[sequences * kvHeads];
+        var vpOff = new int[sequences * kvHeads];
         var nPad = new int[sequences];
         var items = new List<(int Seq, int Head, int Row0)>();
         for (int s = 0; s < sequences; s++)
@@ -59,6 +64,16 @@ internal static class Attention
             {
                 int s = gi / kvHeads, g = gi % kvHeads;
                 int n = offsets[s + 1] - offsets[s];
+                if (packed)
+                {
+                    var kb = pool.Rent(SGemm.PackedLength(hd, n));
+                    ktOff[gi] = SGemm.PackB(k.AsSpan(offsets[s] * kvStride + g * hd), kvStride, hd, n, transposed: true, kb);
+                    kt[gi] = kb;
+                    var vb = pool.Rent(SGemm.PackedLength(n, hd));
+                    vpOff[gi] = SGemm.PackB(v.AsSpan(offsets[s] * kvStride + g * hd), kvStride, n, hd, transposed: false, vb);
+                    vp[gi] = vb;
+                    return;
+                }
                 var buf = pool.Rent(hd * nPad[s]);
                 SGemm.Transpose(k.AsSpan(offsets[s] * kvStride + g * hd), kvStride, n, hd, buf, nPad[s]);
                 kt[gi] = buf;
@@ -75,9 +90,21 @@ internal static class Attention
                 var scores = pool.Rent(rows * ld);
                 try
                 {
-                    SGemm.Multiply(q.AsSpan((start + r0) * qStride + h * hd), qStride, kt[s * kvHeads + g], ld, scores, ld, rows, ld, hd, scale);
-                    Ops.SoftmaxRows(scores, rows, n, ld, maskedKeys);
-                    SGemm.Multiply(scores, ld, v.AsSpan(start * kvStride + g * hd), kvStride, output.AsSpan((start + r0) * qStride + h * hd), qStride, rows, hd, n);
+                    int gi = s * kvHeads + g;
+                    var qBlock = q.AsSpan((start + r0) * qStride + h * hd);
+                    var oBlock = output.AsSpan((start + r0) * qStride + h * hd);
+                    if (packed)
+                    {
+                        SGemm.MultiplyPacked(qBlock, qStride, kt[gi], ktOff[gi], scores, ld, rows, n, hd, scale);
+                        Ops.SoftmaxRows(scores, rows, n, ld, maskedKeys);
+                        SGemm.MultiplyPacked(scores, ld, vp[gi], vpOff[gi], oBlock, qStride, rows, hd, n);
+                    }
+                    else
+                    {
+                        SGemm.Multiply(qBlock, qStride, kt[gi], ld, scores, ld, rows, ld, hd, scale);
+                        Ops.SoftmaxRows(scores, rows, n, ld, maskedKeys);
+                        SGemm.Multiply(scores, ld, v.AsSpan(start * kvStride + g * hd), kvStride, oBlock, qStride, rows, hd, n);
+                    }
                 }
                 finally
                 {
@@ -98,13 +125,20 @@ internal static class Attention
             }
             else
             {
-                Parallel.For(0, kt.Length, po, Transpose);
-                Parallel.For(0, items.Count, po, Block);
+                WorkerPool.For(kt.Length, po, Transpose);
+                WorkerPool.For(items.Count, po, Block);
             }
         }
         finally
         {
             foreach (var buf in kt)
+            {
+                if (buf is not null)
+                {
+                    pool.Return(buf);
+                }
+            }
+            foreach (var buf in vp ?? Array.Empty<float[]>())
             {
                 if (buf is not null)
                 {
