@@ -286,9 +286,9 @@ LiteRT-LM 0.18 engine measured on the same machine through its Python API):
 
 | Workload | Pure C#, 1 thread | Pure C#, 4 threads | LiteRT-LM, 1 thread | LiteRT-LM, 4 threads |
 | --- | ---: | ---: | ---: | ---: |
-| Short query (15 tokens) | 55 ms | 20 ms | 133 ms | 59 ms |
-| Batch of 32 sentences | 0.90 s | 0.30 s | 4.3 s | 1.9 s |
-| One 1003-token document | 2.8 s | 0.93 s | 2.4 s | 0.67 s |
+| Short query (15 tokens) | 54 ms | 14 ms | 133 ms | 59 ms |
+| Batch of 32 sentences | 0.77 s | 0.24 s | 4.3 s | 1.9 s |
+| One 1003-token document | 2.6 s | 0.80 s | 2.4 s | 0.67–0.81 s |
 | One image (640×480, 140 tokens, 440M) | 5.0 s | 1.5 s | 1.5 s | 1.3 s |
 | 1 s of audio (740M) | 360 ms | 198 ms | 468 ms | 258 ms |
 | 3.3 s of audio (740M) | 830 ms | 407 ms | 941 ms | 458 ms |
@@ -299,11 +299,13 @@ How the managed port gets there:
   own lane, AVX-512BW or AVX2). 8-bit weights use the same kernels on their ±64 part plus an exact sparse
   correction for the rare larger values. Other CPUs use row kernels (`AvxVnni`, `vpmaddwd`, ARM `sdot`).
 - **Float GEMMs:** a 12 × 32 AVX-512 FMA tile; attention packs `Kᵀ` and `V` once per head.
+- **Fusion:** GeGLU runs in the up projection's epilogue and the layer scalar in the last residual norm;
+  activation scratch is reused across calls.
 - **Scheduling:** a spinning worker pool keeps the many sub-millisecond operations parallel, and the
   audio graph executor recycles its activation buffers between ops and streaming chunks.
 
-The remaining gap is in compute-bound int8 work on few threads (long documents, and above all the 8-bit
-vision tower). The engine uses the 512-bit `vpdpbusd` (AVX-512 VNNI) instruction there, which .NET 10 only
+The remaining gap is in compute-bound int8 work on few threads (a few percent on long documents, and above
+all the 8-bit vision tower). The engine uses the 512-bit `vpdpbusd` (AVX-512 VNNI) instruction there, which .NET 10 only
 exposes on CPUs that also report AVX-VNNI or AVX10.
 
 ### Comparing two texts (cosine similarity)
