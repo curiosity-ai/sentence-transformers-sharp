@@ -89,8 +89,9 @@ internal sealed class QuantizedActivations
     /// dequantization scale used by the GEMM is <c>1 / multiplier</c> (all in float, exactly as XNNPACK rounds them).</summary>
     internal static void QuantizeRow(ReadOnlySpan<float> x, Span<byte> dst, out float scale, out int zeroPoint)
     {
-        float min = MathF.Min(0f, TensorPrimitives.Min(x));
-        float max = MathF.Max(0f, TensorPrimitives.Max(x));
+        RowMinMax(x, out float rowMin, out float rowMax);
+        float min = MathF.Min(0f, rowMin);
+        float max = MathF.Max(0f, rowMax);
         const float QMin = -128f, QMax = 127f;
         float multiplier = min == max ? 1f : (QMax - QMin) / (max - min);
         float descaledMin = min * multiplier;
@@ -100,6 +101,49 @@ internal sealed class QuantizedActivations
         zeroPoint = (int)MathF.Round(zp, MidpointRounding.ToEven);
         scale = 1f / multiplier;
         QuantizeRowWithMultiplier(x, dst, multiplier, zeroPoint);
+    }
+
+    /// <summary>Row minimum and maximum with native <c>minps</c>/<c>maxps</c> (falling back to
+    /// <see cref="TensorPrimitives"/> when the row holds a NaN). Only the sign of a zero extreme can differ, and
+    /// the quantization parameters do not depend on it.</summary>
+    private static void RowMinMax(ReadOnlySpan<float> x, out float min, out float max)
+    {
+        int n = x.Length, i = 0;
+        min = float.PositiveInfinity;
+        max = float.NegativeInfinity;
+        ref float r = ref MemoryMarshal.GetReference(x);
+        bool nan = false;
+        if (Simd.Use512 && n >= 16)
+        {
+            var lo = Vector512.Create(float.PositiveInfinity);
+            var hi = Vector512.Create(float.NegativeInfinity);
+            var bad = Vector512<float>.Zero;
+            for (; i + 16 <= n; i += 16)
+            {
+                var v = Vector512.LoadUnsafe(ref r, (nuint)i);
+                lo = Vector512.MinNative(lo, v);
+                hi = Vector512.MaxNative(hi, v);
+                bad |= ~Vector512.Equals(v, v);
+            }
+            nan = bad != Vector512<float>.Zero;
+            for (int k = 0; k < 16; k++)
+            {
+                min = MathF.Min(min, lo.GetElement(k));
+                max = MathF.Max(max, hi.GetElement(k));
+            }
+        }
+        for (; i < n; i++)
+        {
+            float v = Unsafe.Add(ref r, i);
+            nan |= float.IsNaN(v);
+            min = MathF.Min(min, v);
+            max = MathF.Max(max, v);
+        }
+        if (nan)
+        {
+            min = TensorPrimitives.Min(x);
+            max = TensorPrimitives.Max(x);
+        }
     }
 
     /// <summary>Static quantization (<c>QUANTIZE</c> op): <c>q = clamp(rint(x · (1/scale)) + zp)</c>, stored offset by +128.</summary>
@@ -189,6 +233,36 @@ internal static class QGemm
             {
                 Scale[c] = inputScale * weightScale[c] / outputScale;
             }
+        }
+    }
+
+    /// <summary>
+    /// GeGLU fused into the up projection: <c>gate[i] = gelu(gate[i]) · (X·Wᵀ)[i]</c>, i.e. <see cref="Multiply"/>
+    /// followed by <see cref="Ops.GeluMul(float[], float[], int, ParallelOptions)"/> with the same per-element
+    /// arithmetic, but computed in the GEMM epilogue so the product never round-trips through memory.
+    /// </summary>
+    public static void MultiplyGeluGated(QuantizedActivations x, QuantizedMatrix w, float[] gate, int ldy, ParallelOptions po = null)
+    {
+        int dop = po?.MaxDegreeOfParallelism ?? 1;
+        if (dop == -1)
+        {
+            dop = Environment.ProcessorCount;
+        }
+        if (w.HasPanels && UseAvx2 && w.Bias is null && ldy == w.Rows)
+        {
+            using var _ = Profiler.Measure("qgemm");
+            MultiplyPanels(x, w, gate, ldy, dop, po, null, geluGate: true);
+            return;
+        }
+        var up = System.Buffers.ArrayPool<float>.Shared.Rent(x.Rows * ldy);
+        try
+        {
+            Multiply(x, w, up, ldy, po);
+            Ops.GeluMul(gate, up, x.Rows * ldy, po);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<float>.Shared.Return(up);
         }
     }
 
@@ -312,7 +386,7 @@ internal static class QGemm
     /// exactly, and the epilogue performs the same per-element operations.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void MultiplyPanels(QuantizedActivations x, QuantizedMatrix w, Span<float> y, int ldy, int dop, ParallelOptions po, Requantization rq)
+    private static unsafe void MultiplyPanels(QuantizedActivations x, QuantizedMatrix w, Span<float> y, int ldy, int dop, ParallelOptions po, Requantization rq, bool geluGate = false)
     {
         int n = x.Rows, m = w.Rows, panels = w.Panels;
         int mr = UseAvx512 ? 6 : 3;
@@ -336,7 +410,7 @@ internal static class QGemm
             var epi = new Epilogue
             {
                 RowSum = rsp, WScale = wsp, Bias = bp, RqScale = rqp, RqOut = rq?.OutputScale ?? 0f,
-                XZero = xzp, XScale = xsp, Y = yp, Ldy = ldy, Channels = m,
+                XZero = xzp, XScale = xsp, Y = yp, Ldy = ldy, Channels = m, GeluGate = geluGate,
             };
             void Item(int it)
             {
@@ -572,6 +646,8 @@ internal static class QGemm
         public float* XScale;
         public float* Y;
         public int Ldy, Channels;
+        /// <summary>Store <c>gelu(y) · value</c> over the existing contents of Y (GeGLU) instead of the value.</summary>
+        public bool GeluGate;
 
         /// <summary><paramref name="count"/> consecutive channels of activation row <paramref name="row"/> from
         /// <paramref name="col0"/>; channels at or past <see cref="Channels"/> are padding.</summary>
@@ -584,7 +660,7 @@ internal static class QGemm
             float* dst = Y + (long)row * Ldy + col0;
             int* rs = RowSum + col0;
             int c = 0;
-            if (Vector512.IsHardwareAccelerated)
+            if (Simd.Use512)
             {
                 for (; c + 16 <= n; c += 16)
                 {
@@ -601,6 +677,10 @@ internal static class QGemm
                         if (Bias != null)
                         {
                             v += Vector512.Load(Bias + col0 + c);
+                        }
+                        if (GeluGate)
+                        {
+                            v = Xnn.Gelu512(Vector512.Load(dst + c)) * v;
                         }
                         v.Store(dst + c);
                     }
@@ -622,6 +702,10 @@ internal static class QGemm
                     {
                         v += Vector128.Load(Bias + col0 + c);
                     }
+                    if (GeluGate)
+                    {
+                        v = Xnn.Gelu(Vector128.Load(dst + c)) * v;
+                    }
                     v.Store(dst + c);
                 }
             }
@@ -639,6 +723,10 @@ internal static class QGemm
                     if (Bias != null)
                     {
                         v += Bias[col0 + c];
+                    }
+                    if (GeluGate)
+                    {
+                        v = Xnn.Gelu(Vector128.CreateScalar(dst[c])).ToScalar() * v;
                     }
                     dst[c] = v;
                 }

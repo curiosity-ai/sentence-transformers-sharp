@@ -67,6 +67,10 @@ internal static class Xnn
     /// times <paramref name="scale"/>.</summary>
     public static float SumOfSquares(ReadOnlySpan<float> x, float scale)
     {
+        if (Simd.Use512)
+        {
+            return SumOfSquares512(x, scale);
+        }
         // acc[k] is a 16-lane accumulator held as four 4-lane quarters.
         Span<Vector128<float>> acc = stackalloc Vector128<float>[16];
         acc.Clear();
@@ -113,6 +117,57 @@ internal static class Xnn
         return 0f + ReduceAdd(acc[0], acc[1], acc[2], acc[3]) * scale;
     }
 
+    /// <summary><see cref="SumOfSquares"/> with each 16-lane accumulator in one 512-bit register (the same per-lane
+    /// operations in the same order).</summary>
+    private static float SumOfSquares512(ReadOnlySpan<float> x, float scale)
+    {
+        ref float xr = ref MemoryMarshal.GetReference(x);
+        int n = x.Length, p = 0;
+        Vector512<float> a0 = default, a1 = default, a2 = default, a3 = default;
+        for (; n - p >= 64; p += 64)
+        {
+            var v0 = Vector512.LoadUnsafe(ref xr, (nuint)p);
+            var v1 = Vector512.LoadUnsafe(ref xr, (nuint)(p + 16));
+            var v2 = Vector512.LoadUnsafe(ref xr, (nuint)(p + 32));
+            var v3 = Vector512.LoadUnsafe(ref xr, (nuint)(p + 48));
+            a0 = Vector512.FusedMultiplyAdd(v0, v0, a0);
+            a1 = Vector512.FusedMultiplyAdd(v1, v1, a1);
+            a2 = Vector512.FusedMultiplyAdd(v2, v2, a2);
+            a3 = Vector512.FusedMultiplyAdd(v3, v3, a3);
+        }
+        if (n - p >= Lanes)
+        {
+            var v = Vector512.LoadUnsafe(ref xr, (nuint)p);
+            a0 = Vector512.FusedMultiplyAdd(v, v, a0);
+            p += Lanes;
+        }
+        if (n - p >= Lanes)
+        {
+            var v = Vector512.LoadUnsafe(ref xr, (nuint)p);
+            a1 = Vector512.FusedMultiplyAdd(v, v, a1);
+            p += Lanes;
+        }
+        if (n - p >= Lanes)
+        {
+            var v = Vector512.LoadUnsafe(ref xr, (nuint)p);
+            a2 = Vector512.FusedMultiplyAdd(v, v, a2);
+            p += Lanes;
+        }
+        a0 += a2;
+        a1 += a3;
+        a0 += a1;
+        int rem = n - p;
+        if (rem > 0)
+        {
+            Span<float> tail = stackalloc float[Lanes];
+            tail.Clear();
+            x.Slice(p, rem).CopyTo(tail);
+            var v = Vector512.Create((ReadOnlySpan<float>)tail);
+            a0 = Vector512.FusedMultiplyAdd(v, v, a0);
+        }
+        return 0f + ReduceAdd(a0.GetLower().GetLower(), a0.GetLower().GetUpper(), a0.GetUpper().GetLower(), a0.GetUpper().GetUpper()) * scale;
+    }
+
     /// <summary><c>xnn_f32_vrsqrt_ukernel__avx512f_rsqrt</c>: the 14-bit hardware estimate refined by one
     /// Newton-Raphson step evaluated without fused multiply-adds.</summary>
     public static float ReciprocalSqrt(float a)
@@ -141,6 +196,22 @@ internal static class Xnn
             var o = dst.Slice(r * dim, dim);
             float inv = ReciprocalSqrt(SumOfSquares(row, invDim) + eps);
             int i = 0;
+            if (Simd.Use512)
+            {
+                var vinv = Vector512.Create(inv);
+                ref float xr = ref MemoryMarshal.GetReference(row);
+                ref float orr = ref MemoryMarshal.GetReference(o);
+                ref float wr = ref MemoryMarshal.GetReference(weight);
+                for (; i + 16 <= dim; i += 16)
+                {
+                    var v = Vector512.LoadUnsafe(ref xr, (nuint)i) * vinv;
+                    if (!weight.IsEmpty)
+                    {
+                        v *= Vector512.LoadUnsafe(ref wr, (nuint)i);
+                    }
+                    v.StoreUnsafe(ref orr, (nuint)i);
+                }
+            }
             if (Vector256.IsHardwareAccelerated)
             {
                 var vinv = Vector256.Create(inv);
@@ -215,7 +286,7 @@ internal static class Xnn
     private const float GeluB8 = 7.6477612311e-05f, GeluB10 = 1.3433452750e-06f;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector128<float> Gelu(Vector128<float> xo)
+    internal static Vector128<float> Gelu(Vector128<float> xo)
     {
         var x = Vector128.Max(Vector128.Create(GeluMinX), Vector128.Min(Vector128.Create(GeluMaxX), xo));
         var x2 = x * x;
@@ -233,11 +304,38 @@ internal static class Xnn
         return (xo * Vector128.Create(0.5f)) * (p / q + Vector128<float>.One);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static Vector512<float> Gelu512(Vector512<float> xo)
+    {
+        var x = Vector512.Max(Vector512.Create(GeluMinX), Vector512.Min(Vector512.Create(GeluMaxX), xo));
+        var x2 = x * x;
+        var p = Vector512.FusedMultiplyAdd(x2, Vector512.Create(GeluA11), Vector512.Create(GeluA9));
+        p = Vector512.FusedMultiplyAdd(x2, p, Vector512.Create(GeluA7));
+        p = Vector512.FusedMultiplyAdd(x2, p, Vector512.Create(GeluA5));
+        p = Vector512.FusedMultiplyAdd(x2, p, Vector512.Create(GeluA3));
+        p = Vector512.FusedMultiplyAdd(x2, p, Vector512.Create(GeluA1));
+        p = x * p;
+        var q = Vector512.FusedMultiplyAdd(x2, Vector512.Create(GeluB10), Vector512.Create(GeluB8));
+        q = Vector512.FusedMultiplyAdd(x2, q, Vector512.Create(GeluB6));
+        q = Vector512.FusedMultiplyAdd(x2, q, Vector512.Create(GeluB4));
+        q = Vector512.FusedMultiplyAdd(x2, q, Vector512.Create(GeluB2));
+        q = Vector512.FusedMultiplyAdd(x2, q, Vector512<float>.One);
+        return (xo * Vector512.Create(0.5f)) * (p / q + Vector512<float>.One);
+    }
+
     /// <summary>Tanh-approximated GELU, in place, exactly as XNNPACK's rational 12/10 kernel computes it.</summary>
     public static void Gelu(Span<float> x)
     {
         ref float r = ref MemoryMarshal.GetReference(x);
         int i = 0;
+        if (Simd.Use512)
+        {
+            // Element-wise, so wider vectors give the same bits.
+            for (; i + 16 <= x.Length; i += 16)
+            {
+                Gelu512(Vector512.LoadUnsafe(ref r, (nuint)i)).StoreUnsafe(ref r, (nuint)i);
+            }
+        }
         for (; i + 4 <= x.Length; i += 4)
         {
             Gelu(Vector128.LoadUnsafe(ref r, (nuint)i)).StoreUnsafe(ref r, (nuint)i);
@@ -517,7 +615,7 @@ internal static class Xnn
         Span<Vector128<float>> acc = stackalloc Vector128<float>[8];
         acc.Clear();
         int j = 0;
-        if (Vector512.IsHardwareAccelerated && blockEnd >= 32)
+        if (Simd.Use512 && blockEnd >= 32)
         {
             // One 512-bit register per 16-lane accumulator: exactly the AVX-512 kernel's layout.
             ref float r0 = ref MemoryMarshal.GetReference(row);

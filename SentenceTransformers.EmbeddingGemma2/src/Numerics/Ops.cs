@@ -22,13 +22,18 @@ internal static class Ops
         => ParallelRows.For(rows, dim, po, (r0, r1) => RmsNorm(x.AsSpan(r0 * dim, (r1 - r0) * dim), weight, dst.AsSpan(r0 * dim, (r1 - r0) * dim), dim, eps));
 
     /// <summary>Row-parallel <c>x += rms_norm(t)</c> (sandwich-norm residual), with <c>t</c> normalized in place.</summary>
-    public static void AddRmsNorm(float[] x, float[] t, float[] weight, int rows, int dim, ParallelOptions po, float eps = 1e-6f)
+    public static void AddRmsNorm(float[] x, float[] t, float[] weight, int rows, int dim, ParallelOptions po, float eps = 1e-6f, float scale = 1f)
         => ParallelRows.For(rows, dim, po, (r0, r1) =>
         {
             var ts = t.AsSpan(r0 * dim, (r1 - r0) * dim);
             RmsNorm(ts, weight, ts, dim, eps);
             var xs = x.AsSpan(r0 * dim, (r1 - r0) * dim);
             TensorPrimitives.Add(xs, ts, xs);
+            if (scale != 1f)
+            {
+                // x = (x + norm(t)) · scale: the same two roundings as a separate scaling pass, in one sweep.
+                TensorPrimitives.Multiply(xs, scale, xs);
+            }
         });
 
     /// <summary>Element-parallel GELU (in place) over the first <paramref name="count"/> values.</summary>

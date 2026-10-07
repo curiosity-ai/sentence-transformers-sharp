@@ -411,9 +411,17 @@ internal sealed class TextEncoder
         Step("ffn_norm", sc.H);
         sc.Qa.Quantize(sc.H, total, d, d, po);
         QGemm.Multiply(sc.Qa, layer.Gate, sc.Ffn1, ff, po);
-        QGemm.Multiply(sc.Qa, layer.Up, sc.Ffn2, ff, po);
-        Step("gate", sc.Ffn1); Step("up", sc.Ffn2);
-        Ops.GeluMul(sc.Ffn1, sc.Ffn2, total * ff, po);
+        if (hook is null)
+        {
+            // gelu(gate) · up computed in the up projection's epilogue (same arithmetic, one pass less).
+            QGemm.MultiplyGeluGated(sc.Qa, layer.Up, sc.Ffn1, ff, po);
+        }
+        else
+        {
+            QGemm.Multiply(sc.Qa, layer.Up, sc.Ffn2, ff, po);
+            Step("gate", sc.Ffn1); Step("up", sc.Ffn2);
+            Ops.GeluMul(sc.Ffn1, sc.Ffn2, total * ff, po);
+        }
         Step("geglu", sc.Ffn1);
         Fc(sc, sc.Ffn1, total, layer.Down, sc.Tmp, po);
         Step("down", sc.Tmp);
@@ -437,9 +445,17 @@ internal sealed class TextEncoder
         Step("ple_mul", sc.Ffn1);
         Fc(sc, sc.Ffn1, total, layer.PerLayerProjection, sc.Tmp, po);
         Step("ple_proj", sc.Tmp);
-        Ops.AddRmsNorm(x, sc.Tmp, layer.PerLayerPostNorm, total, d, po);
-        Step("x_ple", x);
-        TensorPrimitives.Multiply(x.AsSpan(0, total * d), layer.LayerScalar, x.AsSpan(0, total * d));
+        if (hook is null)
+        {
+            // x = (x + norm(ple)) · layer scalar in one sweep.
+            Ops.AddRmsNorm(x, sc.Tmp, layer.PerLayerPostNorm, total, d, po, scale: layer.LayerScalar);
+        }
+        else
+        {
+            Ops.AddRmsNorm(x, sc.Tmp, layer.PerLayerPostNorm, total, d, po);
+            Step("x_ple", x);
+            TensorPrimitives.Multiply(x.AsSpan(0, total * d), layer.LayerScalar, x.AsSpan(0, total * d));
+        }
     }
 }
 

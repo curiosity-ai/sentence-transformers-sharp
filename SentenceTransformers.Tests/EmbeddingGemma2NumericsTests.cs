@@ -210,6 +210,31 @@ public class EmbeddingGemma2NumericsTests
         }
     }
 
+    [Theory]
+    [InlineData(37, 70, 512, 4)]
+    [InlineData(5, 96, 256, 2)]
+    [InlineData(20, 40, 128, 8)]
+    public void QGemm_GeluGated_MatchesMultiplyThenGeluMul(int n, int m, int k, int weightBits)
+    {
+        var rng = new Random(n + m + k);
+        var x = RandomFloats(rng, n * k, 3f);
+        var w = WeightsOfWidth(rng, m * k, weightBits);
+        var matrix = new QuantizedMatrix(m, k, w, RandomFloats(rng, m, 0.01f).Select(v => MathF.Abs(v) + 1e-3f).ToArray());
+        var qa = new QuantizedActivations();
+        qa.Quantize(x, n, k, k);
+        var gate = RandomFloats(rng, n * m, 4f);
+        foreach (var po in new[] { Serial, Parallel4 })
+        {
+            var up = new float[n * m];
+            QGemm.Multiply(qa, matrix, up, m, po);
+            var expected = (float[])gate.Clone();
+            Ops.GeluMul(expected, up, n * m, po);
+            var fused = (float[])gate.Clone();
+            QGemm.MultiplyGeluGated(qa, matrix, fused, m, po);
+            Assert.Equal(expected, fused);
+        }
+    }
+
     [Fact]
     public void QuantizeRow_AllZerosUsesUnitScale()
     {
