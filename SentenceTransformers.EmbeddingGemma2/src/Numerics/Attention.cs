@@ -15,7 +15,7 @@ namespace SentenceTransformers.EmbeddingGemma2.Numerics;
 /// </summary>
 internal static class Attention
 {
-    private const int RowBlock = 64;
+    private const int RowBlock = 96;
 
     /// <param name="q">[total, heads·hd]</param>
     /// <param name="k">[total, kvHeads·hd]</param>

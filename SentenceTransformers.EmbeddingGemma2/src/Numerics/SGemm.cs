@@ -11,16 +11,16 @@ namespace SentenceTransformers.EmbeddingGemma2.Numerics;
 /// dimensions) used for attention (<c>Q·Kᵀ</c>, <c>P·V</c>) and the vision/audio float layers.
 /// <para>
 /// Goto-style blocking: B is packed per (KC × NR) panel into a contiguous, L1-resident buffer; A rows are
-/// broadcast against it by a 6 × NR register tile of FMA accumulators (NR = 32 with AVX-512, 16 with
-/// AVX2/FMA), i.e. 12 vector accumulators, 2 B loads and 1 broadcast per k step. Ragged tiles are
+/// broadcast against it by an MR × NR register tile of FMA accumulators (12 × 32 with AVX-512: 24 of the 32
+/// vector registers; 6 × 16 with AVX2/FMA), i.e. 2 B loads and one broadcast per row per k step. Ragged tiles are
 /// computed into a scratch tile and copied out. Platforms without 256-bit SIMD fall back to
 /// <see cref="TensorPrimitives"/> row updates.
 /// </para>
 /// </summary>
 internal static class SGemm
 {
-    private const int MR = 6;
-    private static readonly int KC = Avx512F.IsSupported ? 128 : 256;   // packed panel KC × NR floats = 16 KB (half of L1d)
+    private static readonly int MR = Avx512F.IsSupported ? 12 : 6;   // rows per register tile
+    private static readonly int KC = 256;   // packed panel KC × NR floats (32 KB with AVX-512, 16 KB with AVX2)
     private const int RowChunk = 48;   // rows per parallel work item (8 register tiles)
 
     private static readonly bool UseAvx512 = Avx512F.IsSupported;
@@ -94,7 +94,8 @@ internal static class SGemm
     {
         int nr = NR;
         var packArr = ArrayPool<float>.Shared.Rent(KC * nr + 16);
-        float* tile = stackalloc float[MR * 32];
+        float* tile = stackalloc float[12 * 32];
+        float* aTile = stackalloc float[12 * 256];   // ragged 12-row tiles: A rows staged contiguously (KC ≤ 256)
         try
         {
             fixed (float* packBase = packArr)
@@ -136,20 +137,37 @@ internal static class SGemm
                                     }
                                 }
                             }
+                            if (UseAvx512)
+                            {
+                                float* at = a0;
+                                int ldt = lda;
+                                if (rows < MR)
+                                {
+                                    // Rows past the end of a ragged tile repeat the last valid A row (results discarded).
+                                    for (int r = 0; r < MR; r++)
+                                    {
+                                        new ReadOnlySpan<float>(a0 + (long)Math.Min(r, rows - 1) * lda, kc).CopyTo(new Span<float>(aTile + r * kc, kc));
+                                    }
+                                    at = aTile;
+                                    ldt = kc;
+                                }
+                                Kernel12x32(at, ldt, panel, kc, cDst, cStride, first && full, last ? alpha : 1f);
+                                if (!full)
+                                {
+                                    for (int r = 0; r < rows; r++)
+                                    {
+                                        new ReadOnlySpan<float>(tile + r * nr, nc).CopyTo(new Span<float>(c + (long)(i + r) * ldc + j0, nc));
+                                    }
+                                }
+                                continue;
+                            }
                             // Rows past the end of a ragged tile re-read the last valid A row (results discarded).
                             float* a1 = a0 + (long)Math.Min(1, rows - 1) * lda;
                             float* a2 = a0 + (long)Math.Min(2, rows - 1) * lda;
                             float* a3 = a0 + (long)Math.Min(3, rows - 1) * lda;
                             float* a4 = a0 + (long)Math.Min(4, rows - 1) * lda;
                             float* a5 = a0 + (long)Math.Min(5, rows - 1) * lda;
-                            if (UseAvx512)
-                            {
-                                Kernel6x32(a0, a1, a2, a3, a4, a5, panel, kc, cDst, cStride, first && full, last ? alpha : 1f);
-                            }
-                            else
-                            {
-                                Kernel6x16(a0, a1, a2, a3, a4, a5, panel, kc, cDst, cStride, first && full, last ? alpha : 1f);
-                            }
+                            Kernel6x16(a0, a1, a2, a3, a4, a5, panel, kc, cDst, cStride, first && full, last ? alpha : 1f);
                             if (!full)
                             {
                                 for (int r = 0; r < rows; r++)
@@ -265,14 +283,18 @@ internal static class SGemm
         }
     }
 
-    /// <summary>C[6×32] (=|+=) A[6×kc]·Bpack[kc×32], then scaled by <paramref name="scale"/>.</summary>
+    /// <summary>C[12×32] (=|+=) A[12×kc]·Bpack[kc×32] (A rows <paramref name="lda"/> apart), then scaled by
+    /// <paramref name="scale"/>: 24 accumulators, 2 B loads and 12 broadcasts per k step.</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void Kernel6x32(float* a0, float* a1, float* a2, float* a3, float* a4, float* a5, float* bp, int kc, float* c, int ldc, bool overwrite, float scale)
+    private static unsafe void Kernel12x32(float* a, int lda, float* bp, int kc, float* c, int ldc, bool overwrite, float scale)
     {
         Vector512<float> c00, c01, c10, c11, c20, c21, c30, c31, c40, c41, c50, c51;
+        Vector512<float> d00, d01, d10, d11, d20, d21, d30, d31, d40, d41, d50, d51;
+        float* d = c + 6 * ldc;
         if (overwrite)
         {
             c00 = c01 = c10 = c11 = c20 = c21 = c30 = c31 = c40 = c41 = c50 = c51 = Vector512<float>.Zero;
+            d00 = d01 = d10 = d11 = d20 = d21 = d30 = d31 = d40 = d41 = d50 = d51 = Vector512<float>.Zero;
         }
         else
         {
@@ -282,40 +304,49 @@ internal static class SGemm
             c30 = Avx512F.LoadVector512(c + 3 * ldc); c31 = Avx512F.LoadVector512(c + 3 * ldc + 16);
             c40 = Avx512F.LoadVector512(c + 4 * ldc); c41 = Avx512F.LoadVector512(c + 4 * ldc + 16);
             c50 = Avx512F.LoadVector512(c + 5 * ldc); c51 = Avx512F.LoadVector512(c + 5 * ldc + 16);
+            d00 = Avx512F.LoadVector512(d); d01 = Avx512F.LoadVector512(d + 16);
+            d10 = Avx512F.LoadVector512(d + ldc); d11 = Avx512F.LoadVector512(d + ldc + 16);
+            d20 = Avx512F.LoadVector512(d + 2 * ldc); d21 = Avx512F.LoadVector512(d + 2 * ldc + 16);
+            d30 = Avx512F.LoadVector512(d + 3 * ldc); d31 = Avx512F.LoadVector512(d + 3 * ldc + 16);
+            d40 = Avx512F.LoadVector512(d + 4 * ldc); d41 = Avx512F.LoadVector512(d + 4 * ldc + 16);
+            d50 = Avx512F.LoadVector512(d + 5 * ldc); d51 = Avx512F.LoadVector512(d + 5 * ldc + 16);
         }
+        float* a6 = a + 6 * lda;
         for (int p = 0; p < kc; p++)
         {
             var b0 = Avx512F.LoadVector512(bp);
             var b1 = Avx512F.LoadVector512(bp + 16);
             bp += 32;
-            var x = Vector512.Create(a0[p]);
-            c00 = Avx512F.FusedMultiplyAdd(x, b0, c00);
-            c01 = Avx512F.FusedMultiplyAdd(x, b1, c01);
-            x = Vector512.Create(a1[p]);
-            c10 = Avx512F.FusedMultiplyAdd(x, b0, c10);
-            c11 = Avx512F.FusedMultiplyAdd(x, b1, c11);
-            x = Vector512.Create(a2[p]);
-            c20 = Avx512F.FusedMultiplyAdd(x, b0, c20);
-            c21 = Avx512F.FusedMultiplyAdd(x, b1, c21);
-            x = Vector512.Create(a3[p]);
-            c30 = Avx512F.FusedMultiplyAdd(x, b0, c30);
-            c31 = Avx512F.FusedMultiplyAdd(x, b1, c31);
-            x = Vector512.Create(a4[p]);
-            c40 = Avx512F.FusedMultiplyAdd(x, b0, c40);
-            c41 = Avx512F.FusedMultiplyAdd(x, b1, c41);
-            x = Vector512.Create(a5[p]);
-            c50 = Avx512F.FusedMultiplyAdd(x, b0, c50);
-            c51 = Avx512F.FusedMultiplyAdd(x, b1, c51);
+            var x = Vector512.Create(a[p]);
+            c00 = Avx512F.FusedMultiplyAdd(x, b0, c00); c01 = Avx512F.FusedMultiplyAdd(x, b1, c01);
+            x = Vector512.Create(a[lda + p]);
+            c10 = Avx512F.FusedMultiplyAdd(x, b0, c10); c11 = Avx512F.FusedMultiplyAdd(x, b1, c11);
+            x = Vector512.Create(a[2 * lda + p]);
+            c20 = Avx512F.FusedMultiplyAdd(x, b0, c20); c21 = Avx512F.FusedMultiplyAdd(x, b1, c21);
+            x = Vector512.Create(a[3 * lda + p]);
+            c30 = Avx512F.FusedMultiplyAdd(x, b0, c30); c31 = Avx512F.FusedMultiplyAdd(x, b1, c31);
+            x = Vector512.Create(a[4 * lda + p]);
+            c40 = Avx512F.FusedMultiplyAdd(x, b0, c40); c41 = Avx512F.FusedMultiplyAdd(x, b1, c41);
+            x = Vector512.Create(a[5 * lda + p]);
+            c50 = Avx512F.FusedMultiplyAdd(x, b0, c50); c51 = Avx512F.FusedMultiplyAdd(x, b1, c51);
+            x = Vector512.Create(a6[p]);
+            d00 = Avx512F.FusedMultiplyAdd(x, b0, d00); d01 = Avx512F.FusedMultiplyAdd(x, b1, d01);
+            x = Vector512.Create(a6[lda + p]);
+            d10 = Avx512F.FusedMultiplyAdd(x, b0, d10); d11 = Avx512F.FusedMultiplyAdd(x, b1, d11);
+            x = Vector512.Create(a6[2 * lda + p]);
+            d20 = Avx512F.FusedMultiplyAdd(x, b0, d20); d21 = Avx512F.FusedMultiplyAdd(x, b1, d21);
+            x = Vector512.Create(a6[3 * lda + p]);
+            d30 = Avx512F.FusedMultiplyAdd(x, b0, d30); d31 = Avx512F.FusedMultiplyAdd(x, b1, d31);
+            x = Vector512.Create(a6[4 * lda + p]);
+            d40 = Avx512F.FusedMultiplyAdd(x, b0, d40); d41 = Avx512F.FusedMultiplyAdd(x, b1, d41);
+            x = Vector512.Create(a6[5 * lda + p]);
+            d50 = Avx512F.FusedMultiplyAdd(x, b0, d50); d51 = Avx512F.FusedMultiplyAdd(x, b1, d51);
         }
         if (scale != 1f)
         {
             var s = Vector512.Create(scale);
-            c00 = Avx512F.Multiply(c00, s); c01 = Avx512F.Multiply(c01, s);
-            c10 = Avx512F.Multiply(c10, s); c11 = Avx512F.Multiply(c11, s);
-            c20 = Avx512F.Multiply(c20, s); c21 = Avx512F.Multiply(c21, s);
-            c30 = Avx512F.Multiply(c30, s); c31 = Avx512F.Multiply(c31, s);
-            c40 = Avx512F.Multiply(c40, s); c41 = Avx512F.Multiply(c41, s);
-            c50 = Avx512F.Multiply(c50, s); c51 = Avx512F.Multiply(c51, s);
+            c00 *= s; c01 *= s; c10 *= s; c11 *= s; c20 *= s; c21 *= s; c30 *= s; c31 *= s; c40 *= s; c41 *= s; c50 *= s; c51 *= s;
+            d00 *= s; d01 *= s; d10 *= s; d11 *= s; d20 *= s; d21 *= s; d30 *= s; d31 *= s; d40 *= s; d41 *= s; d50 *= s; d51 *= s;
         }
         Avx512F.Store(c, c00); Avx512F.Store(c + 16, c01);
         Avx512F.Store(c + ldc, c10); Avx512F.Store(c + ldc + 16, c11);
@@ -323,6 +354,12 @@ internal static class SGemm
         Avx512F.Store(c + 3 * ldc, c30); Avx512F.Store(c + 3 * ldc + 16, c31);
         Avx512F.Store(c + 4 * ldc, c40); Avx512F.Store(c + 4 * ldc + 16, c41);
         Avx512F.Store(c + 5 * ldc, c50); Avx512F.Store(c + 5 * ldc + 16, c51);
+        Avx512F.Store(d, d00); Avx512F.Store(d + 16, d01);
+        Avx512F.Store(d + ldc, d10); Avx512F.Store(d + ldc + 16, d11);
+        Avx512F.Store(d + 2 * ldc, d20); Avx512F.Store(d + 2 * ldc + 16, d21);
+        Avx512F.Store(d + 3 * ldc, d30); Avx512F.Store(d + 3 * ldc + 16, d31);
+        Avx512F.Store(d + 4 * ldc, d40); Avx512F.Store(d + 4 * ldc + 16, d41);
+        Avx512F.Store(d + 5 * ldc, d50); Avx512F.Store(d + 5 * ldc + 16, d51);
     }
 
     /// <summary>C[6×16] (=|+=) A[6×kc]·Bpack[kc×16], then scaled by <paramref name="scale"/>.</summary>
