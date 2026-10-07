@@ -226,6 +226,9 @@ TFLite runtime, no native tokenizer, no image or audio codec libraries:
 All three share the same text tower, so text embeddings are identical across bundles, and images and
 audio land in the same 768-d space as text.
 
+Bundles are downloaded on first use from `https://models.curiosity.ai/embeddinggemma-2/`, where they are
+unmodified copies of the `litert-community` files linked above. Pass `modelUrl` to use another mirror.
+
 ```csharp
 using SentenceTransformers.EmbeddingGemma2;
 

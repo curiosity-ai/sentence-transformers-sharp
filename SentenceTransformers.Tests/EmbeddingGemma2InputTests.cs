@@ -242,9 +242,9 @@ public class EmbeddingGemma2InputTests
     }
 
     [Theory]
-    [InlineData(EmbeddingGemma2Model.Text270M, "https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm/resolve/main/embeddinggemma-2-text-270m.litertlm", false, false)]
-    [InlineData(EmbeddingGemma2Model.TextVision440M, "https://huggingface.co/litert-community/embeddinggemma-2-text-vision-440m-litert-lm/resolve/main/embeddinggemma-2-text-vision-440m.litertlm", true, false)]
-    [InlineData(EmbeddingGemma2Model.Multimodal740M, "https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm/resolve/main/embeddinggemma-2-740m.litertlm", true, true)]
+    [InlineData(EmbeddingGemma2Model.Text270M, "https://models.curiosity.ai/embeddinggemma-2/embeddinggemma-2-text-270m.litertlm", false, false)]
+    [InlineData(EmbeddingGemma2Model.TextVision440M, "https://models.curiosity.ai/embeddinggemma-2/embeddinggemma-2-text-vision-440m.litertlm", true, false)]
+    [InlineData(EmbeddingGemma2Model.Multimodal740M, "https://models.curiosity.ai/embeddinggemma-2/embeddinggemma-2-740m.litertlm", true, true)]
     public void ModelCatalogue(EmbeddingGemma2Model model, string url, bool images, bool audio)
     {
         Assert.Equal(url, EmbeddingGemma2Models.GetDownloadUrl(model));
