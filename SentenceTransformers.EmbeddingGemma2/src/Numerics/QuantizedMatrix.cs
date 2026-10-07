@@ -8,20 +8,24 @@ namespace SentenceTransformers.EmbeddingGemma2.Numerics;
 /// layout: one row per output feature) with rows padded to a multiple of <see cref="Alignment"/> so SIMD kernels
 /// never need a K tail. The real weight is <c>w[r, k] · Scale[r]</c>.
 /// <para>
-/// Weights are kept at their native width: 8-bit matrices as one signed byte per weight (<see cref="Data"/>),
-/// INT4-range ones as two per byte and INT2-range ones as four per byte (<see cref="Packed"/>), so the 740M
-/// bundle's 2-bit audio encoder streams a quarter of the bytes per chunk. Packed blocks are expanded to bytes
-/// with <see cref="Unpack"/> right before the integer kernels use them (cache-resident, once per block).
+/// Weights are kept at their native width: 8-bit matrices as one signed byte per weight in row order
+/// (<see cref="Data"/>), INT4-range ones as two per byte and INT2-range ones as four per byte (<see cref="Packed"/>),
+/// so the 740M bundle's 2-bit audio encoder streams a quarter of the bytes per chunk.
 /// </para>
 /// <para>
-/// Packed layout, per 64-weight group <c>g</c> of a row: 4-bit: byte <c>i</c> (0..31) holds <c>w[g+i]+8</c> in its
-/// low nibble and <c>w[g+32+i]+8</c> in its high nibble; 2-bit: byte <c>i</c> (0..15) holds <c>w[g+16p+i]+2</c>
-/// in bits <c>2p..2p+1</c> for planes <c>p</c> = 0..3.
+/// Packed matrices are stored in the order the broadcast GEMM kernels read them: panels of
+/// <see cref="PanelWidth"/> output channels, each laid out <c>[Stride/4][32 channels][4 consecutive k]</c>
+/// (zero padded), then bit-packed per 64-byte group <c>g</c>: 4-bit: byte <c>i</c> (0..31) holds <c>v[g+i]+8</c>
+/// in its low nibble and <c>v[g+32+i]+8</c> in its high nibble; 2-bit: byte <c>i</c> (0..15) holds
+/// <c>v[g+16p+i]+2</c> in bits <c>2p..2p+1</c> for planes <c>p</c> = 0..3. <see cref="UnpackPanels"/> expands
+/// panels right before use; <see cref="UnpackRows"/> rebuilds row order for the other kernels.
 /// </para>
 /// </summary>
 internal sealed class QuantizedMatrix
 {
     public const int Alignment = 64;
+    /// <summary>Output channels per panel of the packed (broadcast-kernel) layout.</summary>
+    public const int PanelWidth = 32;
 
     public int Rows { get; }
     public int Cols { get; }
@@ -41,7 +45,11 @@ internal sealed class QuantizedMatrix
     /// <c>pmaddubsw</c> instruction.</summary>
     public bool SmallRange { get; }
 
-    private int PackedStride => Stride * Bits / 8;
+    /// <summary>Number of <see cref="PanelWidth"/>-channel panels (the last one zero padded).</summary>
+    public int Panels => (Rows + PanelWidth - 1) / PanelWidth;
+    /// <summary>Bytes of one unpacked panel: <c>Stride · PanelWidth</c>.</summary>
+    public int PanelBytes => Stride * PanelWidth;
+    private int PackedPanelBytes => PanelBytes * Bits / 8;
 
     public QuantizedMatrix(int rows, int cols, sbyte[] data, float[] scale, bool packLowBits = true)
     {
@@ -80,50 +88,48 @@ internal sealed class QuantizedMatrix
             }
             return;
         }
-        Packed = new byte[(long)rows * PackedStride];
-        var row = new sbyte[Stride];
-        for (int r = 0; r < rows; r++)
+        Packed = new byte[(long)Panels * PackedPanelBytes];
+        var panel = new sbyte[PanelBytes];
+        for (int p = 0; p < Panels; p++)
         {
-            row.AsSpan().Clear();
-            data.AsSpan(r * cols, cols).CopyTo(row);
-            var dst = Packed.AsSpan(r * PackedStride, PackedStride);
-            for (int g = 0; g < Stride; g += 64)
+            panel.AsSpan().Clear();
+            for (int c = 0; c < PanelWidth && p * PanelWidth + c < rows; c++)
+            {
+                var row = data.AsSpan((p * PanelWidth + c) * cols, cols);
+                for (int k = 0; k < cols; k++)
+                {
+                    panel[(k / 4 * PanelWidth + c) * 4 + (k & 3)] = row[k];
+                }
+            }
+            var dst = Packed.AsSpan(p * PackedPanelBytes, PackedPanelBytes);
+            for (int g = 0; g < PanelBytes; g += 64)
             {
                 if (Bits == 4)
                 {
                     for (int i = 0; i < 32; i++)
                     {
-                        dst[g / 2 + i] = (byte)((row[g + i] + 8) | ((row[g + 32 + i] + 8) << 4));
+                        dst[g / 2 + i] = (byte)((panel[g + i] + 8) | ((panel[g + 32 + i] + 8) << 4));
                     }
                 }
                 else
                 {
                     for (int i = 0; i < 16; i++)
                     {
-                        dst[g / 4 + i] = (byte)((row[g + i] + 2) | ((row[g + 16 + i] + 2) << 2) | ((row[g + 32 + i] + 2) << 4) | ((row[g + 48 + i] + 2) << 6));
+                        dst[g / 4 + i] = (byte)((panel[g + i] + 2) | ((panel[g + 16 + i] + 2) << 2) | ((panel[g + 32 + i] + 2) << 4) | ((panel[g + 48 + i] + 2) << 6));
                     }
                 }
             }
         }
     }
 
-    /// <summary>Expands rows <paramref name="r0"/>..<paramref name="r1"/> to one signed byte per weight at
-    /// <paramref name="dst"/> (row stride <see cref="Stride"/>).</summary>
-    public unsafe void Unpack(int r0, int r1, sbyte* dst)
+    /// <summary>Expands panels <paramref name="p0"/>..<paramref name="p1"/> of a packed matrix to one signed byte per
+    /// weight at <paramref name="dst"/> (<see cref="PanelBytes"/> each, in panel layout).</summary>
+    public unsafe void UnpackPanels(int p0, int p1, sbyte* dst)
     {
-        if (Bits == 8)
-        {
-            fixed (sbyte* src = Data)
-            {
-                Buffer.MemoryCopy(src + (long)r0 * Stride, dst, (long)(r1 - r0) * Stride, (long)(r1 - r0) * Stride);
-            }
-            return;
-        }
-        int ps = PackedStride;
         fixed (byte* packed = Packed)
         {
-            byte* src = packed + (long)r0 * ps;
-            long groups = (long)(r1 - r0) * Stride / 64;
+            byte* src = packed + (long)p0 * PackedPanelBytes;
+            long groups = (long)(p1 - p0) * PanelBytes / 64;
             byte* d = (byte*)dst;
             if (Bits == 4)
             {
@@ -152,13 +158,49 @@ internal sealed class QuantizedMatrix
         }
     }
 
+    /// <summary>Rows <paramref name="r0"/>..<paramref name="r1"/> as one signed byte per weight in row order at
+    /// <paramref name="dst"/> (row stride <see cref="Stride"/>).</summary>
+    public unsafe void UnpackRows(int r0, int r1, sbyte* dst)
+    {
+        if (Bits == 8)
+        {
+            fixed (sbyte* src = Data)
+            {
+                Buffer.MemoryCopy(src + (long)r0 * Stride, dst, (long)(r1 - r0) * Stride, (long)(r1 - r0) * Stride);
+            }
+            return;
+        }
+        var panel = new sbyte[PanelBytes];
+        fixed (sbyte* pp = panel)
+        {
+            for (int p = r0 / PanelWidth; p * PanelWidth < r1; p++)
+            {
+                UnpackPanels(p, p + 1, pp);
+                for (int c = 0; c < PanelWidth; c++)
+                {
+                    int r = p * PanelWidth + c;
+                    if (r < r0 || r >= r1)
+                    {
+                        continue;
+                    }
+                    int* row = (int*)(dst + (long)(r - r0) * Stride);
+                    int* src = (int*)pp + c;
+                    for (int k4 = 0; k4 < Stride / 4; k4++)
+                    {
+                        row[k4] = src[k4 * PanelWidth];
+                    }
+                }
+            }
+        }
+    }
+
     /// <summary>Row <paramref name="r"/> as one signed byte per weight (<see cref="Stride"/> long).</summary>
     public unsafe sbyte[] Row(int r)
     {
         var row = new sbyte[Stride];
         fixed (sbyte* d = row)
         {
-            Unpack(r, r + 1, d);
+            UnpackRows(r, r + 1, d);
         }
         return row;
     }
