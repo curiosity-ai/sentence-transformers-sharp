@@ -217,7 +217,15 @@ internal sealed class TextEncoder
     {
         public readonly QuantizedActivations Qa = new();
         public float[] H, Q, K, V, Attn, Tmp, Ffn1, Ffn2, Ple;
+
+        /// <summary><paramref name="a"/> if it holds at least <paramref name="n"/> floats, else a new uninitialized
+        /// array: every scratch buffer is fully written (by explicit row counts) before it is read.</summary>
+        public static float[] Grow(float[] a, int n) => a is not null && a.Length >= n ? a : GC.AllocateUninitializedArray<float>(n);
     }
+
+    /// <summary>Scratch buffers of finished forward passes, reused by the next ones (one per concurrent caller):
+    /// a 1000-token document needs ~70 MB of activations, and fresh arrays cost zeroing and page faults.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentBag<Scratch> _scratch = new();
 
     /// <summary>
     /// Runs the encoder over a batch of token sequences (each already wrapped in BOS/EOS) and returns the
@@ -265,20 +273,32 @@ internal sealed class TextEncoder
             maxLen = Math.Max(maxLen, offsets[s + 1] - offsets[s]);
         }
 
-        var sc = new Scratch();
+        var sc = _scratch.TryTake(out var cached) ? cached : new Scratch();
+        try
+        {
+            return ForwardEmbeddings(x, offsets, count, total, d, maxLen, sc, po, layerHook);
+        }
+        finally
+        {
+            _scratch.Add(sc);
+        }
+    }
+
+    private float[][] ForwardEmbeddings(float[] x, int[] offsets, int count, int total, int d, int maxLen, Scratch sc, ParallelOptions po, Action<int, float[]> layerHook)
+    {
         int maxQ = Layers.Max(l => l.Q.Rows), maxKv = Layers.Max(l => l.K.Rows), maxFf = Layers.Max(l => l.Gate.Rows);
-        sc.H = new float[total * d];
-        sc.Q = new float[total * maxQ];
-        sc.K = new float[total * maxKv];
-        sc.V = new float[total * maxKv];
-        sc.Attn = new float[total * maxQ];
-        sc.Tmp = new float[total * d];
-        sc.Ffn1 = new float[total * maxFf];
-        sc.Ffn2 = new float[total * maxFf];
+        sc.H = Scratch.Grow(sc.H, total * d);
+        sc.Q = Scratch.Grow(sc.Q, total * maxQ);
+        sc.K = Scratch.Grow(sc.K, total * maxKv);
+        sc.V = Scratch.Grow(sc.V, total * maxKv);
+        sc.Attn = Scratch.Grow(sc.Attn, total * maxQ);
+        sc.Tmp = Scratch.Grow(sc.Tmp, total * d);
+        sc.Ffn1 = Scratch.Grow(sc.Ffn1, total * maxFf);
+        sc.Ffn2 = Scratch.Grow(sc.Ffn2, total * maxFf);
 
         // Per-layer inputs: FC(x) -> [total, layers * P] then RMS-normalized per P-sized slice.
         int pl = _perLayerProjection.Rows;
-        sc.Ple = new float[total * pl];
+        sc.Ple = Scratch.Grow(sc.Ple, total * pl);
         Fc(sc, x, total, _perLayerProjection, sc.Ple, po);
         Ops.RmsNorm(sc.Ple, _perLayerNorm, sc.Ple, total * pl / PerLayerSize, PerLayerSize, po);
         layerHook?.Invoke(-1, sc.Ple);
