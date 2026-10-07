@@ -83,28 +83,32 @@ internal sealed class QuantizedActivations
         });
     }
 
-    /// <summary>XNNPACK <c>xnn_f32_qd8_asymmetric_quantization_params</c> + <c>f32-qs8-vcvt</c>.</summary>
+    /// <summary>XNNPACK <c>xnn_f32_qd8_asymmetric_quantization_params</c> + <c>f32-qs8-vcvt</c>: the quantization
+    /// multiplier is <c>255 / (max − min)</c>, the zero point is derived from <c>min · multiplier</c>, and the
+    /// dequantization scale used by the GEMM is <c>1 / multiplier</c> (all in float, exactly as XNNPACK rounds them).</summary>
     internal static void QuantizeRow(ReadOnlySpan<float> x, Span<byte> dst, out float scale, out int zeroPoint)
     {
         float min = MathF.Min(0f, TensorPrimitives.Min(x));
         float max = MathF.Max(0f, TensorPrimitives.Max(x));
         const float QMin = -128f, QMax = 127f;
-        scale = min == max ? 1f : (max - min) / (QMax - QMin);
-        float minScaled = min / scale;
-        float maxScaled = max / scale;
-        float zp = (QMin + minScaled) + (QMax + maxScaled) > 0 ? QMin - minScaled : QMax - maxScaled;
+        float multiplier = min == max ? 1f : (QMax - QMin) / (max - min);
+        float descaledMin = min * multiplier;
+        float descaledMax = max * multiplier;
+        float zp = (QMin + descaledMin) + (QMax + descaledMax) > 0 ? QMin - descaledMin : QMax - descaledMax;
         zp = Math.Clamp(zp, QMin, QMax);
         zeroPoint = (int)MathF.Round(zp, MidpointRounding.ToEven);
-        QuantizeRow(x, dst, scale, zeroPoint);
+        scale = 1f / multiplier;
+        QuantizeRowWithMultiplier(x, dst, multiplier, zeroPoint);
     }
 
-    /// <summary><c>f32-qs8-vcvt</c>: <c>q = clamp(rint(x · (1/scale)) + zp)</c>, stored offset by +128.</summary>
+    /// <summary>Static quantization (<c>QUANTIZE</c> op): <c>q = clamp(rint(x · (1/scale)) + zp)</c>, stored offset by +128.</summary>
     internal static void QuantizeRow(ReadOnlySpan<float> x, Span<byte> dst, float scale, int zeroPoint)
-    {
-        const float QMin = -128f, QMax = 127f;
-        float inv = 1f / scale;
-        float zpf = zeroPoint;
+        => QuantizeRowWithMultiplier(x, dst, 1f / scale, zeroPoint);
 
+    /// <summary><c>f32-qs8-vcvt</c> (avx512skx / avx2): <c>q = sat8(sat16(rint(x · multiplier)) + zp)</c> - the
+    /// product is rounded half-to-even <i>before</i> the zero point is added - stored offset by +128.</summary>
+    private static void QuantizeRowWithMultiplier(ReadOnlySpan<float> x, Span<byte> dst, float multiplier, int zeroPoint)
+    {
         int i = 0;
         if (Avx2.IsSupported && x.Length >= 32)
         {
@@ -113,52 +117,30 @@ internal sealed class QuantizedActivations
                 fixed (float* xp = x)
                 fixed (byte* dp = dst)
                 {
-                    var vinv = Vector256.Create(inv);
-                    var vzp = Vector256.Create(zpf);
-                    var off = Vector256.Create(128);
-                    // packs/packus interleave 128-bit lanes; this permutation restores element order.
+                    var vmul = Vector256.Create(multiplier);
+                    var vzp = Vector256.Create((short)zeroPoint);
+                    var flip = Vector256.Create((byte)0x80);
+                    // packs interleave 128-bit lanes; this permutation restores element order.
                     var order = Vector256.Create(0, 4, 1, 5, 2, 6, 3, 7);
                     for (; i + 32 <= x.Length; i += 32)
                     {
-                        // Separate multiply and add (no FMA) to match the reference rounding; vroundps
-                        // rounds half to even like lrintf. The unsigned saturating pack is the clamp.
-                        var a = Avx2.Add(Avx.ConvertToVector256Int32(Avx.RoundToNearestInteger(Avx.Add(Avx.Multiply(Avx.LoadVector256(xp + i), vinv), vzp))), off);
-                        var b = Avx2.Add(Avx.ConvertToVector256Int32(Avx.RoundToNearestInteger(Avx.Add(Avx.Multiply(Avx.LoadVector256(xp + i + 8), vinv), vzp))), off);
-                        var c = Avx2.Add(Avx.ConvertToVector256Int32(Avx.RoundToNearestInteger(Avx.Add(Avx.Multiply(Avx.LoadVector256(xp + i + 16), vinv), vzp))), off);
-                        var d = Avx2.Add(Avx.ConvertToVector256Int32(Avx.RoundToNearestInteger(Avx.Add(Avx.Multiply(Avx.LoadVector256(xp + i + 24), vinv), vzp))), off);
-                        var ab = Avx2.PackSignedSaturate(a, b);
-                        var cd = Avx2.PackSignedSaturate(c, d);
-                        var bytes = Avx2.PackUnsignedSaturate(ab, cd);
+                        // vcvtps2dq rounds half to even; the saturating packs/adds are XNNPACK's clamps.
+                        var a = Avx.ConvertToVector256Int32(Avx.Multiply(Avx.LoadVector256(xp + i), vmul));
+                        var b = Avx.ConvertToVector256Int32(Avx.Multiply(Avx.LoadVector256(xp + i + 8), vmul));
+                        var c = Avx.ConvertToVector256Int32(Avx.Multiply(Avx.LoadVector256(xp + i + 16), vmul));
+                        var d = Avx.ConvertToVector256Int32(Avx.Multiply(Avx.LoadVector256(xp + i + 24), vmul));
+                        var ab = Avx2.AddSaturate(Avx2.PackSignedSaturate(a, b), vzp);
+                        var cd = Avx2.AddSaturate(Avx2.PackSignedSaturate(c, d), vzp);
+                        var bytes = Avx2.Xor(Avx2.PackSignedSaturate(ab, cd).AsByte(), flip);
                         Avx.Store(dp + i, Avx2.PermuteVar8x32(bytes.AsInt32(), order).AsByte());
                     }
                 }
             }
         }
-        else if (Vector256.IsHardwareAccelerated && x.Length >= 32)
-        {
-            var vinv = Vector256.Create(inv);
-            var vzp = Vector256.Create(zpf);
-            var lo = Vector256.Create(QMin);
-            var hi = Vector256.Create(QMax);
-            var off = Vector256.Create(128);
-            ref float xr = ref System.Runtime.InteropServices.MemoryMarshal.GetReference(x);
-            ref byte dr = ref System.Runtime.InteropServices.MemoryMarshal.GetReference(dst);
-            for (; i + 32 <= x.Length; i += 32)
-            {
-                // Separate multiply and add (no FMA) to match the reference rounding.
-                var a = Vector256.ConvertToInt32(Vector256.Clamp(Vector256.Round(Vector256.LoadUnsafe(ref xr, (nuint)i) * vinv + vzp), lo, hi)) + off;
-                var b = Vector256.ConvertToInt32(Vector256.Clamp(Vector256.Round(Vector256.LoadUnsafe(ref xr, (nuint)(i + 8)) * vinv + vzp), lo, hi)) + off;
-                var c = Vector256.ConvertToInt32(Vector256.Clamp(Vector256.Round(Vector256.LoadUnsafe(ref xr, (nuint)(i + 16)) * vinv + vzp), lo, hi)) + off;
-                var d = Vector256.ConvertToInt32(Vector256.Clamp(Vector256.Round(Vector256.LoadUnsafe(ref xr, (nuint)(i + 24)) * vinv + vzp), lo, hi)) + off;
-                var ab = Vector256.Narrow(a.AsUInt32(), b.AsUInt32());
-                var cd = Vector256.Narrow(c.AsUInt32(), d.AsUInt32());
-                Vector256.Narrow(ab, cd).StoreUnsafe(ref dr, (nuint)i);
-            }
-        }
         for (; i < x.Length; i++)
         {
-            float v = MathF.Round(x[i] * inv + zpf, MidpointRounding.ToEven);
-            dst[i] = (byte)((int)Math.Clamp(v, QMin, QMax) + 128);
+            float v = Math.Clamp(MathF.Round(x[i] * multiplier, MidpointRounding.ToEven), short.MinValue, short.MaxValue);
+            dst[i] = (byte)(Math.Clamp((int)v + zeroPoint, -128, 127) + 128);
         }
     }
 }
@@ -382,7 +364,8 @@ internal static class QGemm
         int corrected = acc - (128 + x.ZeroPoint[row]) * w.RowSum[col];
         if (rq is not null)
         {
-            float r = Math.Clamp(MathF.Round((float)corrected * rq.Scale[col], MidpointRounding.ToEven), -128f, 127f);
+            // Through an integer like the int8 output tensor, so a zero result dequantizes to +0 (never -0).
+            int r = (int)Math.Clamp(MathF.Round((float)corrected * rq.Scale[col], MidpointRounding.ToEven), -128f, 127f);
             y[(long)row * ldy + col] = r * rq.OutputScale;
             return;
         }

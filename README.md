@@ -258,18 +258,24 @@ Set `OverflowStrategy` to `ChunkAndAverage` or `Error` to change that; the long-
 the image cost (the default is 140 soft tokens per image).
 
 **Fidelity.** The package is a port of the `litert-lm` runtime's embedding engine, not an approximation.
+On x64 with AVX-512 it reproduces the LiteRT-LM 0.18 CPU engine's embeddings **bit for bit** (maximum
+absolute difference 0) for text, images, interleaved text + image, and audio:
 - **Text:** the SentencePiece tokenizer is token-for-token identical to the reference.
 - **Images:** decoding (PNG / JPEG / BMP) and the sRGB Catmull-Rom resize reproduce `stb_image` /
-  `stb_image_resize2` byte for byte.
-- **Audio:** the log-mel front-end matches to 1e-7.
+  `stb_image_resize` v0.97 (the version the engine links) byte for byte.
+- **Audio:** the log-mel front-end (framing, Hann window, single-precision KISS FFT, HTK mel filterbank,
+  correctly rounded `logf`) matches the engine's to the bit, and long clips use the engine's streaming
+  chunk schedule.
 - **Model graphs:** the int4 / int2 / int8 weights are executed with the same dynamic (`qd8`) and static
-  int8 activation quantization that XNNPACK uses.
+  int8 activation quantization, graph rewrites (e.g. `x·x` → squared reductions, dequantize +
+  `BATCH_MATMUL` → f32 × int8 GEMM) and accumulation orders as the XNNPACK kernels the engine runs. The
+  transcendental functions (RMSNorm's reciprocal square root, GELU, softmax `exp`, sigmoid, tanh, RoPE
+  `sin`/`cos`) are ports of XNNPACK's AVX-512 polynomial kernels rather than calls into the .NET math
+  library.
 
-Every layer is verified against the TFLite reference, teacher-forced so each comparison isolates one
-layer: text layers agree to ~1e-7, and every audio graph op to 1e-5. End-to-end cosine similarity with
-the LiteRT-LM engine is ≥ 0.996 for text, images and audio. That is the same agreement the reference's
-own TFLite interpreter reaches with the engine, because XNNPACK's int8 rounding differs slightly between
-its two execution paths.
+Other CPUs run the same algorithms, but hardware estimates (the AVX-512 `rsqrt14` seed) and the absence of
+fused multiply-add can change the last bit of intermediate results, so embeddings agree with the engine to
+~1e-6 rather than exactly.
 
 **Performance** (4-vCPU AVX-512 VM; LiteRT-LM engine on the same machine for comparison):
 
@@ -546,8 +552,10 @@ NuGet packages are produced and published by the Azure DevOps pipeline in
 
 [MIT](https://opensource.org/licenses/MIT). The BERT tokenizers are derived from
 [BERTTokenizers](https://github.com/NMZivkovic/BertTokenizers) (MIT, © 2021 Othneil Drew). The
-EmbeddingGemma 2 image decoders and resizer are ports of [stb_image / stb_image_resize2](https://github.com/nothings/stb)
-(public domain / MIT, Sean Barrett). Each wrapped
+EmbeddingGemma 2 image decoders and resizer are ports of [stb_image / stb_image_resize](https://github.com/nothings/stb)
+(public domain / MIT, Sean Barrett), its FFT is a port of [KISS FFT](https://github.com/mborgerding/kissfft)
+(BSD-3-Clause, Mark Borgerding), and its activation kernels follow
+[XNNPACK](https://github.com/google/XNNPACK) (BSD-3-Clause, Google). Each wrapped
 model is distributed under its own upstream license — see the linked Hugging Face model pages. The
 [Google Patent Phrase Similarity](https://www.kaggle.com/datasets/google/google-patent-phrase-similarity-dataset)
 dataset bundled with the `SentenceTransformers.LoraTraining` example is © Google, licensed

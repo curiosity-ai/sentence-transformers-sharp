@@ -101,6 +101,7 @@ internal sealed class TextEncoder
             }
             else if (op.IsComposite("odml.rms_norm"))
             {
+                Vision.VisionEncoder.RequireDefaultEpsilon(model, op);
                 norms.Add(model.ReadFloats(sg.Tensors[op.Inputs[1]]));
             }
             else if (op.IsComposite("odml.rope"))
@@ -356,21 +357,29 @@ internal sealed class TextEncoder
         QGemm.Multiply(sc.Qa, w, output, w.Rows, po);
     }
 
+    /// <summary>Debug hook for op-level verification: (layer, step name, buffer) after each sub-step.</summary>
+    internal Action<int, string, float[]> StepHook;
+
     private void RunLayer(TextLayer layer, float[] x, int[] offsets, int total, Scratch sc, ParallelOptions po)
     {
+        var hook = StepHook;
+        void Step(string name, float[] buffer) => hook?.Invoke(layer.Index, name, buffer);
         int d = HiddenSize;
         int hd = layer.HeadDim;
         int qDim = layer.Q.Rows, kvDim = layer.K.Rows;
 
         // --- attention block ---
         Ops.RmsNorm(x, layer.InputNorm, sc.H, total, d, po);
+        Step("in_norm", sc.H);
         sc.Qa.Quantize(sc.H, total, d, d, po);   // q, k and v share the same quantized input
         QGemm.Multiply(sc.Qa, layer.Q, sc.Q, qDim, po);
         QGemm.Multiply(sc.Qa, layer.K, sc.K, kvDim, po);
         QGemm.Multiply(sc.Qa, layer.V, sc.V, kvDim, po);
+        Step("q", sc.Q); Step("k", sc.K); Step("v", sc.V);
         Ops.RmsNorm(sc.Q, layer.QNorm, sc.Q, total * qDim / hd, hd, po);
         Ops.RmsNorm(sc.K, layer.KNorm, sc.K, total * kvDim / hd, hd, po);
         Ops.RmsNorm(sc.V, layer.VNorm, sc.V, total * kvDim / hd, hd, po);
+        Step("qn", sc.Q); Step("kn", sc.K); Step("vn", sc.V);
         ParallelRows.For(total, qDim + kvDim, po, (t0, t1) =>
         {
             for (int t = t0; t < t1; t++)
@@ -388,23 +397,33 @@ internal sealed class TextEncoder
                 }
             }
         });
-        Attention.Run(sc.Q, sc.K, sc.V, sc.Attn, offsets, layer.NumHeads, layer.NumKvHeads, hd, scale: 1f, po);
+        Step("q_rope", sc.Q); Step("k_rope", sc.K);
+        Attention.Run(sc.Q, sc.K, sc.V, sc.Attn, offsets, layer.NumHeads, layer.NumKvHeads, hd, scale: 1f, po, maskedKeys: true);
+        Step("attn", sc.Attn);
         Fc(sc, sc.Attn, total, layer.O, sc.Tmp, po);
+        Step("o", sc.Tmp);
         Ops.AddRmsNorm(x, sc.Tmp, layer.PostAttentionNorm, total, d, po);
+        Step("x_attn", x);
 
         // --- GeGLU feed-forward ---
         int ff = layer.Gate.Rows;
         Ops.RmsNorm(x, layer.PreFeedForwardNorm, sc.H, total, d, po);
+        Step("ffn_norm", sc.H);
         sc.Qa.Quantize(sc.H, total, d, d, po);
         QGemm.Multiply(sc.Qa, layer.Gate, sc.Ffn1, ff, po);
         QGemm.Multiply(sc.Qa, layer.Up, sc.Ffn2, ff, po);
+        Step("gate", sc.Ffn1); Step("up", sc.Ffn2);
         Ops.GeluMul(sc.Ffn1, sc.Ffn2, total * ff, po);
+        Step("geglu", sc.Ffn1);
         Fc(sc, sc.Ffn1, total, layer.Down, sc.Tmp, po);
+        Step("down", sc.Tmp);
         Ops.AddRmsNorm(x, sc.Tmp, layer.PostFeedForwardNorm, total, d, po);
+        Step("x_ffn", x);
 
         // --- per-layer input gate ---
         int p = layer.PerLayerGate.Rows;
         Fc(sc, x, total, layer.PerLayerGate, sc.Ffn1, po);
+        Step("ple_gate", sc.Ffn1);
         int stride = _perLayerProjection.Rows;
         ParallelRows.For(total, p, po, (t0, t1) =>
         {
@@ -415,8 +434,11 @@ internal sealed class TextEncoder
                 TensorPrimitives.Multiply(row, sc.Ple.AsSpan(t * stride + layer.Index * PerLayerSize, PerLayerSize), row);
             }
         });
+        Step("ple_mul", sc.Ffn1);
         Fc(sc, sc.Ffn1, total, layer.PerLayerProjection, sc.Tmp, po);
+        Step("ple_proj", sc.Tmp);
         Ops.AddRmsNorm(x, sc.Tmp, layer.PerLayerPostNorm, total, d, po);
+        Step("x_ple", x);
         TensorPrimitives.Multiply(x.AsSpan(0, total * d), layer.LayerScalar, x.AsSpan(0, total * d));
     }
 }

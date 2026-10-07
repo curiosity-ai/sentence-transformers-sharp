@@ -118,7 +118,7 @@ internal sealed class AudioEncoder
             chunkHook?.Invoke(chunk, outputs);
             foreach (var name in _stateNames)
             {
-                state[name] = outputs[name];
+                state[name] = outputs[name].Clone();
             }
         }
         return tokens.ToArray();

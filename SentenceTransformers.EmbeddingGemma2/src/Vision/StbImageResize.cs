@@ -1,44 +1,42 @@
-// Portions of this file are a C# port of stb_image_resize2.h v2.18
-// (https://github.com/nothings/stb), by Jeff Roberts (v2) and Jorge L Rodriguez, with Sean Barrett,
-// placed in the public domain / dual-licensed under the MIT license. Only the code path used by
-// LiteRT-LM's image preprocessor is ported:
-//   stbir_resize(..., STBIR_RGB, STBIR_TYPE_UINT8_SRGB, STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM)
-// reproducing the output of the x86-64 SSE2 build bit for bit (same coefficients, same float
-// summation order, same sRGB tables).
+// Portions of this file are a C# port of stb_image_resize.h v0.97 ("stb_image_resize v1", now in
+// stb's deprecated/ folder; https://github.com/nothings/stb), by Jorge L Rodriguez (@VinoBS) with
+// Sean Barrett, placed in the public domain / dual-licensed under the MIT license. Only the code path
+// used by LiteRT-LM's image preprocessor is ported:
+//   stbir_resize(..., STBIR_TYPE_UINT8, 3 channels, no alpha, flags 0, STBIR_EDGE_CLAMP x2,
+//                STBIR_FILTER_CATMULLROM x2, STBIR_COLORSPACE_SRGB)
+// reproducing the output of the x86-64 build shipped in liblitert-lm.so byte for byte (same
+// contributors and coefficients, same float operation order, same sRGB tables, and the same scratch
+// memory layout, which v1's filter construction relies on).
 
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 
 namespace SentenceTransformers.EmbeddingGemma2.Vision;
 
 /// <summary>
-/// Bit-exact managed port of the subset of stb_image_resize2 used by LiteRT-LM's
-/// <c>stb_image_preprocessor.cc</c>: 3-channel 8-bit sRGB resizing with a Catmull-Rom filter and
-/// clamped edges. The filter construction (<c>stbir__calculate_filters</c>), the gather / scatter
-/// selection, the vertical-first heuristic and the float summation order of stb's SSE2 kernels are
-/// all mirrored so the produced bytes match the native library.
+/// Bit-exact managed port of the subset of stb_image_resize v1 (<c>stb_image_resize.h</c> v0.97) used by
+/// LiteRT-LM's image preprocessor: packed 3-channel 8-bit sRGB resizing with a Catmull-Rom filter in both
+/// directions and clamped edges. The filter construction (<c>stbir__calculate_filters</c> and its
+/// up/downsampling helpers), the decode / horizontal / vertical passes, the ring-buffer scanline loops and
+/// the sRGB encode are mirrored operation by operation so the produced bytes match the native library.
 /// </summary>
+/// <remarks>
+/// All per-call state lives in one zeroed scratch block laid out exactly like stb's <c>tempmem</c>
+/// (<c>stbir__resize_allocated</c>): v1's coefficient builders may write one coefficient past a
+/// contributor's group, and those spills land in the next region of the block, so keeping the layout keeps
+/// the results identical. Nothing is shared between calls, so <see cref="ResizeRgb"/> is thread-safe.
+/// </remarks>
 internal static class StbImageResize
 {
-    /// <summary><c>stbir__small_float</c>: 2^-120, the threshold under which coefficients are treated as zero.</summary>
-    private const float SmallFloat = 1.0f / (1 << 20) / (1 << 20) / (1 << 20) / (1 << 20) / (1 << 20) / (1 << 20);
+    /// <summary>Number of interleaved channels (packed RGB).</summary>
+    private const int Channels = 3;
 
-    /// <summary><c>STBIR__FLOAT_EMPTY_MARKER</c>: marks an unused ring buffer scanline in scatter mode.</summary>
-    private const float FloatEmptyMarker = 3.0e+38F;
+    /// <summary>Support of <c>stbir__filter_catmullrom</c> (<c>stbir__support_two</c>), in either direction.</summary>
+    private const float CatmullRomSupport = 2.0f;
 
-    /// <summary><c>STBIR_FORCE_GATHER_FILTER_SCANLINES_AMOUNT</c>: vertical downsamples with a filter
-    /// footprint of at most this many scanlines still use the gather path.</summary>
-    private const int ForceGatherFilterScanlinesAmount = 32;
-
-    /// <summary>Lower bound of the "single weight of one" vertical shortcut (<c>1.0f-0.000001f</c>).</summary>
-    private const float OneWeightLow = 1.0f - 0.000001f;
-
-    /// <summary>Upper bound of the "single weight of one" vertical shortcut (<c>1.0f+0.000001f</c>).</summary>
-    private const float OneWeightHigh = 1.0f + 0.000001f;
-
-    /// <summary>Number of zeroed floats appended to every scanline buffer, so that the 4-wide horizontal
-    /// kernel can read past the last contributing pixel (those lanes always have a zero weight).</summary>
-    private const int ScanlinePadding = 16;
+    /// <summary>Extra zeroed bytes after stb's scratch block, so a spill past the last region stays in bounds.</summary>
+    private const int ScratchPaddingBytes = 256;
 
     /// <summary><c>stbir__srgb_uchar_to_linear_float</c>: sRGB byte to linear float decode table.</summary>
     private static readonly float[] SrgbUcharToLinearFloat =
@@ -88,98 +86,11 @@ internal static class StbImageResize
         0x5e0c0a23, 0x631c0980, 0x67db08f6, 0x6c55087f, 0x70940818, 0x74a007bd, 0x787d076c, 0x7c330723,
     };
 
-    /// <summary>The row of <c>stbir__compute_weights</c> for 3 channels (index 2), used by
-    /// <c>stbir__should_do_vertical_first</c>. Eight resize classifications of four weights each.</summary>
-    private static readonly float[] VerticalFirstWeights3Channels =
-    {
-        0.00000f, 0.53125f, 0.00000f, 0.03125f,
-        0.06250f, 0.96875f, 0.00000f, 0.53125f,
-        0.87500f, 0.18750f, 0.00000f, 0.93750f,
-        0.00000f, 0.09375f, 1.00000f, 1.00000f,
-        0.00000f, 0.53125f, 0.00000f, 0.03125f,
-        0.03125f, 0.12500f, 1.00000f, 1.00000f,
-        1.00000f, 1.00000f, 0.06250f, 1.00000f,
-        0.00000f, 1.00000f, 0.00000f, 0.56250f,
-    };
-
-    /// <summary><c>stbir__scale_info</c>: the scale and rational form of one axis.</summary>
-    private struct ScaleInfo
-    {
-        /// <summary>Input size along this axis.</summary>
-        public int InputFullSize;
-
-        /// <summary>Output size along this axis.</summary>
-        public int OutputSubSize;
-
-        /// <summary>Output / input.</summary>
-        public float Scale;
-
-        /// <summary>Input / output (computed in double, then rounded).</summary>
-        public float InvScale;
-
-        /// <summary>Starting shift in output pixel space (always 0 for a full-image resize).</summary>
-        public float PixelShift;
-
-        /// <summary>Whether the scale is an exact rational, enabling polyphase coefficient reuse.</summary>
-        public bool ScaleIsRational;
-
-        /// <summary>Numerator of the rational scale (the polyphase period, in output pixels).</summary>
-        public uint ScaleNumerator;
-
-        /// <summary>Denominator of the rational scale (the polyphase step, in input pixels).</summary>
-        public uint ScaleDenominator;
-    }
-
-    /// <summary><c>stbir__sampler</c>: the filter (contributor ranges and coefficients) for one axis.</summary>
-    private sealed class Sampler
-    {
-        /// <summary>Scale of this axis.</summary>
-        public ScaleInfo Scale;
-
-        /// <summary>0 = scatter (vertical only), 1 = gather with scale &gt;= 1, 2 = gather with scale &lt; 1.</summary>
-        public int IsGather;
-        /// <summary>Input pixels that can affect one output pixel (<c>filter_pixel_width</c>).</summary>
-        public int FilterPixelWidth;
-
-        /// <summary>Half of <see cref="FilterPixelWidth"/>: how far the filter overhangs either edge.</summary>
-        public int FilterPixelMargin;
-
-        /// <summary>Coefficients stored per contributor (becomes <see cref="Widest"/> after packing).</summary>
-        public int CoefficientWidth;
-
-        /// <summary>Output pixels when gathering, input pixels plus margins when scattering.</summary>
-        public int NumContributors;
-
-        /// <summary>First contributing pixel per contributor (<c>stbir__contributors.n0</c>).</summary>
-        public int[] N0;
-
-        /// <summary>Last contributing pixel per contributor (<c>stbir__contributors.n1</c>).</summary>
-        public int[] N1;
-
-        /// <summary>Coefficients, <see cref="CoefficientWidth"/> per contributor.</summary>
-        public float[] Coefficients;
-
-        /// <summary>Lowest first pixel over all contributors (<c>stbir__filter_extent_info.lowest</c>).</summary>
-        public int Lowest;
-
-        /// <summary>Highest last pixel over all contributors (<c>stbir__filter_extent_info.highest</c>).</summary>
-        public int Highest;
-
-        /// <summary>Widest single contributor (<c>stbir__filter_extent_info.widest</c>); selects the horizontal
-        /// kernel and sizes the ring buffer.</summary>
-        public int Widest;
-
-        /// <summary>Coefficient width of the gather filter built before pivoting to scatter.</summary>
-        public int PrescatterCoefficientWidth;
-
-        /// <summary>Contributor count of the gather filter built before pivoting to scatter.</summary>
-        public int PrescatterNumContributors;
-    }
-
     /// <summary>
     /// Resizes packed 8-bit sRGB RGB pixels (row-major, 3 bytes/pixel, no row padding) with a Catmull-Rom
-    /// filter and clamped edges, reproducing stb_image_resize2's
-    /// <c>stbir_resize(..., STBIR_RGB, STBIR_TYPE_UINT8_SRGB, STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM)</c>.
+    /// filter and clamped edges, reproducing stb_image_resize v1's
+    /// <c>stbir_resize(..., STBIR_TYPE_UINT8, 3, STBIR_ALPHA_CHANNEL_NONE, 0, STBIR_EDGE_CLAMP, STBIR_EDGE_CLAMP,
+    /// STBIR_FILTER_CATMULLROM, STBIR_FILTER_CATMULLROM, STBIR_COLORSPACE_SRGB, NULL)</c>.
     /// </summary>
     /// <param name="rgb">Source pixels, at least <c>width * height * 3</c> bytes.</param>
     /// <param name="width">Source width in pixels.</param>
@@ -187,7 +98,7 @@ internal static class StbImageResize
     /// <param name="newWidth">Destination width in pixels.</param>
     /// <param name="newHeight">Destination height in pixels.</param>
     /// <returns>The resized image, <c>newWidth * newHeight * 3</c> bytes.</returns>
-    public static byte[] ResizeRgb(ReadOnlySpan<byte> rgb, int width, int height, int newWidth, int newHeight)
+    internal static unsafe byte[] ResizeRgb(ReadOnlySpan<byte> rgb, int width, int height, int newWidth, int newHeight)
     {
         if (width <= 0 || height <= 0)
         {
@@ -197,1528 +108,916 @@ internal static class StbImageResize
         {
             throw new ArgumentOutOfRangeException(nameof(newWidth), "Output image must have a positive width and height.");
         }
-        if (rgb.Length < (long)width * height * 3)
+        if (rgb.Length < (long)width * height * Channels)
         {
             throw new ArgumentException("Input buffer is smaller than width * height * 3 bytes.", nameof(rgb));
         }
 
-        // stbir__perform_build: region transforms, samplers and conservative horizontal extents.
-        var horizontal = CreateSampler(CalculateRegionTransform(newWidth, width), alwaysGather: true);
-        var (conservativeN0, conservativeN1) = GetConservativeExtents(horizontal);
-        var vertical = CreateSampler(CalculateRegionTransform(newHeight, height), alwaysGather: false);
-
-        // stbir__alloc_internal_mem_and_build_samplers
-        bool verticalFirst = ShouldDoVerticalFirst(horizontal.FilterPixelWidth, horizontal.Scale.Scale, horizontal.Scale.OutputSubSize,
-                                                   vertical.FilterPixelWidth, vertical.Scale.Scale, vertical.Scale.OutputSubSize, vertical.IsGather);
-
-        // are the two filters identical? (same kernel, support and edge mode always hold here)
-        bool copyHorizontal = false;
-        Sampler pivotSource = null;
-        if (horizontal.Scale.OutputSubSize == vertical.Scale.OutputSubSize)
+        var output = new byte[checked(newWidth * newHeight * Channels)];
+        var resize = new Resize(width, height, newWidth, newHeight);
+        fixed (byte* input = rgb)
+        fixed (byte* outputPtr = output)
+        fixed (float* srgbToLinear = SrgbUcharToLinearFloat)
+        fixed (uint* fp32ToSrgb8 = Fp32ToSrgb8Tab4)
         {
-            float diffScale = horizontal.Scale.Scale - vertical.Scale.Scale;
-            float diffShift = horizontal.Scale.PixelShift - vertical.Scale.PixelShift;
-            if (diffScale < 0.0f)
-            {
-                diffScale = -diffScale;
-            }
-            if (diffShift < 0.0f)
-            {
-                diffShift = -diffShift;
-            }
-            if (diffScale <= SmallFloat && diffShift <= SmallFloat)
-            {
-                if (horizontal.IsGather == vertical.IsGather)
-                {
-                    copyHorizontal = true;
-                }
-                else
-                {
-                    // vertical is scatter, horizontal is gather: pivot the horizontal coefficients
-                    pivotSource = horizontal;
-                }
-            }
-        }
-
-        CalculateFilters(horizontal, null);
-        horizontal.CoefficientWidth = PackCoefficients(horizontal, conservativeN0, conservativeN1);
-
-        if (copyHorizontal)
-        {
-            vertical = horizontal;
-        }
-        else
-        {
-            CalculateFilters(vertical, pivotSource);
-        }
-
-        // info->ring_buffer_num_entries
-        int ringEntries = vertical.Widest;
-        if (vertical.IsGather == 0 && ringEntries > newHeight)
-        {
-            ringEntries = newHeight;
-        }
-
-        var output = new byte[(long)newWidth * newHeight * 3];
-        var job = new ResizeJob(horizontal, vertical, verticalFirst, ringEntries, width, height, newWidth, newHeight);
-        unsafe
-        {
-            fixed (byte* src = rgb)
-            fixed (byte* dst = output)
-            {
-                if (vertical.IsGather != 0)
-                {
-                    job.VerticalGatherLoop(src, dst);
-                }
-                else
-                {
-                    job.VerticalScatterLoop(src, dst);
-                }
-            }
+            resize.Run(input, outputPtr, srgbToLinear, fp32ToSrgb8);
         }
         return output;
     }
 
-    // ------------------------------------------------------------------------------------------------
-    // Scalar helpers
-
-    /// <summary><c>stbir_simd_floorf</c> (SSE2 variant): truncate, then subtract one if that rounded up.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float FloorF(float x)
-    {
-        float t = (int)x;
-        return x < t ? t + -1.0f : t;
-    }
-
-    /// <summary><c>stbir_simd_ceilf</c> (SSE2 variant): truncate, then add one if that rounded down.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float CeilF(float x)
-    {
-        float t = (int)x;
-        return t < x ? t + 1.0f : t;
-    }
-
-    /// <summary><c>stbir__filter_catmullrom</c>.</summary>
+    /// <summary><c>stbir__filter_catmullrom</c> (the unused <c>scale</c> argument is dropped).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static float FilterCatmullRom(float x)
     {
-        if (x < 0.0f)
-        {
-            x = -x;
-        }
+        x = MathF.Abs(x);
+
         if (x < 1.0f)
         {
-            return 1.0f - x * x * (2.5f - 1.5f * x);
+            return 1 - x * x * (2.5f - 1.5f * x);
         }
         else if (x < 2.0f)
         {
-            return 2.0f - x * (4.0f + x * (0.5f * x - 2.5f));
+            return 2 - x * (4 + x * (0.5f * x - 2.5f));
         }
+
         return 0.0f;
     }
 
-    /// <summary><c>stbir__support_two</c>: Catmull-Rom has a support of two pixels.</summary>
-    private const float CatmullRomSupport = 2.0f;
+    /// <summary><c>stbir__use_upsampling</c>.</summary>
+    private static bool UseUpsampling(float ratio) => ratio > 1;
 
-    /// <summary><c>stbir__edge_clamp_full</c> (via <c>stbir__edge_wrap</c>).</summary>
+    /// <summary><c>stbir__get_filter_pixel_width</c>: the maximum number of input samples that can affect an
+    /// output sample.</summary>
+    private static int GetFilterPixelWidth(float scale)
+    {
+        if (UseUpsampling(scale))
+        {
+            return (int)Math.Ceiling(CatmullRomSupport * 2);
+        }
+        return (int)Math.Ceiling(CatmullRomSupport * 2 / scale);
+    }
+
+    /// <summary><c>stbir__get_filter_pixel_margin</c>: how far buffers are expanded beyond the image edges.</summary>
+    private static int GetFilterPixelMargin(float scale) => GetFilterPixelWidth(scale) / 2;
+
+    /// <summary><c>stbir__get_coefficient_width</c> (both branches give <c>ceil(2 * 2)</c> for Catmull-Rom).</summary>
+    private static int GetCoefficientWidth(float scale)
+    {
+        _ = scale;
+        return (int)Math.Ceiling(CatmullRomSupport * 2);
+    }
+
+    /// <summary><c>stbir__get_contributors</c>: output pixels when upsampling, input pixels plus margins
+    /// when downsampling.</summary>
+    private static int GetContributors(float scale, int inputSize, int outputSize)
+    {
+        if (UseUpsampling(scale))
+        {
+            return outputSize;
+        }
+        return inputSize + GetFilterPixelMargin(scale) * 2;
+    }
+
+    /// <summary><c>stbir__edge_wrap</c> with <c>STBIR_EDGE_CLAMP</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int EdgeClamp(int n, int max)
     {
+        if (n >= 0 && n < max)
+        {
+            return n;
+        }
         if (n < 0)
         {
             return 0;
         }
-        if (n >= max)
-        {
-            return max - 1;
-        }
-        return n;
+        return max - 1;
     }
 
-    /// <summary><c>stbir__linear_to_srgb_uchar</c>: clamp to [2^-13, 1-eps] (NaN maps to 0), look up the
-    /// bias/scale pair from the exponent and top mantissa bits, and interpolate with the next 8 bits.
-    /// The SSE2 encoder (<c>stbir__min_max_shift20</c> / <c>stbir__linear_to_srgb_finish</c>) clamps with
-    /// min/max instead of early-outs, but yields identical bytes for every input.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe byte LinearToSrgbUchar(float value, uint* fp32ToSrgb8Tab4)
+    /// <summary><c>stbir__calculate_sample_range_upsample</c>: which input pixels contribute to output pixel
+    /// <paramref name="n"/>. The rounding is done in double, as in C (<c>floor(float + 0.5)</c>).</summary>
+    private static void CalculateSampleRangeUpsample(int n, float outFilterRadius, float scaleRatio, float outShift,
+                                                     out int inFirstPixel, out int inLastPixel, out float inCenterOfOut)
     {
-        const uint AlmostOne = 0x3f7fffff;
-        const uint MinVal = (127 - 13) << 23;
-
-        if (!(value > BitConverter.UInt32BitsToSingle(MinVal)))
-        {
-            return 0;
-        }
-        if (value > BitConverter.UInt32BitsToSingle(AlmostOne))
-        {
-            return 255;
-        }
-
-        uint bits = BitConverter.SingleToUInt32Bits(value);
-        uint tab = fp32ToSrgb8Tab4[(bits - MinVal) >> 20];
-        uint bias = (tab >> 16) << 9;
-        uint scale = tab & 0xffff;
-        uint t = (bits >> 12) & 0xff;
-        return (byte)((bias + scale * t) >> 16);
-    }
-
-    // ------------------------------------------------------------------------------------------------
-    // Scale and sampler setup
-
-    /// <summary><c>stbir__calculate_region_transform</c> for a full input range mapped onto a full output range.</summary>
-    private static ScaleInfo CalculateRegionTransform(int outputFullRange, int inputFullRange)
-    {
-        double inputS0 = 0.0, inputS1 = 1.0;
-        double inputS = inputS1 - inputS0;
-        double outputRange = outputFullRange;
-        double inputRange = inputFullRange;
-        double outputS = ((double)outputFullRange) / outputRange;
-        double ratio = outputS / inputS;
-        double scale = (outputRange / inputRange) * ratio;
-
-        var info = new ScaleInfo
-        {
-            Scale = (float)scale,
-            InvScale = (float)(1.0 / scale),
-            // stbir__clip is a no-op for a full output range
-            PixelShift = (float)(inputS0 * ratio * outputRange),
-            InputFullSize = inputFullRange,
-            OutputSubSize = outputFullRange,
-        };
-        info.ScaleIsRational = DoubleToRational(scale, (scale <= 1.0) ? (uint)outputFullRange : (uint)inputFullRange,
-                                                out info.ScaleNumerator, out info.ScaleDenominator, scale >= 1.0);
-        return info;
-    }
-
-    /// <summary><c>stbir__double_to_rational</c>: continued-fraction search for a rational with less than
-    /// one float bit of error, limiting either the numerator or the denominator.</summary>
-    private static bool DoubleToRational(double f, uint limit, out uint numer, out uint denom, bool limitDenom)
-    {
-        double err;
-        ulong top, bot;
-        ulong numerLast = 0;
-        ulong denomLast = 1;
-        ulong numerEstimate = 1;
-        ulong denomEstimate = 0;
-
-        // scale to past float error range
-        top = (ulong)(f * (double)(1 << 25));
-        bot = 1 << 25;
-
-        // keep refining, but usually stops in a few loops - usually 5 for bad cases
-        for (;;)
-        {
-            ulong est, temp;
-
-            // hit limit, break out and do best full range estimate
-            if ((limitDenom ? denomEstimate : numerEstimate) >= limit)
-            {
-                break;
-            }
-
-            // is the current error less than 1 bit of a float? if so, we're done
-            if (denomEstimate != 0)
-            {
-                err = ((double)numerEstimate / (double)denomEstimate) - f;
-                if (err < 0.0)
-                {
-                    err = -err;
-                }
-                if (err < (1.0 / (double)(1 << 24)))
-                {
-                    numer = (uint)numerEstimate;
-                    denom = (uint)denomEstimate;
-                    return true;
-                }
-            }
-
-            // no more refinement bits left? break out and do full range estimate
-            if (bot == 0)
-            {
-                break;
-            }
-
-            // gcd the estimate bits
-            est = top / bot;
-            temp = top % bot;
-            top = bot;
-            bot = temp;
-
-            // move remainders
-            temp = est * denomEstimate + denomLast;
-            denomLast = denomEstimate;
-            denomEstimate = temp;
-
-            // move remainders
-            temp = est * numerEstimate + numerLast;
-            numerLast = numerEstimate;
-            numerEstimate = temp;
-        }
-
-        // we didn't find anything good enough for float, use a full range estimate
-        if (limitDenom)
-        {
-            numerEstimate = (ulong)(f * (double)limit + 0.5);
-            denomEstimate = limit;
-        }
-        else
-        {
-            numerEstimate = limit;
-            denomEstimate = (ulong)(((double)limit / f) + 0.5);
-        }
-
-        numer = (uint)numerEstimate;
-        denom = (uint)denomEstimate;
-
-        err = (denomEstimate != 0) ? (((double)(uint)numerEstimate / (double)(uint)denomEstimate) - f) : 1.0;
-        if (err < 0.0)
-        {
-            err = -err;
-        }
-        return err < (1.0 / (double)(1 << 24));
-    }
-
-    /// <summary><c>stbir__get_filter_pixel_width</c>: input pixels that can affect one output pixel.</summary>
-    private static int GetFilterPixelWidth(float scale)
-    {
-        if (scale >= 1.0f) // scale >= ( 1.0f - stbir__small_float ), which is 1.0f in float
-        {
-            return (int)CeilF(CatmullRomSupport * 2.0f);
-        }
-        return (int)CeilF(CatmullRomSupport * 2.0f / scale);
-    }
-
-    /// <summary><c>stbir__get_coefficient_width</c>: coefficients stored per contributor.</summary>
-    private static int GetCoefficientWidth(float scale, int isGather)
-    {
-        switch (isGather)
-        {
-            case 1:
-                return (int)CeilF(CatmullRomSupport * 2.0f);
-            case 2:
-                return (int)CeilF(CatmullRomSupport * 2.0f / scale);
-            default:
-                return (int)CeilF(CatmullRomSupport * 2.0f);
-        }
-    }
-
-    /// <summary><c>stbir__set_sampler</c> with an explicit Catmull-Rom filter and clamped edges.</summary>
-    private static Sampler CreateSampler(ScaleInfo scaleInfo, bool alwaysGather)
-    {
-        var samp = new Sampler { Scale = scaleInfo };
-        samp.FilterPixelWidth = GetFilterPixelWidth(scaleInfo.Scale);
-
-        // Gather is always better, but in extreme downsamples, you have to have most or all of the data in
-        // memory. For horizontal, we always have all the pixels, so we always use gather (always_gather).
-        // For vertical, we use gather if scaling up or if the filter footprint is small enough.
-        samp.IsGather = 0;
-        if (scaleInfo.Scale >= 1.0f)
-        {
-            samp.IsGather = 1;
-        }
-        else if (alwaysGather || samp.FilterPixelWidth <= ForceGatherFilterScanlinesAmount)
-        {
-            samp.IsGather = 2;
-        }
-
-        samp.CoefficientWidth = GetCoefficientWidth(scaleInfo.Scale, samp.IsGather);
-        samp.FilterPixelMargin = samp.FilterPixelWidth / 2;
-
-        // stbir__get_contributors
-        samp.NumContributors = samp.IsGather != 0 ? scaleInfo.OutputSubSize : scaleInfo.InputFullSize + samp.FilterPixelMargin * 2;
-        samp.N0 = new int[samp.NumContributors];
-        samp.N1 = new int[samp.NumContributors];
-
-        // extra STBIR_INPUT_CALLBACK_PADDING floats of padding (also holds the 8888 sentinel after packing)
-        samp.Coefficients = new float[(long)samp.NumContributors * samp.CoefficientWidth + 3];
-
-        if (samp.IsGather == 0)
-        {
-            samp.PrescatterCoefficientWidth = samp.FilterPixelWidth;
-            samp.PrescatterNumContributors = scaleInfo.OutputSubSize;
-        }
-        return samp;
-    }
-
-    /// <summary><c>stbir__calculate_in_pixel_range</c> (non-wrap edge modes).</summary>
-    private static void CalculateInPixelRange(out int firstPixel, out int lastPixel, float outPixelCenter, float outFilterRadius,
-                                              float invScale, float outShift)
-    {
+        float outPixelCenter = (float)n + 0.5f;
         float outPixelInfluenceLowerbound = outPixelCenter - outFilterRadius;
         float outPixelInfluenceUpperbound = outPixelCenter + outFilterRadius;
 
-        float inPixelInfluenceLowerbound = (outPixelInfluenceLowerbound + outShift) * invScale;
-        float inPixelInfluenceUpperbound = (outPixelInfluenceUpperbound + outShift) * invScale;
+        float inPixelInfluenceLowerbound = (outPixelInfluenceLowerbound + outShift) / scaleRatio;
+        float inPixelInfluenceUpperbound = (outPixelInfluenceUpperbound + outShift) / scaleRatio;
 
-        int first = (int)FloorF(inPixelInfluenceLowerbound + 0.5f);
-        int last = (int)FloorF(inPixelInfluenceUpperbound - 0.5f);
-        if (last < first)
-        {
-            last = first; // point sample mode can span a value *right* at 0.5, and cause these to cross
-        }
-
-        firstPixel = first;
-        lastPixel = last;
+        inCenterOfOut = (outPixelCenter + outShift) / scaleRatio;
+        inFirstPixel = (int)Math.Floor(inPixelInfluenceLowerbound + 0.5);
+        inLastPixel = (int)Math.Floor(inPixelInfluenceUpperbound - 0.5);
     }
 
-    /// <summary><c>stbir__calculate_out_pixel_range</c>.</summary>
-    private static void CalculateOutPixelRange(out int firstPixel, out int lastPixel, float inPixelCenter, float inPixelsRadius,
-                                               float scale, float outShift, int outSize)
+    /// <summary><c>stbir__calculate_sample_range_downsample</c>: which output pixels input pixel
+    /// <paramref name="n"/> contributes to.</summary>
+    private static void CalculateSampleRangeDownsample(int n, float inPixelsRadius, float scaleRatio, float outShift,
+                                                       out int outFirstPixel, out int outLastPixel, out float outCenterOfIn)
     {
+        float inPixelCenter = (float)n + 0.5f;
         float inPixelInfluenceLowerbound = inPixelCenter - inPixelsRadius;
         float inPixelInfluenceUpperbound = inPixelCenter + inPixelsRadius;
-        float outPixelInfluenceLowerbound = inPixelInfluenceLowerbound * scale - outShift;
-        float outPixelInfluenceUpperbound = inPixelInfluenceUpperbound * scale - outShift;
-        int outFirstPixel = (int)FloorF(outPixelInfluenceLowerbound + 0.5f);
-        int outLastPixel = (int)FloorF(outPixelInfluenceUpperbound - 0.5f);
 
-        if (outFirstPixel < 0)
-        {
-            outFirstPixel = 0;
-        }
-        if (outLastPixel >= outSize)
-        {
-            outLastPixel = outSize - 1;
-        }
-        firstPixel = outFirstPixel;
-        lastPixel = outLastPixel;
+        float outPixelInfluenceLowerbound = inPixelInfluenceLowerbound * scaleRatio - outShift;
+        float outPixelInfluenceUpperbound = inPixelInfluenceUpperbound * scaleRatio - outShift;
+
+        outCenterOfIn = inPixelCenter * scaleRatio - outShift;
+        outFirstPixel = (int)Math.Floor(outPixelInfluenceLowerbound + 0.5);
+        outLastPixel = (int)Math.Floor(outPixelInfluenceUpperbound - 0.5);
     }
 
-    /// <summary><c>stbir__get_conservative_extents</c> for the (always gathering) horizontal sampler.</summary>
-    private static (int N0, int N1) GetConservativeExtents(Sampler samp)
+    /// <summary><c>stbir__calculate_coefficients_upsample</c>. <paramref name="contributor"/> points at an
+    /// <c>{ n0, n1 }</c> pair. Like stb, this may write (and sum) one coefficient past the group's width;
+    /// that spill lands in the next group (or the next scratch region) and is overwritten later.</summary>
+    private static unsafe void CalculateCoefficientsUpsample(int inFirstPixel, int inLastPixel, float inCenterOfOut,
+                                                             int* contributor, float* coefficientGroup)
     {
-        float scale = samp.Scale.Scale;
-        float outShift = samp.Scale.PixelShift;
-        int inputFullSize = samp.Scale.InputFullSize;
-        float invScale = samp.Scale.InvScale;
-        int n0, n1;
+        int i;
+        float totalFilter = 0;
+        float filterScale;
 
-        if (samp.IsGather == 1)
+        contributor[0] = inFirstPixel;
+        contributor[1] = inLastPixel;
+
+        for (i = 0; i <= inLastPixel - inFirstPixel; i++)
         {
-            float outFilterRadius = CatmullRomSupport * scale;
+            float inPixelCenter = (float)(i + inFirstPixel) + 0.5f;
+            coefficientGroup[i] = FilterCatmullRom(inCenterOfOut - inPixelCenter);
 
-            CalculateInPixelRange(out int first, out _, 0.5f, outFilterRadius, invScale, outShift);
-            n0 = first;
-            CalculateInPixelRange(out _, out int last, ((float)(samp.Scale.OutputSubSize - 1)) + 0.5f, outFilterRadius, invScale, outShift);
-            n1 = last;
-        }
-        else
-        {
-            // downsample gather, refine
-            float inPixelsRadius = CatmullRomSupport * invScale;
-            int filterPixelMargin = samp.FilterPixelMargin;
-            int outputSubSize = samp.Scale.OutputSubSize;
-
-            // get a conservative area of the input range
-            CalculateInPixelRange(out int first, out _, 0, 0, invScale, outShift);
-            n0 = first;
-            CalculateInPixelRange(out _, out int last, (float)outputSubSize, 0, invScale, outShift);
-            n1 = last;
-
-            // now go through the margin to the start of area to find bottom
-            int n = n0 + 1;
-            int inputEnd = -filterPixelMargin;
-            while (n >= inputEnd)
+            // If the coefficient is zero, skip it. (Don't do the <0 check here, we want the influence of those outside pixels.)
+            if (i == 0 && coefficientGroup[i] == 0)
             {
-                CalculateOutPixelRange(out int outFirst, out int outLast, ((float)n) + 0.5f, inPixelsRadius, scale, outShift, outputSubSize);
-                if (outFirst > outLast)
-                {
-                    break;
-                }
-                if (outFirst < outputSubSize || outLast >= 0)
-                {
-                    n0 = n;
-                }
-                --n;
-            }
-
-            // now go through the end of the area through the margin to find top
-            n = n1 - 1;
-            inputEnd = n + 1 + filterPixelMargin;
-            while (n <= inputEnd)
-            {
-                CalculateOutPixelRange(out int outFirst, out int outLast, ((float)n) + 0.5f, inPixelsRadius, scale, outShift, outputSubSize);
-                if (outFirst > outLast)
-                {
-                    break;
-                }
-                if (outFirst < outputSubSize || outLast >= 0)
-                {
-                    n1 = n;
-                }
-                ++n;
-            }
-        }
-
-        // for non-edge-wrap modes, we never read over the edge, so clamp
-        if (n0 < 0)
-        {
-            n0 = 0;
-        }
-        if (n1 >= inputFullSize)
-        {
-            n1 = inputFullSize - 1;
-        }
-        return (n0, n1);
-    }
-
-    /// <summary><c>stbir__should_do_vertical_first</c>: cost model that decides whether the vertical pass
-    /// runs on decoded input scanlines (vertical first) or on horizontally resampled ones.</summary>
-    private static bool ShouldDoVerticalFirst(int horizontalFilterPixelWidth, float horizontalScale, int horizontalOutputSize,
-                                              int verticalFilterPixelWidth, float verticalScale, int verticalOutputSize, int isGather)
-    {
-        int vClassification;
-
-        // categorize the resize into buckets
-        if (verticalOutputSize <= 4 || horizontalOutputSize <= 4)
-        {
-            vClassification = (verticalOutputSize < horizontalOutputSize) ? 6 : 7;
-        }
-        else if (isGather == 0 && (verticalOutputSize <= 16 || horizontalOutputSize <= 16))
-        {
-            vClassification = 4;
-        }
-        else if (verticalScale <= 1.0f)
-        {
-            vClassification = (isGather != 0) ? 1 : 0;
-        }
-        else if (verticalScale <= 2.0f)
-        {
-            vClassification = 2;
-        }
-        else if (verticalScale <= 3.0f)
-        {
-            vClassification = 3;
-        }
-        else
-        {
-            vClassification = 5; // everything bigger than 3x
-        }
-
-        var w = VerticalFirstWeights3Channels.AsSpan(vClassification * 4, 4);
-
-        // float arithmetic (fp-contract off), widened to double only for storage in stb
-        float hCost = (float)horizontalFilterPixelWidth * w[0] + horizontalScale * (float)verticalFilterPixelWidth * w[1];
-        float vCost = (float)verticalFilterPixelWidth * w[2] + verticalScale * (float)horizontalFilterPixelWidth * w[3];
-
-        return vCost <= hCost;
-    }
-
-    // ------------------------------------------------------------------------------------------------
-    // Filter coefficient construction (stbir__calculate_filters and helpers)
-
-    /// <summary><c>stbir__calculate_coefficients_for_gather_upsample</c>.</summary>
-    private static void CalculateCoefficientsForGatherUpsample(float outFilterRadius, in ScaleInfo scaleInfo, int numContributors,
-                                                               int[] cn0, int[] cn1, float[] coefficientGroup, int coefficientWidth)
-    {
-        float invScale = scaleInfo.InvScale;
-        float outShift = scaleInfo.PixelShift;
-        int numerator = (int)scaleInfo.ScaleNumerator;
-        bool polyphase = scaleInfo.ScaleIsRational && numerator < numContributors;
-
-        // Looping through out pixels
-        int end = polyphase ? numerator : numContributors;
-        for (int n = 0; n < end; n++)
-        {
-            int coeffs = n * coefficientWidth;
-            float outPixelCenter = (float)n + 0.5f;
-            float inCenterOfOut = (outPixelCenter + outShift) * invScale;
-
-            CalculateInPixelRange(out int inFirstPixel, out int inLastPixel, outPixelCenter, outFilterRadius, invScale, outShift);
-
-            // make sure we never generate a range larger than our precalculated coeff width
-            if ((inLastPixel - inFirstPixel + 1) > coefficientWidth)
-            {
-                inLastPixel = inFirstPixel + coefficientWidth - 1;
-            }
-
-            int lastNonZero = -1;
-            for (int i = 0; i <= inLastPixel - inFirstPixel; i++)
-            {
-                float inPixelCenter = (float)(i + inFirstPixel) + 0.5f;
-                float coeff = FilterCatmullRom(inCenterOfOut - inPixelCenter);
-
-                // kill denormals
-                if (coeff < SmallFloat && coeff > -SmallFloat)
-                {
-                    if (i == 0) // if we're at the front, just eat zero contributors
-                    {
-                        ++inFirstPixel;
-                        i--;
-                        continue;
-                    }
-                    coeff = 0; // make sure is fully zero (should keep denormals away)
-                }
-                else
-                {
-                    lastNonZero = i;
-                }
-
-                coefficientGroup[coeffs + i] = coeff;
-            }
-
-            inLastPixel = lastNonZero + inFirstPixel; // kills trailing zeros
-            cn0[n] = inFirstPixel;
-            cn1[n] = inLastPixel;
-        }
-    }
-
-    /// <summary><c>stbir__calculate_coefficients_for_gather_downsample</c>: walks the input pixels and
-    /// scatters each one's weights into the output pixels it touches.</summary>
-    private static void CalculateCoefficientsForGatherDownsample(int start, int end, float inPixelsRadius, in ScaleInfo scaleInfo,
-                                                                 int coefficientWidth, int[] cn0, int[] cn1, float[] coefficientGroup)
-    {
-        int firstOutInited = -1;
-        float scale = scaleInfo.Scale;
-        float outShift = scaleInfo.PixelShift;
-        int outSize = scaleInfo.OutputSubSize;
-        int numerator = (int)scaleInfo.ScaleNumerator;
-        bool polyphase = scaleInfo.ScaleIsRational && numerator < outSize;
-
-        // Loop through the input pixels
-        for (int inPixel = start; inPixel < end; inPixel++)
-        {
-            float inPixelCenter = (float)inPixel + 0.5f;
-            float outCenterOfIn = inPixelCenter * scale - outShift;
-
-            CalculateOutPixelRange(out int outFirstPixel, out int outLastPixel, inPixelCenter, inPixelsRadius, scale, outShift, outSize);
-
-            if (outFirstPixel > outLastPixel)
-            {
+                contributor[0] = ++inFirstPixel;
+                i--;
                 continue;
             }
 
-            // clamp or exit if we are using polyphase filtering, and the limit is up
-            if (polyphase)
+            totalFilter += coefficientGroup[i];
+        }
+
+        // Make sure the sum of all coefficients is 1.
+        filterScale = 1 / totalFilter;
+
+        for (i = 0; i <= inLastPixel - inFirstPixel; i++)
+        {
+            coefficientGroup[i] *= filterScale;
+        }
+
+        for (i = inLastPixel - inFirstPixel; i >= 0; i--)
+        {
+            if (coefficientGroup[i] != 0)
             {
-                // when polyphase, you only have to do coeffs up to the numerator count
-                if (outFirstPixel == numerator)
+                break;
+            }
+
+            // This line has no weight. We can skip it.
+            contributor[1] = contributor[0] + i - 1;
+        }
+    }
+
+    /// <summary><c>stbir__calculate_coefficients_downsample</c> (same spill behaviour as the upsample builder).</summary>
+    private static unsafe void CalculateCoefficientsDownsample(float scaleRatio, int outFirstPixel, int outLastPixel, float outCenterOfIn,
+                                                               int* contributor, float* coefficientGroup)
+    {
+        int i;
+
+        contributor[0] = outFirstPixel;
+        contributor[1] = outLastPixel;
+
+        for (i = 0; i <= outLastPixel - outFirstPixel; i++)
+        {
+            float outPixelCenter = (float)(i + outFirstPixel) + 0.5f;
+            float x = outPixelCenter - outCenterOfIn;
+            coefficientGroup[i] = FilterCatmullRom(x) * scaleRatio;
+        }
+
+        for (i = outLastPixel - outFirstPixel; i >= 0; i--)
+        {
+            if (coefficientGroup[i] != 0)
+            {
+                break;
+            }
+
+            // This line has no weight. We can skip it.
+            contributor[1] = contributor[0] + i - 1;
+        }
+    }
+
+    /// <summary><c>stbir__normalize_downsample_coefficients</c>: makes every output pixel's weights sum to one,
+    /// then drops leading zero / out-of-image coefficients and clamps <c>n1</c> to the output.</summary>
+    private static unsafe void NormalizeDownsampleCoefficients(int* contributors, float* coefficients, float scaleRatio, int inputSize, int outputSize)
+    {
+        int numContributors = GetContributors(scaleRatio, inputSize, outputSize);
+        int numCoefficients = GetCoefficientWidth(scaleRatio);
+        int width = numCoefficients;
+        int i, j;
+        int skip;
+
+        for (i = 0; i < outputSize; i++)
+        {
+            float scale;
+            float total = 0;
+
+            for (j = 0; j < numContributors; j++)
+            {
+                int n0 = contributors[2 * j], n1 = contributors[2 * j + 1];
+                if (i >= n0 && i <= n1)
+                {
+                    float coefficient = coefficients[width * j + i - n0];
+                    total += coefficient;
+                }
+                else if (i < n0)
+                {
+                    break;
+                }
+            }
+
+            scale = 1 / total;
+
+            for (j = 0; j < numContributors; j++)
+            {
+                int n0 = contributors[2 * j], n1 = contributors[2 * j + 1];
+                if (i >= n0 && i <= n1)
+                {
+                    coefficients[width * j + i - n0] *= scale;
+                }
+                else if (i < n0)
+                {
+                    break;
+                }
+            }
+        }
+
+        // Optimize: Skip zero coefficients and contributions outside of image bounds.
+        // Do this after normalizing because normalization depends on the n0/n1 values.
+        for (j = 0; j < numContributors; j++)
+        {
+            int range, max;
+
+            skip = 0;
+            while (coefficients[width * j + skip] == 0)
+            {
+                skip++;
+            }
+
+            contributors[2 * j] += skip;
+
+            while (contributors[2 * j] < 0)
+            {
+                contributors[2 * j]++;
+                skip++;
+            }
+
+            range = contributors[2 * j + 1] - contributors[2 * j] + 1;
+            max = Math.Min(numCoefficients, range);
+
+            for (i = 0; i < max; i++)
+            {
+                if (i + skip >= width)
                 {
                     break;
                 }
 
-                // don't do any extra work, clamp last pixel at numerator too
-                if (outLastPixel >= numerator)
-                {
-                    outLastPixel = numerator - 1;
-                }
+                coefficients[width * j + i] = coefficients[width * j + i + skip];
             }
+        }
 
-            for (int i = 0; i <= outLastPixel - outFirstPixel; i++)
-            {
-                float outPixelCenter = (float)(i + outFirstPixel) + 0.5f;
-                float x = outPixelCenter - outCenterOfIn;
-                float coeff = FilterCatmullRom(x) * scale;
-
-                // kill the coeff if it's too small (avoid denormals)
-                if (coeff < SmallFloat && coeff > -SmallFloat)
-                {
-                    coeff = 0.0f;
-                }
-
-                int o = i + outFirstPixel;
-                int coeffs = o * coefficientWidth;
-
-                // is this the first time this output pixel has been seen?  Init it.
-                if (o > firstOutInited)
-                {
-                    firstOutInited = o;
-                    cn0[o] = inPixel;
-                    cn1[o] = inPixel;
-                    coefficientGroup[coeffs] = coeff;
-                }
-                else
-                {
-                    // insert on end (always in order)
-                    if (coefficientGroup[coeffs] == 0.0f) // if the first coefficent is zero, then zap it for this coeffs
-                    {
-                        cn0[o] = inPixel;
-                    }
-                    cn1[o] = inPixel;
-                    coefficientGroup[coeffs + inPixel - cn0[o]] = coeff;
-                }
-            }
+        // Using min to avoid writing into invalid pixels.
+        for (i = 0; i < numContributors; i++)
+        {
+            contributors[2 * i + 1] = Math.Min(contributors[2 * i + 1], outputSize - 1);
         }
     }
 
-    /// <summary><c>stbir__insert_coeff</c>: accumulates a weight for <paramref name="newPixel"/> into a
-    /// contributor, growing its range when it still fits in <paramref name="maxWidth"/>.</summary>
-    private static void InsertCoeff(int[] cn0, int[] cn1, int contributor, float[] coeffs, int coeffBase, int newPixel, float newCoeff, int maxWidth)
+    /// <summary><c>stbir__calculate_filters</c>: builds the contributor ranges and coefficients of one axis.</summary>
+    private static unsafe void CalculateFilters(int* contributors, float* coefficients, float scaleRatio, float shift, int inputSize, int outputSize)
     {
-        int n0 = cn0[contributor];
-        int n1 = cn1[contributor];
-        if (n1 < n0) // this first clause should never happen, but handle in case
+        int n;
+        int totalContributors = GetContributors(scaleRatio, inputSize, outputSize);
+        int coefficientWidth = GetCoefficientWidth(scaleRatio);
+
+        if (UseUpsampling(scaleRatio))
         {
-            cn0[contributor] = cn1[contributor] = newPixel;
-            coeffs[coeffBase] = newCoeff;
-        }
-        else if (newPixel <= n1) // before the end
-        {
-            if (newPixel < n0) // before the front?
+            float outPixelsRadius = CatmullRomSupport * scaleRatio;
+
+            // Looping through out pixels
+            for (n = 0; n < totalContributors; n++)
             {
-                if ((n1 - newPixel + 1) <= maxWidth)
-                {
-                    int o = n0 - newPixel;
-                    for (int j = n1 - n0; j >= 0; j--)
-                    {
-                        coeffs[coeffBase + j + o] = coeffs[coeffBase + j];
-                    }
-                    for (int j = 1; j < o; j++)
-                    {
-                        coeffs[coeffBase + j] = 0;
-                    }
-                    coeffs[coeffBase] = newCoeff;
-                    cn0[contributor] = newPixel;
-                }
-            }
-            else
-            {
-                // add new weight to existing coeff if already there
-                coeffs[coeffBase + newPixel - n0] += newCoeff;
+                CalculateSampleRangeUpsample(n, outPixelsRadius, scaleRatio, shift, out int inFirstPixel, out int inLastPixel, out float inCenterOfOut);
+                CalculateCoefficientsUpsample(inFirstPixel, inLastPixel, inCenterOfOut, contributors + 2 * n, coefficients + coefficientWidth * n);
             }
         }
         else
         {
-            if ((newPixel - n0 + 1) <= maxWidth)
+            float inPixelsRadius = CatmullRomSupport / scaleRatio;
+            int margin = GetFilterPixelMargin(scaleRatio);
+
+            // Looping through in pixels
+            for (n = 0; n < totalContributors; n++)
             {
-                int e = newPixel - n0;
-                for (int j = (n1 - n0) + 1; j < e; j++) // clear in-betweens coeffs if there are any
-                {
-                    coeffs[coeffBase + j] = 0;
-                }
-                coeffs[coeffBase + e] = newCoeff;
-                cn1[contributor] = newPixel;
+                int nAdjusted = n - margin;
+                CalculateSampleRangeDownsample(nAdjusted, inPixelsRadius, scaleRatio, shift, out int outFirstPixel, out int outLastPixel, out float outCenterOfIn);
+                CalculateCoefficientsDownsample(scaleRatio, outFirstPixel, outLastPixel, outCenterOfIn, contributors + 2 * n, coefficients + coefficientWidth * n);
             }
+
+            NormalizeDownsampleCoefficients(contributors, coefficients, scaleRatio, inputSize, outputSize);
         }
     }
 
-    /// <summary><c>stbir__cleanup_gathered_coefficients</c>: renormalizes each contributor (in double), expands
-    /// polyphase coefficients, folds out-of-range taps into the edge pixels (clamp), trims trailing zeros and
-    /// records the lowest / highest / widest extents.</summary>
-    private static void CleanupGatheredCoefficients(in ScaleInfo scaleInfo, int numContributors, int[] cn0, int[] cn1,
-                                                    float[] coefficientGroup, int coefficientWidth,
-                                                    out int lowestOut, out int highestOut, out int widestOut)
+    /// <summary><c>stbir__linear_to_srgb_uchar</c> (IEEE-float version): piecewise-linear table encode.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe byte LinearToSrgbUchar(float value, uint* fp32ToSrgb8Tab4)
     {
-        int inputSize = scaleInfo.InputFullSize;
-        int inputLastN1 = inputSize - 1;
-        int lowest = 0x7fffffff;
-        int highest = -0x7fffffff;
-        int widest = -1;
-        int numerator = (int)scaleInfo.ScaleNumerator;
-        int denominator = (int)scaleInfo.ScaleDenominator;
-        bool polyphase = scaleInfo.ScaleIsRational && numerator < numContributors;
+        const uint AlmostOneBits = 0x3f7fffff;          // 1-eps
+        const uint MinValBits = (127 - 13) << 23;       // 2^-13
+        float almostOne = BitConverter.UInt32BitsToSingle(AlmostOneBits);
+        float minVal = BitConverter.UInt32BitsToSingle(MinValBits);
 
-        // weight all the coeffs for each sample
-        int end = polyphase ? numerator : numContributors;
-        for (int n = 0; n < end; n++)
+        // Clamp to [2^(-13), 1-eps]; these two values map to 0 and 1, respectively.
+        // The tests are carefully written so that NaNs map to 0, same as in the reference implementation.
+        if (!(value > minVal))
         {
-            int coeffs = n * coefficientWidth;
-            double totalFilter = 0;
+            value = minVal;
+        }
+        if (value > almostOne)
+        {
+            value = almostOne;
+        }
 
-            // add all contribs
-            int e = cn1[n] - cn0[n];
-            for (int i = 0; i <= e; i++)
+        // Do the table lookup and unpack bias, scale
+        uint u = BitConverter.SingleToUInt32Bits(value);
+        uint tab = fp32ToSrgb8Tab4[(u - MinValBits) >> 20];
+        uint bias = (tab >> 16) << 9;
+        uint scale = tab & 0xffff;
+
+        // Grab next-highest mantissa bits and perform linear interpolation
+        uint t = (u >> 12) & 0xff;
+        return (byte)((bias + scale * t) >> 16);
+    }
+
+    /// <summary><c>dst[i] += src[i] * coefficient</c> for <paramref name="count"/> floats: the element-wise
+    /// multiply-add of stb's vertical passes. Each element keeps its own separate multiply then add (never
+    /// fused), so the vectorized form is bit-identical to the scalar C loop.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void MultiplyAccumulate(float* dst, float* src, float coefficient, int count)
+    {
+        int i = 0;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            var c = Vector256.Create(coefficient);
+            for (; i <= count - Vector256<float>.Count; i += Vector256<float>.Count)
             {
-                totalFilter += (double)coefficientGroup[coeffs + i];
+                var product = Vector256.Multiply(Vector256.Load(src + i), c);
+                Vector256.Store(Vector256.Add(Vector256.Load(dst + i), product), dst + i);
             }
-
-            // rescale
-            if (totalFilter < (double)SmallFloat && totalFilter > -(double)SmallFloat)
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            var c = Vector128.Create(coefficient);
+            for (; i <= count - Vector128<float>.Count; i += Vector128<float>.Count)
             {
-                // all coeffs are extremely small, just zero it
-                cn1[n] = cn0[n];
-                coefficientGroup[coeffs] = 0.0f;
+                var product = Vector128.Multiply(Vector128.Load(src + i), c);
+                Vector128.Store(Vector128.Add(Vector128.Load(dst + i), product), dst + i);
+            }
+        }
+        for (; i < count; i++)
+        {
+            dst[i] += src[i] * coefficient;
+        }
+    }
+
+    /// <summary>
+    /// <c>stbir__info</c> plus the scratch block of <c>stbir__resize_allocated</c> for one call: the
+    /// transform (<c>stbir__calculate_transform</c>), the buffer sizes (<c>stbir__calculate_memory</c>) and
+    /// the passes that run over them. Instances are never shared.
+    /// </summary>
+    private sealed unsafe class Resize
+    {
+        private readonly int _inputW;
+        private readonly int _inputH;
+        private readonly int _outputW;
+        private readonly int _outputH;
+
+        private readonly float _horizontalScale;
+        private readonly float _verticalScale;
+        private readonly float _horizontalShift;
+        private readonly float _verticalShift;
+
+        private readonly int _horizontalCoefficientWidth;
+        private readonly int _verticalCoefficientWidth;
+        private readonly int _horizontalFilterPixelMargin;
+        private readonly int _verticalFilterPixelMargin;
+
+        private readonly int _ringBufferLength;     // floats per ring buffer entry (output_w * channels)
+        private readonly int _ringBufferNumEntries;
+
+        // Region sizes in bytes, in tempmem order.
+        private readonly long _horizontalContributorsSize;
+        private readonly long _horizontalCoefficientsSize;
+        private readonly long _verticalContributorsSize;
+        private readonly long _verticalCoefficientsSize;
+        private readonly long _decodeBufferSize;
+        private readonly long _horizontalBufferSize;
+        private readonly long _ringBufferSize;
+        private readonly long _encodeBufferSize;
+
+        // Pointers into the scratch block (valid only during Run).
+        private int* _horizontalContributors;
+        private float* _horizontalCoefficients;
+        private int* _verticalContributors;
+        private float* _verticalCoefficients;
+        private float* _decodeBuffer;
+        private float* _horizontalBuffer;
+        private float* _ringBuffer;
+        private float* _encodeBuffer;
+
+        private byte* _input;
+        private byte* _output;
+        private float* _srgbToLinear;
+        private uint* _fp32ToSrgb8;
+
+        private int _ringBufferFirstScanline;
+        private int _ringBufferLastScanline;
+        private int _ringBufferBeginIndex;
+
+        /// <summary><c>stbir__setup</c>, <c>stbir__calculate_transform</c> (s0 = t0 = 0, s1 = t1 = 1, no
+        /// transform) and <c>stbir__calculate_memory</c>.</summary>
+        public Resize(int inputW, int inputH, int outputW, int outputH)
+        {
+            _inputW = inputW;
+            _inputH = inputH;
+            _outputW = outputW;
+            _outputH = outputH;
+
+            const float s0 = 0, t0 = 0, s1 = 1, t1 = 1;
+            _horizontalScale = ((float)outputW / inputW) / (s1 - s0);
+            _verticalScale = ((float)outputH / inputH) / (t1 - t0);
+            _horizontalShift = s0 * outputW / (s1 - s0);
+            _verticalShift = t0 * outputH / (t1 - t0);
+
+            int pixelMargin = GetFilterPixelMargin(_horizontalScale);
+            int filterHeight = GetFilterPixelWidth(_verticalScale);
+            int horizontalNumContributors = GetContributors(_horizontalScale, inputW, outputW);
+            int verticalNumContributors = GetContributors(_verticalScale, inputH, outputH);
+
+            // One extra entry because floating point precision problems sometimes cause an extra to be necessary.
+            _ringBufferNumEntries = filterHeight + 1;
+
+            _horizontalCoefficientWidth = GetCoefficientWidth(_horizontalScale);
+            _verticalCoefficientWidth = GetCoefficientWidth(_verticalScale);
+            _horizontalFilterPixelMargin = pixelMargin;
+            _verticalFilterPixelMargin = GetFilterPixelMargin(_verticalScale);
+            _ringBufferLength = outputW * Channels;
+
+            _horizontalContributorsSize = (long)horizontalNumContributors * 2 * sizeof(int);
+            _horizontalCoefficientsSize = (long)horizontalNumContributors * _horizontalCoefficientWidth * sizeof(float);
+            _verticalContributorsSize = (long)verticalNumContributors * 2 * sizeof(int);
+            _verticalCoefficientsSize = (long)verticalNumContributors * _verticalCoefficientWidth * sizeof(float);
+            _decodeBufferSize = (long)(inputW + pixelMargin * 2) * Channels * sizeof(float);
+            _horizontalBufferSize = (long)outputW * Channels * sizeof(float);
+            _ringBufferSize = (long)outputW * Channels * _ringBufferNumEntries * sizeof(float);
+            _encodeBufferSize = (long)outputW * Channels * sizeof(float);
+
+            if (UseUpsampling(_verticalScale))
+            {
+                // The horizontal buffer is only used when downsampling the height.
+                _horizontalBufferSize = 0;
             }
             else
             {
-                // if the total isn't 1.0, rescale everything ((1.0f -/+ stbir__small_float) is exactly 1.0f)
-                if (totalFilter < 1.0 || totalFilter > 1.0)
-                {
-                    double filterScale = 1.0 / totalFilter;
-
-                    // scale them all
-                    for (int i = 0; i <= e; i++)
-                    {
-                        coefficientGroup[coeffs + i] = (float)(coefficientGroup[coeffs + i] * filterScale);
-                    }
-                }
+                // The encode buffer is only used when upsampling the height.
+                _encodeBufferSize = 0;
             }
         }
 
-        // if we have a rational for the scale, we can exploit the polyphaseness to not calculate
-        // most of the coefficients, so we copy them here (stbir_overlapping_memcpy forward-copies,
-        // which replicates the first numerator rows periodically)
-        if (polyphase)
+        /// <summary><c>stbir__resize_allocated</c>: lays out the zeroed scratch block, builds both filters and
+        /// runs the up- or downsampling scanline loop.</summary>
+        public void Run(byte* input, byte* output, float* srgbToLinear, uint* fp32ToSrgb8)
         {
-            for (int n = numerator; n < numContributors; n++)
+            long memoryRequired = _horizontalContributorsSize + _horizontalCoefficientsSize
+                                + _verticalContributorsSize + _verticalCoefficientsSize
+                                + _decodeBufferSize + _horizontalBufferSize
+                                + _ringBufferSize + _encodeBufferSize;
+
+            byte* tempmem = (byte*)NativeMemory.AllocZeroed((nuint)(memoryRequired + ScratchPaddingBytes));
+            try
             {
-                cn0[n] = cn0[n - numerator] + denominator;
-                cn1[n] = cn1[n - numerator] + denominator;
+                _input = input;
+                _output = output;
+                _srgbToLinear = srgbToLinear;
+                _fp32ToSrgb8 = fp32ToSrgb8;
+
+                byte* p = tempmem;
+                _horizontalContributors = (int*)p;
+                p += _horizontalContributorsSize;
+                _horizontalCoefficients = (float*)p;
+                p += _horizontalCoefficientsSize;
+                _verticalContributors = (int*)p;
+                p += _verticalContributorsSize;
+                _verticalCoefficients = (float*)p;
+                p += _verticalCoefficientsSize;
+                _decodeBuffer = (float*)p;
+                p += _decodeBufferSize;
+
+                if (UseUpsampling(_verticalScale))
+                {
+                    _horizontalBuffer = null;
+                    _ringBuffer = (float*)p;
+                    p += _ringBufferSize;
+                    _encodeBuffer = (float*)p;
+                }
+                else
+                {
+                    _horizontalBuffer = (float*)p;
+                    p += _horizontalBufferSize;
+                    _ringBuffer = (float*)p;
+                    _encodeBuffer = null;
+                }
+
+                // This signals that the ring buffer is empty
+                _ringBufferBeginIndex = -1;
+                _ringBufferFirstScanline = 0;
+                _ringBufferLastScanline = 0;
+
+                CalculateFilters(_horizontalContributors, _horizontalCoefficients, _horizontalScale, _horizontalShift, _inputW, _outputW);
+                CalculateFilters(_verticalContributors, _verticalCoefficients, _verticalScale, _verticalShift, _inputH, _outputH);
+
+                if (UseUpsampling(_verticalScale))
+                {
+                    BufferLoopUpsample();
+                }
+                else
+                {
+                    BufferLoopDownsample();
+                }
             }
-            int period = numerator * coefficientWidth;
-            int total = numContributors * coefficientWidth;
-            for (int j = period; j < total; j++)
+            finally
             {
-                coefficientGroup[j] = coefficientGroup[j - period];
+                NativeMemory.Free(tempmem);
+                _horizontalContributors = null;
+                _horizontalCoefficients = null;
+                _verticalContributors = null;
+                _verticalCoefficients = null;
+                _decodeBuffer = null;
+                _horizontalBuffer = null;
+                _ringBuffer = null;
+                _encodeBuffer = null;
+                _input = null;
+                _output = null;
+                _srgbToLinear = null;
+                _fp32ToSrgb8 = null;
             }
         }
 
-        for (int n = 0; n < numContributors; n++)
+        /// <summary><c>stbir__get_decode_buffer</c>: index 0 starts after the left margin, so negative indexes
+        /// address the margin.</summary>
+        private float* DecodeBufferOrigin => _decodeBuffer + _horizontalFilterPixelMargin * Channels;
+
+        /// <summary><c>stbir__decode_scanline</c> for <c>STBIR__DECODE(STBIR_TYPE_UINT8, STBIR_COLORSPACE_SRGB)</c>
+        /// with clamped edges (no alpha, so the premultiply step is skipped: <c>STBIR_FLAG_ALPHA_PREMULTIPLIED</c>
+        /// is forced on for <c>alpha_channel &lt; 0</c>).</summary>
+        private void DecodeScanline(int n)
         {
-            int coeffs = n * coefficientWidth;
+            float* decodeBuffer = DecodeBufferOrigin;
+            byte* inputData = _input + (long)EdgeClamp(n, _inputH) * _inputW * Channels;
+            float* table = _srgbToLinear;
+            int maxX = _inputW + _horizontalFilterPixelMargin;
+            int x = -_horizontalFilterPixelMargin;
 
-            // for clamp, calculate the true inbounds position and just add that to the existing weight
-
-            // right hand side first
-            if (cn1[n] > inputLastN1)
+            // Left margin, interior, right margin (stbir__edge_wrap is the identity inside the image).
+            for (; x < 0 && x < maxX; x++)
             {
-                int start = cn0[n];
-                int endi = cn1[n];
-                cn1[n] = inputLastN1;
-                for (int i = inputSize; i <= endi; i++)
-                {
-                    InsertCoeff(cn0, cn1, n, coefficientGroup, coeffs, EdgeClamp(i, inputSize), coefficientGroup[coeffs + i - start], coefficientWidth);
-                }
+                DecodePixel(decodeBuffer + x * Channels, inputData + EdgeClamp(x, _inputW) * Channels, table);
             }
-
-            // now check left hand edge
-            if (cn0[n] < 0)
+            int interiorEnd = Math.Min(_inputW, maxX);
+            for (; x < interiorEnd; x++)
             {
-                int c = coeffs - (cn0[n] + 1);
-
-                // reinsert the coeffs with it clamped (insert accumulates, if the coeffs exist)
-                for (int i = -1; i > cn0[n]; i--)
-                {
-                    InsertCoeff(cn0, cn1, n, coefficientGroup, coeffs, EdgeClamp(i, inputSize), coefficientGroup[c--], coefficientWidth);
-                }
-                int saveN0 = cn0[n];
-                float saveN0Coeff = coefficientGroup[c]; // save it, since we didn't do the final one (i==n0)
-
-                // now slide all the coeffs down (since we have accumulated them in the positive contribs) and reset the first contrib
-                cn0[n] = 0;
-                for (int i = 0; i <= cn1[n]; i++)
-                {
-                    coefficientGroup[coeffs + i] = coefficientGroup[coeffs + i - saveN0];
-                }
-
-                // now that we have shrunk down the contribs, we insert the first one safely
-                InsertCoeff(cn0, cn1, n, coefficientGroup, coeffs, EdgeClamp(saveN0, inputSize), saveN0Coeff, coefficientWidth);
+                DecodePixel(decodeBuffer + x * Channels, inputData + x * Channels, table);
             }
-
-            if (cn0[n] <= cn1[n])
+            for (; x < maxX; x++)
             {
-                int diff = cn1[n] - cn0[n] + 1;
-                while (diff != 0 && coefficientGroup[coeffs + diff - 1] == 0.0f)
-                {
-                    --diff;
-                }
-
-                cn1[n] = cn0[n] + diff - 1;
-
-                if (cn0[n] <= cn1[n])
-                {
-                    if (cn0[n] < lowest)
-                    {
-                        lowest = cn0[n];
-                    }
-                    if (cn1[n] > highest)
-                    {
-                        highest = cn1[n];
-                    }
-                    if (diff > widest)
-                    {
-                        widest = diff;
-                    }
-                }
-
-                // re-zero out unused coefficients (if any)
-                for (int i = diff; i < coefficientWidth; i++)
-                {
-                    coefficientGroup[coeffs + i] = 0.0f;
-                }
+                DecodePixel(decodeBuffer + x * Channels, inputData + EdgeClamp(x, _inputW) * Channels, table);
             }
         }
 
-        lowestOut = lowest;
-        highestOut = highest;
-        widestOut = widest;
-    }
-
-    /// <summary><c>stbir__calculate_filters</c>: builds gather coefficients (upsample or downsample), or for a
-    /// vertical scatter builds downsample gather coefficients and pivots them into per-input-row weights.</summary>
-    private static void CalculateFilters(Sampler samp, Sampler otherAxisForPivot)
-    {
-        float scale = samp.Scale.Scale;
-        float invScale = samp.Scale.InvScale;
-        int inputFullSize = samp.Scale.InputFullSize;
-
-        if (samp.IsGather == 1)
+        /// <summary>One pixel of the sRGB decode: <c>stbir__srgb_uchar_to_linear_float[byte]</c> per channel.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void DecodePixel(float* dst, byte* src, float* table)
         {
-            // gather upsample
-            float outPixelsRadius = CatmullRomSupport * scale;
-            CalculateCoefficientsForGatherUpsample(outPixelsRadius, samp.Scale, samp.NumContributors, samp.N0, samp.N1, samp.Coefficients, samp.CoefficientWidth);
-            CleanupGatheredCoefficients(samp.Scale, samp.NumContributors, samp.N0, samp.N1, samp.Coefficients, samp.CoefficientWidth,
-                                        out samp.Lowest, out samp.Highest, out samp.Widest);
-            return;
+            dst[0] = table[src[0]];
+            dst[1] = table[src[1]];
+            dst[2] = table[src[2]];
         }
 
-        // scatter downsample (only on vertical) or gather downsample
-        float inPixelsRadius = CatmullRomSupport * invScale;
-        int filterPixelMargin = samp.FilterPixelMargin;
-        int inputEnd = inputFullSize + filterPixelMargin;
+        /// <summary><c>stbir__get_ring_buffer_entry</c>.</summary>
+        private float* GetRingBufferEntry(int index) => _ringBuffer + (long)index * _ringBufferLength;
 
-        int[] gatherN0 = samp.N0;
-        int[] gatherN1 = samp.N1;
-        float[] gatherCoeffs = samp.Coefficients;
-        int gatherCoefficientWidth = samp.CoefficientWidth;
-        int gatherNumContributors = samp.NumContributors;
-
-        if (samp.IsGather == 0)
+        /// <summary><c>stbir__get_ring_buffer_scanline</c>.</summary>
+        private float* GetRingBufferScanline(int getScanline)
         {
-            // if this is a scatter, we do a downsample gather to get the coeffs, and then pivot after
-            if (otherAxisForPivot != null)
+            int ringBufferIndex = (_ringBufferBeginIndex + (getScanline - _ringBufferFirstScanline)) % _ringBufferNumEntries;
+            return GetRingBufferEntry(ringBufferIndex);
+        }
+
+        /// <summary><c>stbir__add_empty_ring_buffer_entry</c>: appends scanline <paramref name="n"/> and zeroes it.</summary>
+        private float* AddEmptyRingBufferEntry(int n)
+        {
+            int ringBufferIndex;
+
+            _ringBufferLastScanline = n;
+
+            if (_ringBufferBeginIndex < 0)
             {
-                // same filter as the horizontal: pivot directly from its (packed) coefficients
-                gatherN0 = otherAxisForPivot.N0;
-                gatherN1 = otherAxisForPivot.N1;
-                gatherCoeffs = otherAxisForPivot.Coefficients;
-                gatherCoefficientWidth = otherAxisForPivot.CoefficientWidth;
-                gatherNumContributors = otherAxisForPivot.NumContributors;
-                samp.Lowest = otherAxisForPivot.Lowest;
-                samp.Highest = otherAxisForPivot.Highest;
-                samp.Widest = otherAxisForPivot.Widest;
+                ringBufferIndex = _ringBufferBeginIndex = 0;
+                _ringBufferFirstScanline = n;
             }
             else
             {
-                gatherCoefficientWidth = samp.PrescatterCoefficientWidth;
-                gatherNumContributors = samp.PrescatterNumContributors;
-                gatherN0 = new int[gatherNumContributors];
-                gatherN1 = new int[gatherNumContributors];
-                gatherCoeffs = new float[(long)gatherNumContributors * gatherCoefficientWidth + 4];
+                ringBufferIndex = (_ringBufferBeginIndex + (_ringBufferLastScanline - _ringBufferFirstScanline)) % _ringBufferNumEntries;
+            }
+
+            float* ringBuffer = GetRingBufferEntry(ringBufferIndex);
+            new Span<float>(ringBuffer, _ringBufferLength).Clear();
+            return ringBuffer;
+        }
+
+        /// <summary><c>stbir__resample_horizontal_upsample</c> (3-channel case): gathers each output pixel from
+        /// its contributing decoded input pixels, in increasing input order.</summary>
+        private void ResampleHorizontalUpsample(float* outputBuffer)
+        {
+            float* decodeBuffer = DecodeBufferOrigin;
+            int* contributors = _horizontalContributors;
+            float* coefficients = _horizontalCoefficients;
+            int coefficientWidth = _horizontalCoefficientWidth;
+
+            for (int x = 0; x < _outputW; x++)
+            {
+                int n0 = contributors[2 * x];
+                int n1 = contributors[2 * x + 1];
+
+                float* outPixel = outputBuffer + x * Channels;
+                float* coefficientGroup = coefficients + coefficientWidth * x;
+                float o0 = outPixel[0], o1 = outPixel[1], o2 = outPixel[2];
+
+                for (int k = n0; k <= n1; k++)
+                {
+                    float* inPixel = decodeBuffer + k * Channels;
+                    float coefficient = coefficientGroup[k - n0];
+                    o0 += inPixel[0] * coefficient;
+                    o1 += inPixel[1] * coefficient;
+                    o2 += inPixel[2] * coefficient;
+                }
+
+                outPixel[0] = o0;
+                outPixel[1] = o1;
+                outPixel[2] = o2;
             }
         }
 
-        if (samp.IsGather != 0 || otherAxisForPivot == null)
+        /// <summary><c>stbir__resample_horizontal_downsample</c> (3-channel case): scatters each decoded input
+        /// pixel (margins included) into the output pixels it contributes to.</summary>
+        private void ResampleHorizontalDownsample(float* outputBuffer)
         {
-            CalculateCoefficientsForGatherDownsample(-filterPixelMargin, inputEnd, inPixelsRadius, samp.Scale, gatherCoefficientWidth,
-                                                     gatherN0, gatherN1, gatherCoeffs);
-            CleanupGatheredCoefficients(samp.Scale, gatherNumContributors, gatherN0, gatherN1, gatherCoeffs, gatherCoefficientWidth,
-                                        out samp.Lowest, out samp.Highest, out samp.Widest);
-        }
+            float* decodeBuffer = DecodeBufferOrigin;
+            int* contributors = _horizontalContributors;
+            float* coefficients = _horizontalCoefficients;
+            int coefficientWidth = _horizontalCoefficientWidth;
+            int filterPixelMargin = _horizontalFilterPixelMargin;
+            int maxX = _inputW + filterPixelMargin * 2;
 
-        if (samp.IsGather != 0)
-        {
-            return;
-        }
-
-        // if this is a scatter (vertical only), then we need to pivot the coeffs
-        int highestSet = (-filterPixelMargin) - 1;
-        int scatterCoefficientWidth = samp.CoefficientWidth;
-        int[] sn0 = samp.N0;
-        int[] sn1 = samp.N1;
-        float[] scatterCoeffs = samp.Coefficients;
-        for (int n = 0; n < gatherNumContributors; n++)
-        {
-            int gn0 = gatherN0[n], gn1 = gatherN1[n];
-            int gCoeffs = n * gatherCoefficientWidth;
-            int scatterContributor = gn0 + filterPixelMargin;
-
-            for (int k = gn0; k <= gn1; k++, scatterContributor++)
+            for (int x = 0; x < maxX; x++)
             {
-                float gc = gatherCoeffs[gCoeffs++];
-                int scatterBase = scatterContributor * scatterCoefficientWidth;
+                int n0 = contributors[2 * x];
+                int n1 = contributors[2 * x + 1];
 
-                // skip zero and denormals - must skip zeros to avoid adding coeffs beyond scatter_coefficient_width
-                // (which happens when pivoting from horizontal, which might have dummy zeros)
-                if (gc >= SmallFloat || gc <= -SmallFloat)
+                float* inPixel = decodeBuffer + (x - filterPixelMargin) * Channels;
+                float i0 = inPixel[0], i1 = inPixel[1], i2 = inPixel[2];
+                float* coefficientGroup = coefficients + coefficientWidth * x;
+
+                for (int k = n0; k <= n1; k++)
                 {
-                    if (k > highestSet || sn0[scatterContributor] > sn1[scatterContributor])
+                    float* outPixel = outputBuffer + k * Channels;
+                    float coefficient = coefficientGroup[k - n0];
+                    outPixel[0] += i0 * coefficient;
+                    outPixel[1] += i1 * coefficient;
+                    outPixel[2] += i2 * coefficient;
+                }
+            }
+        }
+
+        /// <summary><c>stbir__decode_and_resample_upsample</c>: decodes input row <paramref name="n"/> and resamples
+        /// it horizontally into a new ring buffer entry.</summary>
+        private void DecodeAndResampleUpsample(int n)
+        {
+            DecodeScanline(n);
+
+            if (UseUpsampling(_horizontalScale))
+            {
+                ResampleHorizontalUpsample(AddEmptyRingBufferEntry(n));
+            }
+            else
+            {
+                ResampleHorizontalDownsample(AddEmptyRingBufferEntry(n));
+            }
+        }
+
+        /// <summary><c>stbir__decode_and_resample_downsample</c>: decodes input row <paramref name="n"/> and resamples
+        /// it horizontally into the (zeroed) horizontal buffer.</summary>
+        private void DecodeAndResampleDownsample(int n)
+        {
+            DecodeScanline(n);
+
+            new Span<float>(_horizontalBuffer, _outputW * Channels).Clear();
+
+            if (UseUpsampling(_horizontalScale))
+            {
+                ResampleHorizontalUpsample(_horizontalBuffer);
+            }
+            else
+            {
+                ResampleHorizontalDownsample(_horizontalBuffer);
+            }
+        }
+
+        /// <summary><c>stbir__encode_scanline</c> for <c>STBIR__DECODE(STBIR_TYPE_UINT8, STBIR_COLORSPACE_SRGB)</c>
+        /// with no alpha channel: every channel goes through <c>stbir__linear_to_srgb_uchar</c>.</summary>
+        private void EncodeScanline(byte* outputBuffer, float* encodeBuffer)
+        {
+            int count = _outputW * Channels;
+            uint* table = _fp32ToSrgb8;
+            for (int i = 0; i < count; i++)
+            {
+                outputBuffer[i] = LinearToSrgbUchar(encodeBuffer[i], table);
+            }
+        }
+
+        /// <summary><c>stbir__resample_vertical_upsample</c>: gathers output row <paramref name="n"/> from its
+        /// ring buffer scanlines into the encode buffer, then encodes it.</summary>
+        private void ResampleVerticalUpsample(int n)
+        {
+            int count = _outputW * Channels;
+            int contributor = n;
+            float* coefficientGroup = _verticalCoefficients + _verticalCoefficientWidth * contributor;
+            int n0 = _verticalContributors[2 * contributor];
+            int n1 = _verticalContributors[2 * contributor + 1];
+            float* encodeBuffer = _encodeBuffer;
+
+            new Span<float>(encodeBuffer, count).Clear();
+
+            int coefficientCounter = 0;
+            for (int k = n0; k <= n1; k++)
+            {
+                int coefficientIndex = coefficientCounter++;
+                float* ringBufferEntry = GetRingBufferScanline(k);
+                float coefficient = coefficientGroup[coefficientIndex];
+                MultiplyAccumulate(encodeBuffer, ringBufferEntry, coefficient, count);
+            }
+
+            EncodeScanline(_output + (long)n * count, encodeBuffer);
+        }
+
+        /// <summary><c>stbir__resample_vertical_downsample</c>: scatters the horizontal buffer of input row
+        /// <paramref name="n"/> into the ring buffer scanlines it contributes to.</summary>
+        private void ResampleVerticalDownsample(int n)
+        {
+            int count = _outputW * Channels;
+            int contributor = n + _verticalFilterPixelMargin;
+            float* coefficientGroup = _verticalCoefficients + _verticalCoefficientWidth * contributor;
+            int n0 = _verticalContributors[2 * contributor];
+            int n1 = _verticalContributors[2 * contributor + 1];
+
+            for (int k = n0; k <= n1; k++)
+            {
+                float coefficient = coefficientGroup[k - n0];
+                float* ringBufferEntry = GetRingBufferScanline(k);
+                MultiplyAccumulate(ringBufferEntry, _horizontalBuffer, coefficient, count);
+            }
+        }
+
+        /// <summary><c>stbir__buffer_loop_upsample</c>: for each output row, slides the ring buffer of
+        /// horizontally resampled input rows forward and gathers the row.</summary>
+        private void BufferLoopUpsample()
+        {
+            float scaleRatio = _verticalScale;
+            float outScanlinesRadius = CatmullRomSupport * scaleRatio;
+
+            for (int y = 0; y < _outputH; y++)
+            {
+                CalculateSampleRangeUpsample(y, outScanlinesRadius, scaleRatio, _verticalShift, out int inFirstScanline, out int inLastScanline, out _);
+
+                if (_ringBufferBeginIndex >= 0)
+                {
+                    // Get rid of whatever we don't need anymore.
+                    while (inFirstScanline > _ringBufferFirstScanline)
                     {
-                        // if we are skipping over several contributors, we need to clear the skipped ones
-                        for (int clear = highestSet + filterPixelMargin + 1; clear < scatterContributor; clear++)
+                        if (_ringBufferFirstScanline == _ringBufferLastScanline)
                         {
-                            sn0[clear] = 0;
-                            sn1[clear] = -1;
-                        }
-                        sn0[scatterContributor] = n;
-                        sn1[scatterContributor] = n;
-                        scatterCoeffs[scatterBase] = gc;
-                        highestSet = k;
-                    }
-                    else
-                    {
-                        InsertCoeff(sn0, sn1, scatterContributor, scatterCoeffs, scatterBase, n, gc, scatterCoefficientWidth);
-                    }
-                }
-            }
-        }
-
-        // now clear any unset contribs
-        for (int clear = highestSet + filterPixelMargin + 1; clear < samp.NumContributors; clear++)
-        {
-            sn0[clear] = 0;
-            sn1[clear] = -1;
-        }
-    }
-
-    /// <summary><c>stbir__pack_coefficients</c>: compacts the horizontal coefficients to a stride of
-    /// <c>widest</c> and, near the right edge, moves contributor starts back (prepending zero weights) so
-    /// the fixed-width kernels never read past the scanline. Returns the new coefficient width.</summary>
-    private static int PackCoefficients(Sampler samp, int row0, int row1)
-    {
-        int numContributors = samp.NumContributors;
-        int coefficientWidth = samp.CoefficientWidth;
-        int widest = samp.Widest;
-        float[] coefficients = samp.Coefficients;
-        int[] cn0 = samp.N0;
-        int[] cn1 = samp.N1;
-        int rowEnd = row1 + 1;
-
-        if (coefficientWidth != widest)
-        {
-            // forward copy, destination never ahead of source
-            for (int n = 0; n < numContributors; n++)
-            {
-                int dst = n * widest;
-                int src = n * coefficientWidth;
-                for (int i = 0; i < widest; i++)
-                {
-                    coefficients[dst + i] = coefficients[src + i];
-                }
-            }
-        }
-
-        // some horizontal routines read one float off the end (which is then masked off), so put in a sentinel
-        coefficients[widest * numContributors] = 8888.0f;
-
-        // the minimum we might read for unrolled filters widths is 12. So, we need to make sure we never read
-        // outside the decode buffer, by possibly moving the sample area back into the scanline, and putting
-        // zeros weights first. we start on the right edge and check until we're well past the possible clip
-        // area (2*widest).
-        int contrib = numContributors - 1;
-        int coeffs = widest * (numContributors - 1);
-
-        // go until no chance of clipping (this is usually less than 8 lops)
-        while (contrib >= 0 && (cn0[contrib] + widest * 2) >= rowEnd)
-        {
-            // might we clip??
-            if ((cn0[contrib] + widest) > rowEnd)
-            {
-                int stopRange = widest;
-
-                // if range is larger than 12, it will be handled by generic loops that can terminate on the exact
-                // length of this contrib n1, instead of a fixed widest amount - so calculate this
-                if (widest > 12)
-                {
-                    // how far will be read in the n_coeff loop (which depends on the widest count mod4);
-                    int mod = widest & 3;
-                    stopRange = (((cn1[contrib] - cn0[contrib] + 1) - mod + 3) & ~3) + mod;
-
-                    // the n_coeff loops do a minimum amount of coeffs, so factor that in!
-                    if (stopRange < (8 + mod))
-                    {
-                        stopRange = 8 + mod;
-                    }
-                }
-
-                // now see if we still clip with the refined range
-                if ((cn0[contrib] + stopRange) > rowEnd)
-                {
-                    int newN0 = rowEnd - stopRange;
-                    int num = cn1[contrib] - cn0[contrib] + 1;
-                    int backup = cn0[contrib] - newN0;
-                    int fromCo = coeffs + num - 1;
-                    int toCo = fromCo + backup;
-
-                    // move the coeffs over
-                    while (num != 0)
-                    {
-                        coefficients[toCo--] = coefficients[fromCo--];
-                        --num;
-                    }
-
-                    // zero new positions
-                    while (toCo >= coeffs)
-                    {
-                        coefficients[toCo--] = 0;
-                    }
-
-                    // set new start point
-                    cn0[contrib] = newN0;
-                }
-            }
-            --contrib;
-            coeffs -= widest;
-        }
-
-        return widest;
-    }
-
-    // ------------------------------------------------------------------------------------------------
-    // Resampling
-
-    /// <summary>Per-call state of one resize (the parts of <c>stbir__info</c> / <c>stbir__per_split_info</c>
-    /// used by a single-split resize). Instances are never shared, so <see cref="ResizeRgb"/> is thread-safe.</summary>
-    private sealed unsafe class ResizeJob
-    {
-        private readonly Sampler _horizontal;
-        private readonly Sampler _vertical;
-        private readonly bool _verticalFirst;
-        private readonly int _ringEntries;
-        private readonly int _inputWidth;
-        private readonly int _inputHeight;
-        private readonly int _outputWidth;
-        private readonly int _outputHeight;
-
-        /// <summary>Creates the per-call resize state.</summary>
-        public ResizeJob(Sampler horizontal, Sampler vertical, bool verticalFirst, int ringEntries,
-                         int inputWidth, int inputHeight, int outputWidth, int outputHeight)
-        {
-            _horizontal = horizontal;
-            _vertical = vertical;
-            _verticalFirst = verticalFirst;
-            _ringEntries = ringEntries;
-            _inputWidth = inputWidth;
-            _inputHeight = inputHeight;
-            _outputWidth = outputWidth;
-            _outputHeight = outputHeight;
-        }
-
-        /// <summary>Floats per ring buffer scanline: a decoded input scanline when vertical-first, otherwise a
-        /// horizontally resampled one.</summary>
-        private int RingRowFloats => _verticalFirst ? _inputWidth * 3 : _outputWidth * 3;
-
-        /// <summary><c>stbir__decode_scanline</c> + <c>stbir__decode_uint8_srgb</c>: decodes (edge-clamped)
-        /// input row <paramref name="n"/> to linear floats. The whole row is decoded; positions outside stb's
-        /// decoded spans are only ever multiplied by zero weights.</summary>
-        private void DecodeScanline(byte* input, int n, float* decode)
-        {
-            int row = EdgeClamp(n, _inputHeight);
-            int count = _inputWidth * 3;
-            byte* src = input + (long)row * count;
-            fixed (float* table = SrgbUcharToLinearFloat)
-            {
-                for (int i = 0; i < count; i++)
-                {
-                    decode[i] = table[src[i]];
-                }
-            }
-        }
-
-        /// <summary><c>stbir__encode_scanline</c> + <c>stbir__encode_uint8_srgb</c>.</summary>
-        private void EncodeScanline(float* encode, byte* outputRow)
-        {
-            int count = _outputWidth * 3;
-            fixed (uint* table = Fp32ToSrgb8Tab4)
-            {
-                for (int i = 0; i < count; i++)
-                {
-                    outputRow[i] = LinearToSrgbUchar(encode[i], table);
-                }
-            }
-        }
-
-        /// <summary><c>stbir__resample_horizontal_gather</c> with the 3-channel SSE2 gather kernels
-        /// (<c>stbir__horizontal_gather_3_channels_with_*</c>).
-        /// <para>
-        /// With up to 3 coefficients the taps are summed left to right. From 4 coefficients on, stb keeps three
-        /// accumulators <c>tot0 = [R0 G0 B0 R1]</c>, <c>tot1 = [G1 B1 R2 G2]</c>, <c>tot2 = [B2 R3 G3 B3]</c> over
-        /// groups of 4 taps (so tap <c>i</c> lands in lane-group <c>i &amp; 3</c>), and finally combines each
-        /// channel as <c>(S0 + S2) + (S1 + S3)</c>. That exact order is reproduced here with
-        /// <see cref="Vector128{T}"/> arithmetic (no FMA contraction, as in stb).
-        /// </para>
-        /// </summary>
-        private void HorizontalGather(float* decode, float* output)
-        {
-            int outputCount = _outputWidth;
-            int widest = _horizontal.CoefficientWidth;
-            int[] cn0 = _horizontal.N0;
-            int[] cn1 = _horizontal.N1;
-
-            fixed (float* coefficients = _horizontal.Coefficients)
-            {
-                if (widest <= 3)
-                {
-                    for (int x = 0; x < outputCount; x++)
-                    {
-                        float* d = decode + cn0[x] * 3;
-                        float* c = coefficients + x * widest;
-                        float c0 = c[0];
-                        float r = d[0] * c0;
-                        float g = d[1] * c0;
-                        float b = d[2] * c0;
-                        if (widest >= 2)
-                        {
-                            float c1 = c[1];
-                            r += d[3] * c1;
-                            g += d[4] * c1;
-                            b += d[5] * c1;
-                            if (widest == 3)
-                            {
-                                float c2 = c[2];
-                                r += d[6] * c2;
-                                g += d[7] * c2;
-                                b += d[8] * c2;
-                            }
-                        }
-                        float* o = output + x * 3;
-                        o[0] = r;
-                        o[1] = g;
-                        o[2] = b;
-                    }
-                    return;
-                }
-
-                for (int x = 0; x < outputCount; x++)
-                {
-                    int n0 = cn0[x];
-                    // taps past n1 carry zero weights in stb (only add +-0), so only the real taps are summed
-                    int count = cn1[x] - n0 + 1;
-                    float* d = decode + n0 * 3;
-                    float* c = coefficients + x * widest;
-
-                    // stbir__4_coeff_start (always 4 taps; widest >= 4 so taps count..3 are stored zeros)
-                    Vector128<float> cs = Vector128.Load(c);
-                    Vector128<float> tot0 = Vector128.Load(d) * Shuffle0001(cs);
-                    Vector128<float> tot1 = Vector128.Load(d + 4) * Shuffle1122(cs);
-                    Vector128<float> tot2 = Vector128.Load(d + 8) * Shuffle2333(cs);
-
-                    // stbir__4_coeff_continue_from_4 / remnants
-                    int i = 4;
-                    for (; i + 4 <= count; i += 4)
-                    {
-                        cs = Vector128.Load(c + i);
-                        float* di = d + i * 3;
-                        tot0 += Vector128.Load(di) * Shuffle0001(cs);
-                        tot1 += Vector128.Load(di + 4) * Shuffle1122(cs);
-                        tot2 += Vector128.Load(di + 8) * Shuffle2333(cs);
-                    }
-                    int remaining = count - i;
-                    if (remaining > 0)
-                    {
-                        float* di = d + i * 3;
-                        cs = Vector128.Create(c[i], remaining > 1 ? c[i + 1] : 0.0f, remaining > 2 ? c[i + 2] : 0.0f, 0.0f);
-                        tot0 += Vector128.Load(di) * Shuffle0001(cs);
-                        tot1 += Vector128.Load(di + 4) * Shuffle1122(cs);
-                        tot2 += Vector128.Load(di + 8) * Shuffle2333(cs);
-                    }
-
-                    // stbir__store_output: [R G B] = (S0 + S2) + (S1 + S3)
-                    float* o = output + x * 3;
-                    o[0] = (tot0.GetElement(0) + tot1.GetElement(2)) + (tot0.GetElement(3) + tot2.GetElement(1));
-                    o[1] = (tot0.GetElement(1) + tot1.GetElement(3)) + (tot1.GetElement(0) + tot2.GetElement(2));
-                    o[2] = (tot0.GetElement(2) + tot2.GetElement(0)) + (tot1.GetElement(1) + tot2.GetElement(3));
-                }
-            }
-        }
-
-        /// <summary><c>stbir__simdf_0123to0001</c>.</summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static Vector128<float> Shuffle0001(Vector128<float> v) => Vector128.Shuffle(v, Vector128.Create(0, 0, 0, 1));
-
-        /// <summary><c>stbir__simdf_0123to1122</c>.</summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static Vector128<float> Shuffle1122(Vector128<float> v) => Vector128.Shuffle(v, Vector128.Create(1, 1, 2, 2));
-
-        /// <summary><c>stbir__simdf_0123to2333</c>.</summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static Vector128<float> Shuffle2333(Vector128<float> v) => Vector128.Shuffle(v, Vector128.Create(2, 3, 3, 3));
-
-        /// <summary><c>stbir__vertical_gather_with_N_coeffs</c> (and the <c>_cont</c> variants): sums the
-        /// contributing scanlines strictly in order, <c>o = r0*c0; o += r1*c1; ...</c>, element-wise. A single
-        /// scanline with a weight within 1e-6 of one is copied verbatim, as stb does.</summary>
-        private static void VerticalGather(float* output, float* coefficients, float** inputs, int total, int width)
-        {
-            float c0 = coefficients[0];
-            if (total == 1 && c0 >= OneWeightLow && c0 <= OneWeightHigh)
-            {
-                Buffer.MemoryCopy(inputs[0], output, (long)width * sizeof(float), (long)width * sizeof(float));
-                return;
-            }
-
-            int i = 0;
-            for (; i + Vector128<float>.Count <= width; i += Vector128<float>.Count)
-            {
-                Vector128<float> o = Vector128.Load(inputs[0] + i) * Vector128.Create(c0);
-                for (int k = 1; k < total; k++)
-                {
-                    o += Vector128.Load(inputs[k] + i) * Vector128.Create(coefficients[k]);
-                }
-                o.Store(output + i);
-            }
-            for (; i < width; i++)
-            {
-                float o = inputs[0][i] * c0;
-                for (int k = 1; k < total; k++)
-                {
-                    o += inputs[k][i] * coefficients[k];
-                }
-                output[i] = o;
-            }
-        }
-
-        /// <summary><c>stbir__vertical_gather_loop</c> (single split): keeps a ring buffer of the scanlines the
-        /// current output row needs, filling it either with decoded scanlines (vertical first) or with
-        /// horizontally resampled ones, then blends them vertically and encodes.</summary>
-        public void VerticalGatherLoop(byte* input, byte* output)
-        {
-            int rowFloats = RingRowFloats;
-            int stride = rowFloats + ScanlinePadding;
-            int entries = _ringEntries;
-            int decodeFloats = _inputWidth * 3 + ScanlinePadding;
-            int encodeFloats = _outputWidth * 3 + ScanlinePadding;
-            int maxRows = _vertical.Widest > 0 ? _vertical.Widest : 1;
-
-            var ringBuffer = new float[(long)entries * stride];
-            var decodeBuffer = new float[decodeFloats];
-            var encodeBuffer = new float[encodeFloats];
-            var rowPointers = new IntPtr[Math.Max(maxRows, entries)];
-            int[] vn0 = _vertical.N0;
-            int[] vn1 = _vertical.N1;
-            int verticalCoefficientWidth = _vertical.CoefficientWidth;
-            int outputRowBytes = _outputWidth * 3;
-
-            fixed (float* ring = ringBuffer)
-            fixed (float* decode = decodeBuffer)
-            fixed (float* encode = encodeBuffer)
-            fixed (float* verticalCoefficients = _vertical.Coefficients)
-            fixed (IntPtr* rows = rowPointers)
-            {
-                // initialize the ring buffer for gathering
-                int ringBeginIndex = 0;
-                int ringFirstScanline = vn0[0];
-                int ringLastScanline = ringFirstScanline - 1; // means "empty"
-
-                for (int y = 0; y < _outputHeight; y++)
-                {
-                    int inFirstScanline = vn0[y];
-                    int inLastScanline = vn1[y];
-
-                    // Load in new scanlines
-                    while (inLastScanline > ringLastScanline)
-                    {
-                        // make sure there was room in the ring buffer when we add new scanlines
-                        if ((ringLastScanline - ringFirstScanline + 1) == entries)
-                        {
-                            ringFirstScanline++;
-                            ringBeginIndex++;
-                        }
-
-                        ++ringLastScanline;
-                        float* entry = ring + (long)((ringBeginIndex + (ringLastScanline - ringFirstScanline)) % entries) * stride;
-                        if (_verticalFirst)
-                        {
-                            // Decode the nth scanline from the source image into the ring buffer.
-                            DecodeScanline(input, ringLastScanline, entry);
+                            // We just popped the last scanline off the ring buffer.
+                            // Reset it to the empty state.
+                            _ringBufferBeginIndex = -1;
+                            _ringBufferFirstScanline = 0;
+                            _ringBufferLastScanline = 0;
+                            break;
                         }
                         else
                         {
-                            // stbir__decode_and_resample_for_vertical_gather_loop
-                            DecodeScanline(input, ringLastScanline, decode);
-                            HorizontalGather(decode, entry);
+                            _ringBufferFirstScanline++;
+                            _ringBufferBeginIndex = (_ringBufferBeginIndex + 1) % _ringBufferNumEntries;
                         }
                     }
+                }
 
-                    // stbir__resample_vertical_gather
-                    int total = inLastScanline - inFirstScanline + 1;
-                    for (int k = 0; k < total; k++)
+                // Load in new ones.
+                if (_ringBufferBeginIndex < 0)
+                {
+                    DecodeAndResampleUpsample(inFirstScanline);
+                }
+
+                while (inLastScanline > _ringBufferLastScanline)
+                {
+                    DecodeAndResampleUpsample(_ringBufferLastScanline + 1);
+                }
+
+                // Now all buffers should be ready to write a row of vertical sampling.
+                ResampleVerticalUpsample(y);
+            }
+        }
+
+        /// <summary><c>stbir__empty_ring_buffer</c>: encodes and retires every finished output row before
+        /// <paramref name="firstNecessaryScanline"/>.</summary>
+        private void EmptyRingBuffer(int firstNecessaryScanline)
+        {
+            int count = _outputW * Channels;
+
+            if (_ringBufferBeginIndex >= 0)
+            {
+                // Get rid of whatever we don't need anymore.
+                while (firstNecessaryScanline > _ringBufferFirstScanline)
+                {
+                    if (_ringBufferFirstScanline >= 0 && _ringBufferFirstScanline < _outputH)
                     {
-                        int index = (ringBeginIndex + (inFirstScanline + k - ringFirstScanline)) % entries;
-                        rows[k] = (IntPtr)(ring + (long)index * stride);
+                        float* ringBufferEntry = GetRingBufferEntry(_ringBufferBeginIndex);
+                        EncodeScanline(_output + (long)_ringBufferFirstScanline * count, ringBufferEntry);
                     }
 
-                    float* coefficients = verticalCoefficients + (long)y * verticalCoefficientWidth;
-                    if (_verticalFirst)
+                    if (_ringBufferFirstScanline == _ringBufferLastScanline)
                     {
-                        VerticalGather(decode, coefficients, (float**)rows, total, rowFloats);
-                        // Now resample the gathered vertical data in the horizontal axis into the encode buffer
-                        HorizontalGather(decode, encode);
+                        // We just popped the last scanline off the ring buffer.
+                        // Reset it to the empty state.
+                        _ringBufferBeginIndex = -1;
+                        _ringBufferFirstScanline = 0;
+                        _ringBufferLastScanline = 0;
+                        break;
                     }
                     else
                     {
-                        VerticalGather(encode, coefficients, (float**)rows, total, rowFloats);
-                    }
-
-                    EncodeScanline(encode, output + (long)y * outputRowBytes);
-                }
-            }
-        }
-
-        /// <summary><c>stbir__vertical_scatter_loop</c> (single split), used for vertical downsamples whose filter
-        /// spans more than 32 scanlines: every input row is (optionally horizontally resampled and) accumulated
-        /// into the ring buffer rows of the output scanlines it contributes to (<c>o = r*c</c> on the first
-        /// contribution, <c>o += r*c</c> after), and finished output rows are evicted and encoded.</summary>
-        public void VerticalScatterLoop(byte* input, byte* output)
-        {
-            int rowFloats = RingRowFloats;
-            int stride = rowFloats + ScanlinePadding;
-            int entries = _ringEntries;
-            int decodeFloats = _inputWidth * 3 + ScanlinePadding;
-            int encodeFloats = _outputWidth * 3 + ScanlinePadding;
-            int[] vn0 = _vertical.N0;
-            int[] vn1 = _vertical.N1;
-            int verticalCoefficientWidth = _vertical.CoefficientWidth;
-            int margin = _vertical.FilterPixelMargin;
-            int startOutputY = 0;
-            int endOutputY = _outputHeight;
-            int startInputY = -margin;
-            int endInputY = _inputHeight + margin;
-
-            var ringBuffer = new float[(long)entries * stride];
-            var decodeBuffer = new float[decodeFloats];
-            var verticalBufferArray = new float[encodeFloats];
-
-            fixed (float* ring = ringBuffer)
-            fixed (float* decode = decodeBuffer)
-            fixed (float* verticalBuffer = verticalBufferArray)
-            fixed (float* verticalCoefficients = _vertical.Coefficients)
-            {
-                // the buffer that gets scattered: the decoded scanline (vertical first) or its horizontal resample
-                float* scatterBuffer = _verticalFirst ? decode : verticalBuffer;
-
-                // initialize the ring buffer for scattering
-                int ringFirstScanline = startOutputY;
-                int ringLastScanline = -1;
-                int ringBeginIndex = -1;
-
-                // mark all the buffers as empty to start
-                for (int e = 0; e < entries; e++)
-                {
-                    ring[(long)e * stride] = FloatEmptyMarker;
-                }
-
-                // do the loop in input space
-                for (int y = startInputY; y < endInputY; y++)
-                {
-                    int contributor = y + margin;
-                    int outFirstScanline = vn0[contributor];
-                    int outLastScanline = vn1[contributor];
-
-                    if (outLastScanline >= outFirstScanline &&
-                        ((outFirstScanline >= startOutputY && outFirstScanline < endOutputY) || (outLastScanline >= startOutputY && outLastScanline < endOutputY)))
-                    {
-                        float* vc = verticalCoefficients + (long)contributor * verticalCoefficientWidth;
-
-                        // clip the region
-                        if (outFirstScanline < startOutputY)
-                        {
-                            vc += startOutputY - outFirstScanline;
-                            outFirstScanline = startOutputY;
-                        }
-                        if (outLastScanline >= endOutputY)
-                        {
-                            outLastScanline = endOutputY - 1;
-                        }
-
-                        // if very first scanline, init the index
-                        if (ringBeginIndex < 0)
-                        {
-                            ringBeginIndex = outFirstScanline - startOutputY;
-                        }
-
-                        // Decode the nth scanline from the source image into the decode buffer.
-                        DecodeScanline(input, y, decode);
-
-                        // When horizontal first, we resample horizontally into the vertical buffer before we scatter it out
-                        if (!_verticalFirst)
-                        {
-                            HorizontalGather(decode, verticalBuffer);
-                        }
-
-                        // evict from the ringbuffer, if we need are full
-                        if ((ringLastScanline - ringFirstScanline + 1) == entries && outLastScanline > ringLastScanline)
-                        {
-                            EvictFirstScanline(ring, stride, verticalBuffer, output, ref ringBeginIndex, ref ringFirstScanline);
-                        }
-
-                        // stbir__resample_vertical_scatter: set (r*c) on empty rows, blend (o + r*c) otherwise
-                        for (int k = 0; k <= outLastScanline - outFirstScanline; k++)
-                        {
-                            int index = (ringBeginIndex + (outFirstScanline + k - ringFirstScanline)) % entries;
-                            float* entry = ring + (long)index * stride;
-                            float c = vc[k];
-                            if (entry[0] == FloatEmptyMarker)
-                            {
-                                ScatterSet(entry, scatterBuffer, c, rowFloats);
-                            }
-                            else
-                            {
-                                ScatterBlend(entry, scatterBuffer, c, rowFloats);
-                            }
-                        }
-
-                        // update the end of the buffer
-                        if (outLastScanline > ringLastScanline)
-                        {
-                            ringLastScanline = outLastScanline;
-                        }
+                        _ringBufferFirstScanline++;
+                        _ringBufferBeginIndex = (_ringBufferBeginIndex + 1) % _ringBufferNumEntries;
                     }
                 }
+            }
+        }
 
-                // now evict the scanlines that are left over in the ring buffer
-                while (ringFirstScanline < endOutputY)
+        /// <summary><c>stbir__buffer_loop_downsample</c>: for each input row (margins included), resamples it
+        /// horizontally and scatters it into the ring buffer of output rows, emitting rows as they complete.</summary>
+        private void BufferLoopDownsample()
+        {
+            float scaleRatio = _verticalScale;
+            int outputH = _outputH;
+            float inPixelsRadius = CatmullRomSupport / scaleRatio;
+            int pixelMargin = _verticalFilterPixelMargin;
+            int maxY = _inputH + pixelMargin;
+
+            for (int y = -pixelMargin; y < maxY; y++)
+            {
+                CalculateSampleRangeDownsample(y, inPixelsRadius, scaleRatio, _verticalShift, out int outFirstScanline, out int outLastScanline, out _);
+
+                if (outLastScanline < 0 || outFirstScanline >= outputH)
                 {
-                    EvictFirstScanline(ring, stride, verticalBuffer, output, ref ringBeginIndex, ref ringFirstScanline);
+                    continue;
                 }
-            }
-        }
 
-        /// <summary><c>stbir__encode_first_scanline_from_scatter</c> / <c>stbir__horizontal_resample_and_encode_first_scanline_from_scatter</c>:
-        /// encodes the oldest ring buffer scanline (resampling it horizontally first when vertical-first), marks it
-        /// empty and advances the ring.</summary>
-        private void EvictFirstScanline(float* ring, int stride, float* verticalBuffer, byte* output, ref int ringBeginIndex, ref int ringFirstScanline)
-        {
-            float* entry = ring + (long)ringBeginIndex * stride;
-            byte* outputRow = output + (long)ringFirstScanline * _outputWidth * 3;
-            if (_verticalFirst)
-            {
-                HorizontalGather(entry, verticalBuffer);
-                EncodeScanline(verticalBuffer, outputRow);
-            }
-            else
-            {
-                EncodeScanline(entry, outputRow);
+                EmptyRingBuffer(outFirstScanline);
+
+                DecodeAndResampleDownsample(y);
+
+                // Load in new ones.
+                if (_ringBufferBeginIndex < 0)
+                {
+                    AddEmptyRingBufferEntry(outFirstScanline);
+                }
+
+                while (outLastScanline > _ringBufferLastScanline)
+                {
+                    AddEmptyRingBufferEntry(_ringBufferLastScanline + 1);
+                }
+
+                // Now the horizontal buffer is ready to write to all ring buffer rows.
+                ResampleVerticalDownsample(y);
             }
 
-            // mark it as empty
-            entry[0] = FloatEmptyMarker;
-
-            // advance the first scanline
-            ringFirstScanline++;
-            if (++ringBeginIndex == _ringEntries)
-            {
-                ringBeginIndex = 0;
-            }
-        }
-
-        /// <summary><c>stbir__vertical_scatter_with_N_coeffs</c> (set): <c>o = r * c</c>.</summary>
-        private static void ScatterSet(float* output, float* input, float c, int width)
-        {
-            var cv = Vector128.Create(c);
-            int i = 0;
-            for (; i + Vector128<float>.Count <= width; i += Vector128<float>.Count)
-            {
-                (Vector128.Load(input + i) * cv).Store(output + i);
-            }
-            for (; i < width; i++)
-            {
-                output[i] = input[i] * c;
-            }
-        }
-
-        /// <summary><c>stbir__vertical_scatter_with_N_coeffs_cont</c> (blend): <c>o = o + r * c</c>.</summary>
-        private static void ScatterBlend(float* output, float* input, float c, int width)
-        {
-            var cv = Vector128.Create(c);
-            int i = 0;
-            for (; i + Vector128<float>.Count <= width; i += Vector128<float>.Count)
-            {
-                (Vector128.Load(output + i) + Vector128.Load(input + i) * cv).Store(output + i);
-            }
-            for (; i < width; i++)
-            {
-                output[i] = output[i] + input[i] * c;
-            }
+            EmptyRingBuffer(_outputH);
         }
     }
 }

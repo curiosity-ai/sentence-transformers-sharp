@@ -41,6 +41,10 @@ internal sealed class GraphTensor
     }
 
     public GraphTensor WithShape(int[] shape) => new() { Shape = shape, F = F, I = I, B = B };
+
+    /// <summary>A copy that shares no storage with this tensor (graph outputs may alias each other through
+    /// reshapes, so carried-over state must not be passed back by reference).</summary>
+    public GraphTensor Clone() => new() { Shape = (int[])Shape.Clone(), F = (float[])F?.Clone(), I = (int[])I?.Clone(), B = (bool[])B?.Clone() };
 }
 
 /// <summary>
@@ -226,10 +230,10 @@ internal sealed class GraphExecutor
             case TfLiteOp.Div: return Binary(ins, o, (a, b) => a / b);
             case TfLiteOp.Maximum: return Binary(ins, o, MathF.Max);
             case TfLiteOp.Minimum: return Binary(ins, o, MathF.Min);
-            case TfLiteOp.Rsqrt: return Unary(ins, o, x => 1f / MathF.Sqrt(x));
+            case TfLiteOp.Rsqrt: return Unary(ins, o, Xnn.ReciprocalSqrt);
             case TfLiteOp.Sqrt: return Unary(ins, o, MathF.Sqrt);
-            case TfLiteOp.Logistic: return (v, po) => { var r = GraphTensor.Float(v[ins[0]].Shape); TensorPrimitives.Sigmoid(v[ins[0]].F.AsSpan(0, r.F.Length), r.F); v[o] = r; };
-            case TfLiteOp.Tanh: return (v, po) => { var r = GraphTensor.Float(v[ins[0]].Shape); TensorPrimitives.Tanh(v[ins[0]].F.AsSpan(0, r.F.Length), r.F); v[o] = r; };
+            case TfLiteOp.Logistic: return (v, po) => { var r = GraphTensor.Float(v[ins[0]].Shape); Xnn.Sigmoid(v[ins[0]].F.AsSpan(0, r.F.Length), r.F); v[o] = r; };
+            case TfLiteOp.Tanh: return (v, po) => { var r = GraphTensor.Float(v[ins[0]].Shape); Xnn.Tanh(v[ins[0]].F.AsSpan(0, r.F.Length), r.F); v[o] = r; };
             case TfLiteOp.Exp: return (v, po) => { var r = GraphTensor.Float(v[ins[0]].Shape); TensorPrimitives.Exp(v[ins[0]].F.AsSpan(0, r.F.Length), r.F); v[o] = r; };
             case TfLiteOp.Abs: return Unary(ins, o, MathF.Abs);
             case TfLiteOp.NotEqual: return Compare(ins, o, (a, b) => a != b);
@@ -248,7 +252,12 @@ internal sealed class GraphExecutor
             case TfLiteOp.Sum:
             {
                 bool mean = op.Opcode == TfLiteOp.Mean;
-                return (v, po) => v[o] = Reduce(v[ins[0]], v[ins[1]].I, outShape, mean);
+                // XNNPACK rewrites mul(x, x) into sqr(x) and reduce(sqr(x)) into a fused sum/mean of squares that
+                // accumulates x·x with FMAs; reduce from x itself in that case.
+                var producer = _sg.Operators.FirstOrDefault(p => p.Outputs.Length > 0 && p.Outputs[0] == ins[0]);
+                bool squared = producer is not null && producer.Opcode == TfLiteOp.Mul && producer.Inputs.Length == 2 && producer.Inputs[0] == producer.Inputs[1];
+                int src = squared ? producer.Inputs[0] : ins[0];
+                return (v, po) => v[o] = Reduce(v[src], v[ins[1]].I, outShape, mean, squared);
             }
             case TfLiteOp.Pad: return (v, po) => v[o] = Pad(v[ins[0]], v[ins[1]].I, outShape);
             case TfLiteOp.Slice: return (v, po) => v[o] = Slice(v[ins[0]], v[ins[1]].I, outShape);
@@ -266,6 +275,17 @@ internal sealed class GraphExecutor
             {
                 bool adjX = !op.BuiltinOptions.IsNull && op.BuiltinOptions.GetBool(4);
                 bool adjY = !op.BuiltinOptions.IsNull && op.BuiltinOptions.GetBool(6);
+                // XNNPACK's rewrite_dequant_bmm: when B is the only use of DEQUANTIZE(int8, zero point 0), the
+                // product runs as a dynamically quantized (qd8) GEMM against the int8 values instead of in float.
+                var bProducer = _sg.Operators.FirstOrDefault(p => p.Outputs.Length > 0 && p.Outputs[0] == ins[1]);
+                if (bProducer is not null && bProducer.Opcode == TfLiteOp.Dequantize
+                    && _sg.Tensors[bProducer.Inputs[0]].Type == TfLiteType.Int8 && Quant(bProducer.Inputs[0]) is { } bq
+                    && bq.Scale.Length == 1 && (bq.ZeroPoint.Length == 0 || bq.ZeroPoint[0] == 0)
+                    && _sg.Operators.Count(p => p.Inputs.Contains(ins[1])) == 1 && !Signature.Outputs.Values.Contains(ins[1]))
+                {
+                    float bScale = bq.Scale[0];
+                    return (v, po) => v[o] = BatchMatMulQuantizedB(v[ins[0]], v[ins[1]], bScale, adjX, adjY, outShape);
+                }
                 return (v, po) => v[o] = BatchMatMul(v[ins[0]], v[ins[1]], adjX, adjY, outShape, po);
             }
             case TfLiteOp.FullyConnected: return CompileFullyConnected(op);
@@ -288,26 +308,7 @@ internal sealed class GraphExecutor
         }
     }
 
-    private float RmsNormEpsilon(TfLiteOperator op)
-    {
-        // The decomposition adds epsilon to mean(x²) before RSQRT; read it rather than assuming 1e-6.
-        var dg = _model.Subgraph(op.DecompositionSubgraph);
-        foreach (var d in dg.Operators)
-        {
-            if (d.Opcode == TfLiteOp.Add)
-            {
-                foreach (var i in d.Inputs)
-                {
-                    var t = dg.Tensors[i];
-                    if (t.Type == TfLiteType.Float32 && t.ElementCount == 1 && _model.IsConstant(t))
-                    {
-                        return _model.ReadScalar(t);
-                    }
-                }
-            }
-        }
-        return 1e-6f;
-    }
+    private float RmsNormEpsilon(TfLiteOperator op) => _model.RmsNormEpsilon(op);
 
     private Action<GraphTensor[], ParallelOptions> CompileFullyConnected(TfLiteOperator op)
     {
@@ -325,14 +326,15 @@ internal sealed class GraphExecutor
                 var xin = v[x];
                 int rows = xin.Length / inF;
                 var r = GraphTensor.Float(outShape);
-                SGemm.Multiply(xin.F, inF, wT, outF, r.F, outF, rows, outF, inF, 1f, po);
+                // XNNPACK's f32 GEMM starts each output's FMA chain from the bias.
                 if (bias is not null)
                 {
                     for (int i = 0; i < rows; i++)
                     {
-                        TensorPrimitives.Add(r.F.AsSpan(i * outF, outF), bias, r.F.AsSpan(i * outF, outF));
+                        bias.AsSpan(0, outF).CopyTo(r.F.AsSpan(i * outF, outF));
                     }
                 }
+                SGemm.Multiply(xin.F, inF, wT, outF, r.F, outF, rows, outF, inF, 1f, po, accumulate: bias is not null);
                 v[o] = r;
             };
         }
@@ -404,12 +406,14 @@ internal sealed class GraphExecutor
 
     private static GraphTensor FakeQuantize(GraphTensor x, float scale, int zp)
     {
+        // XNNPACK f32-qs8-vcvt: q = sat8(rint(x · (1/scale)) + zp), kept dequantized.
         var r = GraphTensor.Float(x.Shape);
         float inv = 1f / scale;
         for (int i = 0; i < r.F.Length; i++)
         {
-            float q = Math.Clamp(MathF.Round(x.F[i] * inv + zp, MidpointRounding.ToEven), -128f, 127f);
-            r.F[i] = (q - zp) * scale;
+            // Through an integer like the real int8 tensor, so a quantized zero dequantizes to +0 (never -0).
+            int q = (int)Math.Clamp(MathF.Round(x.F[i] * inv, MidpointRounding.ToEven), short.MinValue, short.MaxValue) + zp;
+            r.F[i] = (Math.Clamp(q, -128, 127) - zp) * scale;
         }
         return r;
     }
@@ -624,7 +628,7 @@ internal sealed class GraphExecutor
         return r;
     }
 
-    private static GraphTensor Reduce(GraphTensor x, int[] axes, int[] outShape, bool mean)
+    private static GraphTensor Reduce(GraphTensor x, int[] axes, int[] outShape, bool mean, bool squared = false)
     {
         int rank = x.Shape.Length;
         var reduce = new bool[rank];
@@ -638,12 +642,20 @@ internal sealed class GraphExecutor
             int last = x.Shape[^1];
             int rows = x.Length / last;
             var r1 = GraphTensor.Float(outShape);
+            // XNNPACK f32-rsum / f32-rsum2 (AVX-512 lane layout), scaled by 1/n for MEAN.
+            float scale = mean ? 1f / last : 1f;
             for (int i = 0; i < rows; i++)
             {
-                float s = TensorPrimitives.Sum(x.F.AsSpan(i * last, last));
-                r1.F[i] = mean ? s / last : s;
+                var row = x.F.AsSpan(i * last, last);
+                r1.F[i] = squared ? Xnn.SumOfSquares(row, scale) : Xnn.Sum(row, scale);
             }
             return r1;
+        }
+        if (squared)
+        {
+            var sq = GraphTensor.Float(x.Shape);
+            TensorPrimitives.Multiply(x.F.AsSpan(0, sq.F.Length), x.F.AsSpan(0, sq.F.Length), sq.F);
+            x = sq;
         }
         var keptShape = new int[rank];
         int count = 1;
@@ -871,6 +883,69 @@ internal sealed class GraphExecutor
         return r;
     }
 
+    /// <summary>
+    /// <c>BATCH_MATMUL</c> after XNNPACK's dequant rewrite (f32 × qc8w GEMM): A stays float, each output is one
+    /// FMA chain over k against B's raw int8 values, and the sum is scaled by B's scale at the end.
+    /// B arrives as its dequantized values (exact multiples of <paramref name="bScale"/>).
+    /// </summary>
+    private static GraphTensor BatchMatMulQuantizedB(GraphTensor a, GraphTensor b, float bScale, bool adjX, bool adjY, int[] outShape)
+    {
+        int ra = a.Shape.Length, rb = b.Shape.Length;
+        int m = adjX ? a.Shape[ra - 1] : a.Shape[ra - 2];
+        int k = adjX ? a.Shape[ra - 2] : a.Shape[ra - 1];
+        int n = adjY ? b.Shape[rb - 2] : b.Shape[rb - 1];
+        var batchA = a.Shape[..(ra - 2)];
+        var batchB = b.Shape[..(rb - 2)];
+        var batch = BroadcastShape(batchA, batchB);
+        int nb = GraphTensor.Count(batch);
+        var r = GraphTensor.Float(outShape);
+        var sa = BroadcastStrides(batchA, batch);
+        var sbb = BroadcastStrides(batchB, batch);
+        int matA = a.Shape[ra - 2] * a.Shape[ra - 1];
+        int matB = b.Shape[rb - 2] * b.Shape[rb - 1];
+        var qb = new float[k * n];   // B's int8 values as floats, [k, n]
+        float invB = 1f / bScale;
+        var idx = new int[batch.Length];
+        int ia = 0, ib = 0;
+        for (int bi = 0; bi < nb; bi++)
+        {
+            var A = a.F.AsSpan(ia * matA, matA);
+            var B = b.F.AsSpan(ib * matB, matB);
+            for (int p = 0; p < k; p++)
+            {
+                for (int j = 0; j < n; j++)
+                {
+                    qb[p * n + j] = MathF.Round((adjY ? B[j * k + p] : B[p * n + j]) * invB);
+                }
+            }
+            for (int i = 0; i < m; i++)
+            {
+                var dst = r.F.AsSpan((bi * m + i) * n, n);
+                dst.Clear();
+                for (int p = 0; p < k; p++)
+                {
+                    float av = adjX ? A[p * m + i] : A[i * k + p];
+                    TensorPrimitives.FusedMultiplyAdd(qb.AsSpan(p * n, n), av, dst, dst);
+                }
+                TensorPrimitives.Multiply(dst, bScale, dst);
+            }
+            for (int d = batch.Length - 1; d >= 0; d--)
+            {
+                idx[d]++;
+                ia += sa[d];
+                ib += sbb[d];
+                if (idx[d] < batch[d])
+                {
+                    break;
+                }
+                ia -= sa[d] * batch[d];
+                ib -= sbb[d] * batch[d];
+                idx[d] = 0;
+            }
+        }
+        return r;
+    }
+
     private static GraphTensor BatchMatMul(GraphTensor a, GraphTensor b, bool adjX, bool adjY, int[] outShape, ParallelOptions po)
     {
         int ra = a.Shape.Length, rb = b.Shape.Length;
@@ -922,9 +997,15 @@ internal sealed class GraphExecutor
         return r;
     }
 
+    /// <summary>
+    /// NHWC convolution with XNNPACK's accumulation order: every output starts from its bias and accumulates one
+    /// fused multiply-add per (tap, input channel). Regular and grouped/multiplier convolutions run as IGEMM (taps
+    /// row-major, then input channels); true depthwise convolutions (one input channel per output) run as DWCONV,
+    /// whose indirection walks the taps column-major. Out-of-image taps read XNNPACK's zero buffer, which leaves
+    /// the sums unchanged, so they are skipped.
+    /// </summary>
     private static GraphTensor Conv(GraphTensor x, float[] w, int[] wShape, float[] bias, int[] outShape, int sh, int sw, int dh, int dw, bool same, bool depthwise)
     {
-        // NHWC input, batch 1.
         int H = x.Shape[1], W = x.Shape[2], C = x.Shape[3];
         int OH = outShape[1], OW = outShape[2], OC = outShape[3];
         int kh = wShape[1], kw = wShape[2];
@@ -938,6 +1019,21 @@ internal sealed class GraphExecutor
         }
         var r = GraphTensor.Float(outShape);
         int mult = depthwise ? OC / C : 0;
+        bool dwconv = depthwise && mult == 1;
+        // Regular convolution: weights [OC, kh, kw, C] regrouped as [kh·kw·C, OC] so each FMA step updates all
+        // output channels of one pixel (per-output order unchanged).
+        float[] wt = null;
+        if (!depthwise)
+        {
+            wt = new float[kh * kw * C * OC];
+            for (int oc = 0; oc < OC; oc++)
+            {
+                for (int t = 0; t < kh * kw * C; t++)
+                {
+                    wt[t * OC + oc] = w[oc * kh * kw * C + t];
+                }
+            }
+        }
         for (int oy = 0; oy < OH; oy++)
         {
             for (int ox = 0; ox < OW; ox++)
@@ -947,17 +1043,14 @@ internal sealed class GraphExecutor
                 {
                     bias.AsSpan(0, OC).CopyTo(acc);
                 }
-                for (int ky = 0; ky < kh; ky++)
+                for (int a = 0; a < (dwconv ? kw : kh); a++)
                 {
-                    int iy = oy * sh + ky * dh - padT;
-                    if ((uint)iy >= (uint)H)
+                    for (int b = 0; b < (dwconv ? kh : kw); b++)
                     {
-                        continue;
-                    }
-                    for (int kx = 0; kx < kw; kx++)
-                    {
+                        int ky = dwconv ? b : a, kx = dwconv ? a : b;
+                        int iy = oy * sh + ky * dh - padT;
                         int ix = ox * sw + kx * dw - padL;
-                        if ((uint)ix >= (uint)W)
+                        if ((uint)iy >= (uint)H || (uint)ix >= (uint)W)
                         {
                             continue;
                         }
@@ -966,24 +1059,24 @@ internal sealed class GraphExecutor
                         {
                             // filter [1, kh, kw, C·mult]: out channel c·mult + m reads input channel c.
                             var f = w.AsSpan((ky * kw + kx) * OC, OC);
-                            if (mult == 1)
+                            if (dwconv)
                             {
-                                TensorPrimitives.MultiplyAdd(px, f, acc, acc);
+                                TensorPrimitives.FusedMultiplyAdd(px, f, acc, acc);
                             }
                             else
                             {
                                 for (int c = 0; c < C; c++)
                                 {
-                                    TensorPrimitives.MultiplyAdd(f.Slice(c * mult, mult), px[c], acc.Slice(c * mult, mult), acc.Slice(c * mult, mult));
+                                    TensorPrimitives.FusedMultiplyAdd(f.Slice(c * mult, mult), px[c], acc.Slice(c * mult, mult), acc.Slice(c * mult, mult));
                                 }
                             }
                         }
                         else
                         {
-                            // filter [OC, kh, kw, C]
-                            for (int oc = 0; oc < OC; oc++)
+                            int t0 = (ky * kw + kx) * C;
+                            for (int c = 0; c < C; c++)
                             {
-                                acc[oc] += TensorPrimitives.Dot(px, w.AsSpan(((oc * kh + ky) * kw + kx) * C, C));
+                                TensorPrimitives.FusedMultiplyAdd(wt.AsSpan((t0 + c) * OC, OC), px[c], acc, acc);
                             }
                         }
                     }

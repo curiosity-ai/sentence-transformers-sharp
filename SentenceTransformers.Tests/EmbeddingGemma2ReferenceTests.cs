@@ -130,7 +130,7 @@ public class EmbeddingGemma2ReferenceTests
                 {
                     continue;
                 }
-                // Decoding (stb_image) + sRGB Catmull-Rom resize (stb_image_resize2) + patchify: exact.
+                // Decoding (stb_image) + sRGB Catmull-Rom resize (stb_image_resize v0.97) + patchify: exact.
                 var pre = ImagePreprocessor.Preprocess(image, tokens, 16, 3);
                 var resized = StbImageResize.ResizeRgb(image.Rgb, image.Width, image.Height, pre.Width, pre.Height);
                 Assert.Equal(r.I(p + "resized_rgb"), resized.Select(b => (int)b).ToArray());

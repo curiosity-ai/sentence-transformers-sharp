@@ -7,8 +7,8 @@ internal sealed record PatchifiedImage(float[] Patches, int[] Positions, int Num
 /// Port of LiteRT-LM's image preprocessing for EmbeddingGemma 2 (<c>stb_image_preprocessor.cc</c> and
 /// <c>image_preprocessor_utils.cc</c>): aspect-preserving resize so the patch grid fits
 /// <c>tokens · k²</c> patches with both sides multiples of <c>k · patch</c>, sRGB Catmull-Rom resampling
-/// (stb_image_resize2), scaling to [0, 1], row-major patchification with (x, y) positions, and padding to
-/// the signature length with zero patches at position -1.
+/// (stb_image_resize v0.97, the version the engine links), scaling to [0, 1], row-major patchification with
+/// (x, y) positions, and padding to the signature length with zero patches at position -1.
 /// </summary>
 internal static class ImagePreprocessor
 {

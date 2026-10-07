@@ -11,9 +11,10 @@ namespace SentenceTransformers.Tests;
 /// <c>Resources/embeddinggemma2</c> were produced by <c>scripts/generate_embeddinggemma2_reference.py</c>.
 /// <para>
 /// Opt-in: each test returns early unless the bundle it needs is available (see
-/// <see cref="EmbeddingGemma2TestAssets"/>). The engine's XNNPACK kernels quantize activations with their
-/// own rounding / GELU approximation, so embeddings agree to cosine ≈ 0.997–0.9997 rather than bit-exactly;
-/// the per-layer agreement is checked by <see cref="EmbeddingGemma2ReferenceTests"/>.
+/// <see cref="EmbeddingGemma2TestAssets"/>). On x64 with AVX-512 the embeddings must equal the engine's bit for
+/// bit (see <see cref="EmbeddingGemma2TestAssets.ExpectBitExactEngineParity"/>); elsewhere they are compared by
+/// cosine. The per-layer agreement with the TFLite interpreter is checked by
+/// <see cref="EmbeddingGemma2ReferenceTests"/>.
 /// </para>
 /// </summary>
 public class EmbeddingGemma2ModelTests
@@ -65,8 +66,7 @@ public class EmbeddingGemma2ModelTests
             Assert.Equal(cases[i].GetProperty("ids").EnumerateArray().Select(e => e.GetInt32()), tokenizer.EncodeIds(texts[i]));
             var expected = EmbeddingGemma2TestAssets.ReadFloats(cases[i].GetProperty("embedding"));
             Assert.Equal(768, batch[i].Length);
-            double cos = EmbeddingGemma2TestAssets.Cosine(batch[i], expected);
-            Assert.True(cos >= 0.995, $"{JsonSerializer.Serialize(texts[i])}: cosine {cos:F5}");
+            EmbeddingGemma2TestAssets.AssertMatchesEngine(batch[i], expected, JsonSerializer.Serialize(texts[i]));
             Assert.Equal(1.0, Math.Sqrt(batch[i].Sum(v => (double)v * v)), 4);
         }
         // Batching must not change results (each sequence attends only to itself).
@@ -137,8 +137,7 @@ public class EmbeddingGemma2ModelTests
             var v = interleaved
                 ? await encoder.EncodeContentAsync(new EmbeddingGemma2Content[] { before.GetString(), image, c.GetProperty("text_after").GetString() })
                 : await encoder.EncodeImageAsync(image);
-            double cos = EmbeddingGemma2TestAssets.Cosine(v, EmbeddingGemma2TestAssets.ReadFloats(c.GetProperty("embedding")));
-            Assert.True(cos >= 0.995, $"{file}{(interleaved ? " (interleaved)" : "")}: cosine {cos:F5}");
+            EmbeddingGemma2TestAssets.AssertMatchesEngine(v, EmbeddingGemma2TestAssets.ReadFloats(c.GetProperty("embedding")), $"{file}{(interleaved ? " (interleaved)" : "")}");
         }
         await Assert.ThrowsAsync<NotSupportedException>(() => encoder.EncodeAudioAsync(EmbeddingGemma2Audio.FromSamples(new float[16000])));
     }
@@ -156,8 +155,7 @@ public class EmbeddingGemma2ModelTests
         {
             var file = c.GetProperty("audio").GetString();
             var v = await encoder.EncodeAudioAsync(EmbeddingGemma2Audio.FromFile(EmbeddingGemma2TestAssets.Fixture(file)));
-            double cos = EmbeddingGemma2TestAssets.Cosine(v, EmbeddingGemma2TestAssets.ReadFloats(c.GetProperty("embedding")));
-            Assert.True(cos >= 0.99, $"{file}: cosine {cos:F5}");
+            EmbeddingGemma2TestAssets.AssertMatchesEngine(v, EmbeddingGemma2TestAssets.ReadFloats(c.GetProperty("embedding")), file, minCosine: 0.99);
         }
     }
 

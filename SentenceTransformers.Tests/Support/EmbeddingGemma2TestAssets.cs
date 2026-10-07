@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
 using System.Text.Json;
 using SentenceTransformers.EmbeddingGemma2;
 
@@ -94,6 +95,40 @@ internal static class EmbeddingGemma2TestAssets
             sr += (double)expected[i] * expected[i];
         }
         return Math.Sqrt(se / Math.Max(sr, 1e-30));
+    }
+
+    /// <summary>
+    /// The port reproduces the LiteRT-LM engine bit for bit where it executes the same instructions as the
+    /// engine's XNNPACK AVX-512 kernels (x64 with AVX-512VL and FMA). Elsewhere the reciprocal square root
+    /// seed and fused multiply-adds can differ in the last bit, which int8 activation quantization can
+    /// amplify, so only cosine agreement is checked.
+    /// </summary>
+    public static bool ExpectBitExactEngineParity => Avx512F.VL.IsSupported && Fma.IsSupported;
+
+    /// <summary>Asserts <paramref name="actual"/> equals the engine's embedding exactly on
+    /// <see cref="ExpectBitExactEngineParity"/> hardware, and has cosine ≥ <paramref name="minCosine"/> elsewhere.</summary>
+    public static void AssertMatchesEngine(float[] actual, float[] expected, string label, double minCosine = 0.995)
+    {
+        Assert.Equal(expected.Length, actual.Length);
+        if (ExpectBitExactEngineParity)
+        {
+            double maxAbs = 0;
+            int differing = 0;
+            for (int i = 0; i < actual.Length; i++)
+            {
+                if (BitConverter.SingleToInt32Bits(actual[i]) != BitConverter.SingleToInt32Bits(expected[i]))
+                {
+                    differing++;
+                    maxAbs = Math.Max(maxAbs, Math.Abs((double)actual[i] - expected[i]));
+                }
+            }
+            Assert.True(differing == 0, $"{label}: {differing} of {actual.Length} values differ from the engine (max abs {maxAbs:E2}, cosine {Cosine(actual, expected):F7})");
+        }
+        else
+        {
+            double cos = Cosine(actual, expected);
+            Assert.True(cos >= minCosine, $"{label}: cosine {cos:F5}");
+        }
     }
 
     public static float[] ReadFloats(JsonElement array) => array.EnumerateArray().Select(e => e.GetSingle()).ToArray();

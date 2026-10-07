@@ -27,8 +27,11 @@ internal static class SGemm
     private static readonly bool UseFma = Fma.IsSupported && Avx.IsSupported;
     private static readonly int NR = UseAvx512 ? 32 : 16;
 
+    /// <summary><c>C = alpha · A·B</c>, or <c>C += A·B</c> when <paramref name="accumulate"/> is set (then
+    /// <paramref name="alpha"/> must be 1). Every output is one sequential FMA chain over k starting from zero (or
+    /// from C), like XNNPACK's broadcast GEMM kernels - which start from the bias, hence <paramref name="accumulate"/>.</summary>
     public static unsafe void Multiply(ReadOnlySpan<float> a, int lda, ReadOnlySpan<float> b, int ldb, Span<float> c, int ldc,
-                                       int m, int n, int k, float alpha = 1f, ParallelOptions po = null)
+                                       int m, int n, int k, float alpha = 1f, ParallelOptions po = null, bool accumulate = false)
     {
         if (m == 0 || n == 0)
         {
@@ -46,36 +49,48 @@ internal static class SGemm
             nint aa = (nint)ap, bb = (nint)bp, cc = (nint)cp;
             if (!Vector256.IsHardwareAccelerated || !UseFma)
             {
-                Portable((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, 0, m, n, k, alpha);
+                Portable((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, 0, m, n, k, alpha, accumulate);
                 return;
             }
             int chunks = (m + RowChunk - 1) / RowChunk;
             if (dop <= 1 || chunks == 1)
             {
-                Chunk((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, 0, m, n, k, alpha);
+                Chunk((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, 0, m, n, k, alpha, accumulate);
             }
             else
             {
                 Parallel.For(0, chunks, po, ch =>
-                    Chunk((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, ch * RowChunk, Math.Min(m, (ch + 1) * RowChunk), n, k, alpha));
+                    Chunk((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, ch * RowChunk, Math.Min(m, (ch + 1) * RowChunk), n, k, alpha, accumulate));
             }
         }
     }
 
-    private static unsafe void Portable(float* a, int lda, float* b, int ldb, float* c, int ldc, int m0, int m1, int n, int k, float alpha)
+    private static unsafe void Portable(float* a, int lda, float* b, int ldb, float* c, int ldc, int m0, int m1, int n, int k, float alpha, bool accumulate)
     {
         for (int i = m0; i < m1; i++)
         {
             var crow = new Span<float>(c + (long)i * ldc, n);
-            crow.Clear();
+            if (!accumulate)
+            {
+                crow.Clear();
+            }
             for (int p = 0; p < k; p++)
             {
-                TensorPrimitives.MultiplyAdd(new ReadOnlySpan<float>(b + (long)p * ldb, n), a[(long)i * lda + p] * alpha, crow, crow);
+                float av = a[(long)i * lda + p];
+                var brow = new ReadOnlySpan<float>(b + (long)p * ldb, n);
+                for (int j = 0; j < n; j++)
+                {
+                    crow[j] = MathF.FusedMultiplyAdd(av, brow[j], crow[j]);
+                }
+            }
+            if (alpha != 1f)
+            {
+                TensorPrimitives.Multiply(crow, alpha, crow);
             }
         }
     }
 
-    private static unsafe void Chunk(float* a, int lda, float* b, int ldb, float* c, int ldc, int m0, int m1, int n, int k, float alpha)
+    private static unsafe void Chunk(float* a, int lda, float* b, int ldb, float* c, int ldc, int m0, int m1, int n, int k, float alpha, bool accumulate)
     {
         int nr = NR;
         var packArr = ArrayPool<float>.Shared.Rent(KC * nr + 16);
@@ -92,7 +107,7 @@ internal static class SGemm
                     for (int k0 = 0; k0 < k; k0 += KC)
                     {
                         int kc = Math.Min(KC, k - k0);
-                        bool first = k0 == 0;
+                        bool first = k0 == 0 && !accumulate;
                         bool last = k0 + kc >= k;
                         PackB(b, ldb, k0, kc, j0, nc, nr, pack);
                         for (int i = m0; i < m1; i += MR)

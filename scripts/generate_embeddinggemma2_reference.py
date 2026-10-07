@@ -16,7 +16,7 @@ interpreter over the exact `.litertlm` bundles published on Hugging Face, and wr
 
 Usage:
     python -m venv venv && ./venv/bin/pip install litert-lm ai-edge-litert sentencepiece numpy pillow
-    gcc -O2 -shared -fPIC -o libstbref.so scripts/stbref.c -lm     # see scripts/stbref.c (vision only)
+    gcc -O2 -shared -fPIC -o libstbref.so scripts/stbref.c -lm     # needs stb_image.h + stb_image_resize.h v0.97, see scripts/stbref.c (vision only)
     ./venv/bin/python scripts/generate_embeddinggemma2_reference.py --models <dir with .litertlm files> \
         --out <dump dir> --parts text,vision,audio --stb-lib ./libstbref.so \
         [--fixtures SentenceTransformers.Tests/Resources/embeddinggemma2]
@@ -468,10 +468,14 @@ def make_test_wav(seconds, seed, sr=16000):
 
 
 def log_mel_reference(pcm, cfg):
-    """numpy port of LiteRT-LM's miniaudio front-end (semicausal framing, Hann, FFT, HTK mel, log)."""
+    """numpy port of LiteRT-LM's miniaudio front-end (semicausal framing, Hann, FFT, HTK mel, log).
+
+    Uses numpy's double-precision FFT, so it agrees with the engine's single-precision kiss_fftr to ~1e-6; the
+    C# port reproduces kiss_fftr bit for bit. Only the per-layer interpreter dumps use this."""
     import math
     frame, hop, nfft, nmel = cfg["frame_length"], cfg["hop_length"], cfg["fft_length"], cfg["num_mel_bins"]
-    win = np.array([np.float32(0.5 - 0.5 * math.cos(float(np.float32(np.float32(np.pi * 2.0 / frame) * np.float32(i))))) for i in range(frame)], np.float32)
+    # The engine's bundled cosf/logf are correctly rounded: double cos/log rounded to float reproduce them.
+    win = np.array([np.float32(0.5 - 0.5 * float(np.float32(math.cos(float(np.float32(np.float32(np.pi * 2.0 / frame) * np.float32(i))))))) for i in range(frame)], np.float32)
     queue = list(np.zeros(hop, np.float32))
     step = frame - hop
     frames, pos = [], 0
@@ -509,7 +513,7 @@ def log_mel_reference(pcm, cfg):
                 mel[ch] += sv * wgt
             if ch + 1 < nmel:
                 mel[ch + 1] += sv - sv * wgt
-        rows.append(np.log(mel.astype(np.float32) + np.float32(cfg["mel_floor"])).astype(np.float32))
+        rows.append(np.array([np.float32(math.log(float(v))) for v in (mel.astype(np.float32) + np.float32(cfg["mel_floor"]))], np.float32))
     return np.stack(rows)
 
 
@@ -598,7 +602,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--fixtures", default=None)
     ap.add_argument("--parts", default="text")
-    ap.add_argument("--stb-lib", default=None, help="shared library built from stb_image.h + stb_image_resize2.h (see scripts/stbref.c)")
+    ap.add_argument("--stb-lib", default=None, help="shared library built from stb_image.h + stb_image_resize.h v0.97 (see scripts/stbref.c)")
     args = ap.parse_args()
 
     extra = {}

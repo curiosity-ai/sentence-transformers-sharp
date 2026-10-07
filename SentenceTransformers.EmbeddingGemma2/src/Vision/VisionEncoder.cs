@@ -78,12 +78,12 @@ internal sealed class VisionEncoder
     private readonly float[] _invFreq;       // RoPE inverse frequencies (per 32-dim half: 16)
     private readonly float _poolScale;       // 1 / kernel²
     private readonly float _outputScale;     // √hidden
-    private readonly float[] _adapterNorm1, _adapterNorm2;
+    private readonly float[] _adapterNorm1, _adapterNorm2, _adapterEps;
     private readonly float[] _adapterT;      // [hidden, out]
 
     private VisionEncoder(int hidden, int heads, int patchSize, int pool, VisionLayer[] layers, int[] budgets, float[] eoi,
                           float[] patchT, float[] patchBias, float[] posX, float[] posY, int positions, float[] invFreq,
-                          float poolScale, float outputScale, float[] adapterNorm1, float[] adapterNorm2, float[] adapterT)
+                          float poolScale, float outputScale, float[] adapterNorm1, float[] adapterNorm2, float[] adapterEps, float[] adapterT)
     {
         Hidden = hidden;
         NumHeads = heads;
@@ -103,6 +103,7 @@ internal sealed class VisionEncoder
         _outputScale = outputScale;
         _adapterNorm1 = adapterNorm1;
         _adapterNorm2 = adapterNorm2;
+        _adapterEps = adapterEps;
         _adapterT = adapterT;
     }
 
@@ -140,6 +141,7 @@ internal sealed class VisionEncoder
                     break;
                 }
                 case TfLiteOp.StableHloComposite when op.CompositeName == "odml.rms_norm":
+                    RequireDefaultEpsilon(model, op);
                     norms.Add(model.ReadFloats(sg.Tensors[op.Inputs[1]]));
                     break;
                 case TfLiteOp.Mul:
@@ -209,7 +211,9 @@ internal sealed class VisionEncoder
         // Adapter: rms_norm, rms_norm, FC (float) -> text hidden size.
         var adapter = file.ReadModel(AdapterModelType);
         var asg = adapter.Subgraph(adapter.Signatures[0].SubgraphIndex);
-        var adapterNorms = asg.Operators.Where(o => o.IsComposite("odml.rms_norm")).Select(o => adapter.ReadFloats(asg.Tensors[o.Inputs[1]])).ToArray();
+        var adapterNormOps = asg.Operators.Where(o => o.IsComposite("odml.rms_norm")).ToArray();
+        var adapterNorms = adapterNormOps.Select(o => adapter.ReadFloats(asg.Tensors[o.Inputs[1]])).ToArray();
+        var adapterEps = adapterNormOps.Select(adapter.RmsNormEpsilon).ToArray();
         var adapterFc = asg.Operators.Single(o => o.Opcode == TfLiteOp.FullyConnected);
         var adapterW = asg.Tensors[adapterFc.Inputs[1]];
         if (adapterNorms.Length != 2 || adapterW.Type != TfLiteType.Float32)
@@ -223,7 +227,7 @@ internal sealed class VisionEncoder
         var eoi = eoiModel.ReadFloats(esg.Tensors[eoiModel.Signatures[0].Outputs.Values.First()]);
 
         return new VisionEncoder(hidden, heads, patchSize, pool, layers, budgets, eoi, patchT, patchBias, posX, posY, positions, invFreq,
-                                 poolScale, outputScale, adapterNorms[0], adapterNorms[1], adapterT);
+                                 poolScale, outputScale, adapterNorms[0], adapterNorms[1], adapterEps, adapterT);
     }
 
     private static float[] Transpose(float[] m, int rows, int cols)
@@ -250,12 +254,16 @@ internal sealed class VisionEncoder
         var x = new float[n * d];
         using (Profiler.Measure("vision.embed"))
         {
-            SGemm.Multiply(patches, _patchT.Length / d, _patchT, d, x, d, n, d, _patchT.Length / d, 1f, po);
+            // XNNPACK's FC starts each output's FMA chain from the bias.
+            for (int i = 0; i < n; i++)
+            {
+                _patchBias.CopyTo(x, i * d);
+            }
+            SGemm.Multiply(patches, _patchT.Length / d, _patchT, d, x, d, n, d, _patchT.Length / d, 1f, po, accumulate: true);
             Span<float> pos = stackalloc float[d];
             for (int i = 0; i < n; i++)
             {
                 var row = x.AsSpan(i * d, d);
-                TensorPrimitives.Add(row, _patchBias, row);
                 int px = positions[2 * i], py = positions[2 * i + 1];
                 if (px >= 0 && py >= 0 && px < _positions && py < _positions)
                 {
@@ -310,8 +318,8 @@ internal sealed class VisionEncoder
                 for (int j = 0; j < half; j++)
                 {
                     float ang = p * _invFreq[j];
-                    cos[(i * 2 + axis) * half + j] = MathF.Cos(ang);
-                    sin[(i * 2 + axis) * half + j] = MathF.Sin(ang);
+                    cos[(i * 2 + axis) * half + j] = Xnn.Cos(ang);
+                    sin[(i * 2 + axis) * half + j] = Xnn.Sin(ang);
                 }
             }
         }
@@ -342,31 +350,48 @@ internal sealed class VisionEncoder
         QGemm.Multiply(sc.Qa, fc.Weights, output, fc.Weights.Rows, po, fc.Requant);
     }
 
+    /// <summary>Debug hook for op-level verification: (layer, step name, buffer) after each sub-step.</summary>
+    internal Action<int, string, float[]> StepHook;
+
     private void RunLayer(VisionLayer layer, float[] x, int n, Scratch sc, (float[] Cos, float[] Sin) rope, ParallelOptions po)
     {
+        var hook = StepHook;
+        int li = Array.IndexOf(Layers, layer);
+        void Step(string name, float[] buffer) => hook?.Invoke(li, name, buffer);
         int d = Hidden, hd = HeadDim;
         Ops.RmsNorm(x, layer.InputNorm, sc.H, n, d, po);
+        Step("in_norm", sc.H);
         // q, k and v share the same quantized input (same static scale).
         sc.Qa.QuantizeStatic(sc.H, n, d, d, layer.Q.InputScale, layer.Q.InputZeroPoint, po);
         QGemm.Multiply(sc.Qa, layer.Q.Weights, sc.Q, d, po, layer.Q.Requant);
         QGemm.Multiply(sc.Qa, layer.K.Weights, sc.K, d, po, layer.K.Requant);
         QGemm.Multiply(sc.Qa, layer.V.Weights, sc.V, d, po, layer.V.Requant);
+        Step("q", sc.Q); Step("k", sc.K); Step("v", sc.V);
         Ops.RmsNorm(sc.Q, layer.QNorm, sc.Q, n * NumHeads, hd, po);
         Ops.RmsNorm(sc.K, layer.KNorm, sc.K, n * NumHeads, hd, po);
         Ops.RmsNorm(sc.V, layer.VNorm, sc.V, n * NumHeads, hd, po);
+        Step("qn", sc.Q); Step("kn", sc.K); Step("vn", sc.V);
         ApplyRope(sc.Q, n, rope, po);
         ApplyRope(sc.K, n, rope, po);
+        Step("q_rope", sc.Q); Step("k_rope", sc.K);
         Attention.Run(sc.Q, sc.K, sc.V, sc.Attn, new[] { 0, n }, NumHeads, NumHeads, hd, scale: 1f, po);
+        Step("attn", sc.Attn);
         Fc(sc, sc.Attn, n, layer.O, sc.Tmp, po);
+        Step("o", sc.Tmp);
         Ops.AddRmsNorm(x, sc.Tmp, layer.PostAttentionNorm, n, d, po);
+        Step("x_attn", x);
 
         int ff = layer.Gate.Weights.Rows;
         Ops.RmsNorm(x, layer.PreFeedForwardNorm, sc.H, n, d, po);
+        Step("ffn_norm", sc.H);
         sc.Qa.QuantizeStatic(sc.H, n, d, d, layer.Gate.InputScale, layer.Gate.InputZeroPoint, po);
         QGemm.Multiply(sc.Qa, layer.Gate.Weights, sc.Ff1, ff, po, layer.Gate.Requant);
         QGemm.Multiply(sc.Qa, layer.Up.Weights, sc.Ff2, ff, po, layer.Up.Requant);
+        Step("gate", sc.Ff1); Step("up", sc.Ff2);
         Ops.GeluMul(sc.Ff1, sc.Ff2, n * ff, po);
+        Step("geglu", sc.Ff1);
         Fc(sc, sc.Ff1, n, layer.Down, sc.Tmp, po);
+        Step("down", sc.Tmp);
         Ops.AddRmsNorm(x, sc.Tmp, layer.PostFeedForwardNorm, n, d, po);
     }
 
@@ -383,7 +408,6 @@ internal sealed class VisionEncoder
         int gridW = FloorDiv(maxX + 1, k);
         var pooled = new float[maxTokens * d];
         var valid = new bool[maxTokens];
-        Span<float> tmp = stackalloc float[d];
         for (int i = 0; i < n; i++)
         {
             int t = FloorDiv(positions[2 * i], k) + gridW * FloorDiv(positions[2 * i + 1], k);
@@ -392,8 +416,9 @@ internal sealed class VisionEncoder
                 continue;
             }
             valid[t] = true;
-            TensorPrimitives.Multiply(x.AsSpan(i * d, d), _poolScale, tmp);
-            TensorPrimitives.Add(pooled.AsSpan(t * d, d), tmp, pooled.AsSpan(t * d, d));
+            // The graph pools with a BATCH_MATMUL against a one-hot (1/k²) matrix: one fused multiply-add
+            // per patch, in patch order.
+            TensorPrimitives.FusedMultiplyAdd(x.AsSpan(i * d, d), _poolScale, pooled.AsSpan(t * d, d), pooled.AsSpan(t * d, d));
         }
         int count = 0;
         while (count < maxTokens && valid[count])
@@ -402,14 +427,29 @@ internal sealed class VisionEncoder
         }
         var soft = pooled.AsSpan(0, count * d).ToArray();
         TensorPrimitives.Multiply(soft, _outputScale, soft);
+        StepHook?.Invoke(-1, "features", soft);
 
         // Adapter (rows are independent, so only the valid ones are computed).
-        Ops.RmsNorm(soft, _adapterNorm1, soft, count, d, po);
-        Ops.RmsNorm(soft, _adapterNorm2, soft, count, d, po);
+        Ops.RmsNorm(soft, _adapterNorm1, soft, count, d, po, _adapterEps[0]);
+        StepHook?.Invoke(-1, "adapter_norm1", soft);
+        Ops.RmsNorm(soft, _adapterNorm2, soft, count, d, po, _adapterEps[1]);
+        StepHook?.Invoke(-1, "adapter_norm2", soft);
         int outDim = OutputSize;
         var emb = new float[count * outDim];
         SGemm.Multiply(soft, d, _adapterT, outDim, emb, outDim, count, outDim, d, 1f, po);
+        StepHook?.Invoke(-1, "adapter", emb);
         return new VisionSoftTokens(count, emb, count, outDim);
+    }
+
+    /// <summary>The towers' norms all use 1e-6 (the value <see cref="Ops.RmsNorm(float[], float[], float[], int, int, ParallelOptions, float)"/>
+    /// defaults to); fail loudly if a bundle ever differs instead of silently changing the numerics.</summary>
+    internal static void RequireDefaultEpsilon(TfLiteModel model, TfLiteOperator op)
+    {
+        float eps = model.RmsNormEpsilon(op);
+        if (eps != 1e-6f)
+        {
+            throw new NotSupportedException($"Unexpected rms_norm epsilon {eps:R} (expected 1e-6).");
+        }
     }
 
     private static int FloorDiv(int a, int b) => (int)Math.Floor((double)a / b);

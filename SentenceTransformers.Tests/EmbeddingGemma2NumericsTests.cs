@@ -141,20 +141,31 @@ public class EmbeddingGemma2NumericsTests
         var rng = new Random(length);
         var x = RandomFloats(rng, length, 5f);
         x[0] = 4.5f;   // make sure both signs are present
+        if (length > 40)
+        {
+            // Products that land exactly on .5 must round half to even before the zero point is added.
+            float m = 255f / (MathF.Max(0, x.Max()) - MathF.Min(0, x.Min()));
+            for (int i = 1; i < 40; i++)
+            {
+                x[i] = (i - 20 + 0.5f) / m;
+            }
+        }
         var dst = new byte[length];
         QuantizedActivations.QuantizeRow(x, dst, out float scale, out int zp);
 
+        // xnn_f32_qd8_asymmetric_quantization_params, in float as XNNPACK evaluates it.
         float min = MathF.Min(0, x.Min()), max = MathF.Max(0, x.Max());
-        float s = (max - min) / 255f;
-        float zpf = (-128f + min / s) + (127f + max / s) > 0 ? -128f - min / s : 127f - max / s;
-        Assert.Equal(s, scale);
+        float mult = 255f / (max - min);
+        float dmin = min * mult, dmax = max * mult;
+        float zpf = (-128f + dmin) + (127f + dmax) > 0 ? -128f - dmin : 127f - dmax;
+        Assert.Equal(1f / mult, scale);
         Assert.Equal((int)MathF.Round(Math.Clamp(zpf, -128f, 127f), MidpointRounding.ToEven), zp);
-        float inv = 1f / s;
         for (int i = 0; i < length; i++)
         {
-            int q = (int)Math.Clamp(MathF.Round(x[i] * inv + zp, MidpointRounding.ToEven), -128f, 127f);
+            // f32-qs8-vcvt: q = sat8(sat16(rint(x · mult)) + zp).
+            int q = Math.Clamp((int)MathF.Round(x[i] * mult, MidpointRounding.ToEven) + zp, -128, 127);
             Assert.Equal(q + 128, dst[i]);
-            Assert.True(MathF.Abs((q - zp) * s - x[i]) <= s * 0.5f + 1e-6f);
+            Assert.True(MathF.Abs((q - zp) * scale - x[i]) <= scale * 0.5f + 1e-6f);
         }
     }
 

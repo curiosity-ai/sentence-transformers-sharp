@@ -8,23 +8,12 @@ namespace SentenceTransformers.EmbeddingGemma2.Numerics;
 internal static class Ops
 {
     /// <summary><c>odml.rms_norm</c>: <c>y = x · rsqrt(mean(x²) + eps) · w</c> applied to each
-    /// <paramref name="dim"/>-sized row (in place allowed). The graphs fold Gemma's <c>1 + w</c> into <c>w</c>.</summary>
+    /// <paramref name="dim"/>-sized row (in place allowed), computed exactly as XNNPACK executes the inlined
+    /// decomposition (see <see cref="Xnn.RmsNorm"/>). The graphs fold Gemma's <c>1 + w</c> into <c>w</c>.</summary>
     public static void RmsNorm(ReadOnlySpan<float> x, ReadOnlySpan<float> weight, Span<float> dst, int dim, float eps = 1e-6f)
     {
         using var _ = Profiler.Measure("rmsnorm");
-        int rows = x.Length / dim;
-        for (int r = 0; r < rows; r++)
-        {
-            var row = x.Slice(r * dim, dim);
-            var o = dst.Slice(r * dim, dim);
-            float mean = TensorPrimitives.SumOfSquares(row) / dim;
-            float inv = 1f / MathF.Sqrt(mean + eps);
-            TensorPrimitives.Multiply(row, inv, o);
-            if (!weight.IsEmpty)
-            {
-                TensorPrimitives.Multiply(o, weight, o);
-            }
-        }
+        Xnn.RmsNorm(x, weight, dst, dim, eps);
     }
 
     /// <summary>Row-parallel <see cref="RmsNorm(ReadOnlySpan{float}, ReadOnlySpan{float}, Span{float}, int, float)"/> over
@@ -54,32 +43,12 @@ internal static class Ops
             GeluMul(a.AsSpan(s0, s1 - s0), b.AsSpan(s0, s1 - s0));
         });
 
-    /// <summary>tanh-approximated GELU, in place: <c>0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³)))</c>,
-    /// evaluated through the identity <c>0.5·(1 + tanh u) = σ(2u)</c> (no cancellation near zero).</summary>
+    /// <summary>tanh-approximated GELU, in place: <c>0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³)))</c>, evaluated
+    /// with XNNPACK's rational approximation (bit-identical to the reference runtime, see <see cref="Xnn.Gelu(Span{float})"/>).</summary>
     public static void GeluTanh(Span<float> x)
     {
         using var _ = Profiler.Measure("gelu");
-        const float C = 0.7978845608028654f;   // sqrt(2/pi)
-        const float A = 0.044715f;
-        int i = 0;
-        if (Vector256.IsHardwareAccelerated)
-        {
-            ref float r = ref MemoryMarshal.GetReference(x);
-            var vc2 = Vector256.Create(-2f * C);
-            var va = Vector256.Create(A);
-            var one = Vector256<float>.One;
-            for (; i + 8 <= x.Length; i += 8)
-            {
-                var v = Vector256.LoadUnsafe(ref r, (nuint)i);
-                var u = vc2 * (v + va * v * v * v);
-                (v / (one + Vector256.Exp(u))).StoreUnsafe(ref r, (nuint)i);
-            }
-        }
-        for (; i < x.Length; i++)
-        {
-            float v = x[i];
-            x[i] = v / (1f + MathF.Exp(-2f * C * (v + A * v * v * v)));
-        }
+        Xnn.Gelu(x);
     }
 
     /// <summary><c>a[i] = gelu(a[i]) · b[i]</c> (GeGLU), in place on <paramref name="a"/>.</summary>
@@ -89,17 +58,13 @@ internal static class Ops
         TensorPrimitives.Multiply(a, b, a);
     }
 
-    /// <summary>Numerically stable softmax over each row of length <paramref name="n"/> with stride <paramref name="ld"/>.</summary>
-    public static void SoftmaxRows(Span<float> x, int rows, int n, int ld)
+    /// <summary>Softmax over each row of length <paramref name="n"/> with stride <paramref name="ld"/>, computed
+    /// exactly as XNNPACK's f32 softmax operator (see <see cref="Xnn.Softmax"/>).</summary>
+    public static void SoftmaxRows(Span<float> x, int rows, int n, int ld, bool maskedPrefix = false)
     {
         for (int r = 0; r < rows; r++)
         {
-            var row = x.Slice(r * ld, n);
-            float max = TensorPrimitives.Max(row);
-            TensorPrimitives.Subtract(row, max, row);
-            TensorPrimitives.Exp(row, row);
-            float sum = TensorPrimitives.Sum(row);
-            TensorPrimitives.Multiply(row, 1f / sum, row);
+            Xnn.Softmax(x.Slice(r * ld, n), maskedPrefix);
         }
     }
 
@@ -134,14 +99,8 @@ internal static class Ops
         }
     }
 
-    public static void L2NormalizeInPlace(Span<float> v)
-    {
-        float norm = TensorPrimitives.Norm(v);
-        if (norm > 0)
-        {
-            TensorPrimitives.Multiply(v, 1f / norm, v);
-        }
-    }
+    /// <summary>L2 normalization exactly as LiteRT-LM's embedding engine does it (sequential sum, division).</summary>
+    public static void L2NormalizeInPlace(Span<float> v) => Xnn.L2Normalize(v);
 }
 
 /// <summary>Precomputed RoPE cos/sin tables: angle = (float)position · inv_freq[i], as the graph computes it.</summary>
@@ -191,8 +150,8 @@ internal sealed class RopeTable
                 for (int i = 0; i < Half; i++)
                 {
                     float ang = (float)p * _invFreq[i];
-                    c[p * Half + i] = MathF.Cos(ang);
-                    s[p * Half + i] = MathF.Sin(ang);
+                    c[p * Half + i] = Xnn.Cos(ang);
+                    s[p * Half + i] = Xnn.Sin(ang);
                 }
             }
             _cos = c;

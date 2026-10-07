@@ -5,9 +5,9 @@ namespace SentenceTransformers.EmbeddingGemma2.Audio;
 /// <summary>
 /// Port of LiteRT-LM's audio front-end (<c>audio_preprocessor_miniaudio.cc</c>, <c>audio_preprocessor_utils.cc</c>,
 /// <c>mel_filterbank.cc</c>) for 16 kHz mono PCM: semicausal framing (the first window is preceded by
-/// <c>frame - hop</c> zeros), optional pre-emphasis, Hann window, zero padding to the FFT size, power
-/// spectrum, HTK-style mel filterbank over magnitudes (double precision, like the reference) and
-/// <c>log(mel + floor)</c>.
+/// <c>frame - hop</c> zeros), optional pre-emphasis, Hann window, zero padding to the FFT size, a
+/// single-precision KISS FFT and float power spectrum (bit-identical to the engine's <c>kiss_fftr</c>),
+/// HTK-style mel filterbank over magnitudes (double precision, like the reference) and <c>log(mel + floor)</c>.
 /// </summary>
 internal sealed class LogMelFrontend
 {
@@ -20,8 +20,7 @@ internal sealed class LogMelFrontend
     private readonly int _melStart, _melEnd;
     private readonly int[] _bandMapper;
     private readonly double[] _weights;
-    private readonly double[] _cos, _sin;   // FFT twiddles
-    private readonly int[] _bitReverse;
+    private readonly KissFftr _fft;
 
     public int NumMelBins => _c.NumMelBins;
     public int SampleRate => _c.SampleRateHz;
@@ -29,9 +28,9 @@ internal sealed class LogMelFrontend
     public LogMelFrontend(AudioPreprocessorConfig config)
     {
         _c = config ?? throw new ArgumentNullException(nameof(config));
-        if (_c.FftLength <= 0 || (_c.FftLength & (_c.FftLength - 1)) != 0)
+        if (_c.FftLength <= 0 || (_c.FftLength & 1) != 0)
         {
-            throw new NotSupportedException($"FFT length {_c.FftLength} must be a power of two.");
+            throw new NotSupportedException($"FFT length {_c.FftLength} must be positive and even.");
         }
         if (_c.NormalizeMel)
         {
@@ -62,28 +61,10 @@ internal sealed class LogMelFrontend
             _weights[i] = 1.0 - (pos - channel);
         }
 
-        int n = _c.FftLength;
-        _cos = new double[n / 2];
-        _sin = new double[n / 2];
-        for (int i = 0; i < n / 2; i++)
-        {
-            _cos[i] = Math.Cos(-2 * Math.PI * i / n);
-            _sin[i] = Math.Sin(-2 * Math.PI * i / n);
-        }
-        _bitReverse = new int[n];
-        int bits = System.Numerics.BitOperations.Log2((uint)n);
-        for (int i = 0; i < n; i++)
-        {
-            int r = 0;
-            for (int b = 0; b < bits; b++)
-            {
-                r |= ((i >> b) & 1) << (bits - 1 - b);
-            }
-            _bitReverse[i] = r;
-        }
+        _fft = new KissFftr(_c.FftLength);
     }
 
-    /// <summary><c>GetHanningWindow</c>: 0.5 − 0.5·cos(2π(i + shift)/N) with N = L (periodic, even L) or L − 1.</summary>
+    /// <summary><c>GetHanningWindow</c>: 0.5 − 0.5·cosf(2π(i + shift)/N) with N = L (periodic, even L) or L − 1.</summary>
     private static float[] HanningWindow(int length, bool periodic, bool nonZero)
     {
         int n = periodic && length % 2 == 0 ? length : length - 1;
@@ -92,9 +73,30 @@ internal sealed class LogMelFrontend
         var w = new float[length];
         for (int i = 0; i < length; i++)
         {
-            w[i] = (float)(0.5 - 0.5 * Math.Cos(arg * (i + shift)));
+            // The engine calls the float overload of cos; its bundled cosf is correctly rounded (unlike some
+            // platform libms), which the double cos rounded to float reproduces. The rest is evaluated in double.
+            w[i] = (float)(0.5 - 0.5 * (float)Math.Cos(arg * (i + shift)));
         }
         return w;
+    }
+
+    /// <summary>
+    /// Correctly rounded single-precision natural logarithm, matching the <c>logf</c> bundled with LiteRT-LM
+    /// (platform <c>logf</c> implementations differ in the last bit for ~0.02% of inputs). The double logarithm
+    /// rounded to float is correct for every finite positive float except the five double-rounding cases below
+    /// (found by exhaustive comparison against the engine's <c>logf</c>).
+    /// </summary>
+    internal static float LogF(float x)
+    {
+        switch (BitConverter.SingleToUInt32Bits(x))
+        {
+            case 0x3C413D3A: return BitConverter.UInt32BitsToSingle(0xC08E158F); // 0x1.827a74p-7
+            case 0x41178FEB: return BitConverter.UInt32BitsToSingle(0x400FE5E7); // 0x1.2f1fd6p+3
+            case 0x4C5D65A5: return BitConverter.UInt32BitsToSingle(0x418F034B); // 0x1.bacb4ap+25
+            case 0x65D890D3: return BitConverter.UInt32BitsToSingle(0x4254D1F9); // 0x1.b121a6p+76
+            case 0x6F31A8EC: return BitConverter.UInt32BitsToSingle(0x42845A89); // 0x1.6351d8p+95
+        }
+        return (float)Math.Log(x);
     }
 
     /// <summary>Converts a whole clip (one engine <c>Preprocess</c> call from a fresh state) into
@@ -105,8 +107,9 @@ internal sealed class LogMelFrontend
         frames = windows.Count;
         int mels = _c.NumMelBins;
         var result = new float[frames * mels];
-        var re = new double[_c.FftLength];
-        var im = new double[_c.FftLength];
+        var frameBuf = new float[_c.FftLength];
+        var specR = new float[_fftBins];
+        var specI = new float[_fftBins];
         var power = new double[_fftBins];
         var mel = new double[mels];
         for (int f = 0; f < frames; f++)
@@ -125,31 +128,23 @@ internal sealed class LogMelFrontend
                 x[j] *= _window[j];
             }
             // PadOrTruncateForFft (center or right).
-            Array.Clear(re);
-            Array.Clear(im);
+            Array.Clear(frameBuf);
             int fl = _c.FrameLength, n = _c.FftLength;
             if (fl <= n)
             {
                 int padLeft = _c.FftPaddingType == CenterPadding ? (n - fl) / 2 : 0;
-                for (int j = 0; j < fl; j++)
-                {
-                    re[padLeft + j] = x[j];
-                }
+                x.AsSpan().CopyTo(frameBuf.AsSpan(padLeft));
             }
             else
             {
                 int trim = _c.FftPaddingType == CenterPadding ? (fl - n) / 2 : 0;
-                for (int j = 0; j < n; j++)
-                {
-                    re[j] = x[trim + j];
-                }
+                x.AsSpan(trim, n).CopyTo(frameBuf);
             }
-            Fft(re, im);
+            // kiss_fftr (float) and the float power spectrum, widened to double for the filterbank.
+            _fft.Forward(frameBuf, specR, specI);
             for (int k = 0; k < _fftBins; k++)
             {
-                // kiss_fftr output is float; the power is formed in float.
-                float r = (float)re[k], i = (float)im[k];
-                power[k] = r * r + i * i;
+                power[k] = specR[k] * specR[k] + specI[k] * specI[k];
             }
             // MelFilterbank::ToMelSpectrum (magnitudes, double accumulation).
             Array.Clear(mel);
@@ -172,8 +167,8 @@ internal sealed class LogMelFrontend
             for (int j = 0; j < mels; j++)
             {
                 row[j] = _c.AddFloorToMelBeforeLog
-                    ? MathF.Log((float)mel[j] + _c.MelFloor)
-                    : MathF.Max(MathF.Log((float)mel[j]), _c.MelFloor);
+                    ? LogF((float)mel[j] + _c.MelFloor)
+                    : MathF.Max(LogF((float)mel[j]), _c.MelFloor);
             }
         }
         return result;
@@ -241,38 +236,5 @@ internal sealed class LogMelFrontend
             windows.Add(last);
         }
         return windows;
-    }
-
-    /// <summary>In-place iterative radix-2 complex FFT (double precision).</summary>
-    private void Fft(double[] re, double[] im)
-    {
-        int n = re.Length;
-        for (int i = 0; i < n; i++)
-        {
-            int j = _bitReverse[i];
-            if (j > i)
-            {
-                (re[i], re[j]) = (re[j], re[i]);
-                (im[i], im[j]) = (im[j], im[i]);
-            }
-        }
-        for (int size = 2; size <= n; size <<= 1)
-        {
-            int half = size >> 1, step = n / size;
-            for (int s = 0; s < n; s += size)
-            {
-                for (int k = 0; k < half; k++)
-                {
-                    double wr = _cos[k * step], wi = _sin[k * step];
-                    int a = s + k, b = a + half;
-                    double tr = re[b] * wr - im[b] * wi;
-                    double ti = re[b] * wi + im[b] * wr;
-                    re[b] = re[a] - tr;
-                    im[b] = im[a] - ti;
-                    re[a] += tr;
-                    im[a] += ti;
-                }
-            }
-        }
     }
 }

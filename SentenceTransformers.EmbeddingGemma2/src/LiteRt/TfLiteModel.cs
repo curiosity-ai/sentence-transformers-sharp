@@ -321,6 +321,28 @@ internal sealed class TfLiteModel
         return ReadOnlySpan<byte>.Empty;
     }
 
+    /// <summary>The epsilon of an <c>odml.rms_norm</c> composite: the scalar its decomposition adds to
+    /// <c>mean(x²)</c> before RSQRT (it varies: 1e-6 in the towers, 1e-30 in the vision adapter).</summary>
+    public float RmsNormEpsilon(TfLiteOperator op)
+    {
+        var dg = Subgraph(op.DecompositionSubgraph);
+        foreach (var d in dg.Operators)
+        {
+            if (d.Opcode == TfLiteOp.Add)
+            {
+                foreach (var i in d.Inputs)
+                {
+                    var t = dg.Tensors[i];
+                    if (t.Type == TfLiteType.Float32 && t.ElementCount == 1 && IsConstant(t))
+                    {
+                        return ReadScalar(t);
+                    }
+                }
+            }
+        }
+        throw new InvalidDataException("rms_norm decomposition without an epsilon constant.");
+    }
+
     public bool IsConstant(TfLiteTensor tensor) => !RawData(tensor).IsEmpty;
 
     /// <summary>Reads a constant float tensor (FLOAT32, FLOAT16 or a dequantized INT8/INT4/INT2 tensor).</summary>

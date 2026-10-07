@@ -22,7 +22,10 @@ internal static class Attention
     /// <param name="v">[total, kvHeads·hd]</param>
     /// <param name="output">[total, heads·hd]</param>
     /// <param name="scale">Logit scale (EmbeddingGemma 2's text encoder uses 1: the scale is folded into the q-norm weights).</param>
-    public static void Run(float[] q, float[] k, float[] v, float[] output, int[] offsets, int heads, int kvHeads, int hd, float scale, ParallelOptions po)
+    /// <param name="maskedKeys">True when the reference runs each sequence padded to its signature length with
+    /// masked keys (text encoder); false when every key row is real (vision encoder). Selects the softmax
+    /// summation order XNNPACK uses for that row length.</param>
+    public static void Run(float[] q, float[] k, float[] v, float[] output, int[] offsets, int heads, int kvHeads, int hd, float scale, ParallelOptions po, bool maskedKeys = false)
     {
         using var _ = Profiler.Measure("attention");
         int sequences = offsets.Length - 1;
@@ -73,7 +76,7 @@ internal static class Attention
                 try
                 {
                     SGemm.Multiply(q.AsSpan((start + r0) * qStride + h * hd), qStride, kt[s * kvHeads + g], ld, scores, ld, rows, ld, hd, scale);
-                    Ops.SoftmaxRows(scores, rows, n, ld);
+                    Ops.SoftmaxRows(scores, rows, n, ld, maskedKeys);
                     SGemm.Multiply(scores, ld, v.AsSpan(start * kvStride + g * hd), kvStride, output.AsSpan((start + r0) * qStride + h * hd), qStride, rows, hd, n);
                 }
                 finally
