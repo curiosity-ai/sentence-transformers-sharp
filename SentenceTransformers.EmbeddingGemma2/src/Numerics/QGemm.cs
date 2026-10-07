@@ -210,7 +210,7 @@ internal static class QGemm
             dop = Environment.ProcessorCount;
         }
 
-        if (w.Bits < 8 && UseAvx2)
+        if (w.HasPanels && UseAvx2)
         {
             MultiplyPanels(x, w, y, ldy, dop, po, requant);
             return;
@@ -319,11 +319,14 @@ internal static class QGemm
         int tiles = (n + mr - 1) / mr;
         int groups = dop <= 1 ? 1 : Math.Max(1, Math.Min(tiles, (2 * dop + panels - 1) / panels));
         int items = panels * groups;
+        bool wide = w.PanelData is not null;   // 8-bit: clamped dense panels + sparse residuals
         fixed (float* yp = y)
         fixed (byte* xp = x.Data)
+        fixed (sbyte* pdp = w.PanelData)
         {
             var yPtr = (nint)yp;
             var xPtr = (nint)xp;
+            var pdPtr = (nint)pdp;
             void Item(int it)
             {
                 int p = it / groups, g = it % groups;
@@ -332,8 +335,16 @@ internal static class QGemm
                 {
                     return;
                 }
-                sbyte* panel = UnpackScratch(w.PanelBytes);
-                w.UnpackPanels(p, p + 1, panel);
+                sbyte* panel;
+                if (wide)
+                {
+                    panel = (sbyte*)pdPtr + (long)p * w.PanelBytes;
+                }
+                else
+                {
+                    panel = UnpackScratch(w.PanelBytes);
+                    w.UnpackPanels(p, p + 1, panel);
+                }
                 int* acc = stackalloc int[6 * QuantizedMatrix.PanelWidth];
                 byte* xb = (byte*)xPtr;
                 int col0 = p * QuantizedMatrix.PanelWidth;
@@ -343,7 +354,15 @@ internal static class QGemm
                     byte* Row(int i) => xb + (long)(r0 + Math.Min(i, valid - 1)) * x.Stride;
                     if (UseAvx512)
                     {
-                        PanelKernel6x32(Row(0), Row(1), Row(2), Row(3), Row(4), Row(5), panel, w.Stride, acc);
+                        if (wide)
+                        {
+                            PanelKernel6x32Wide(Row(0), Row(1), Row(2), Row(3), Row(4), Row(5), panel, w.Stride, acc);
+                            AddOutliers(w, xb, x.Stride, r0, valid, col0, 32, acc);
+                        }
+                        else
+                        {
+                            PanelKernel6x32(Row(0), Row(1), Row(2), Row(3), Row(4), Row(5), panel, w.Stride, acc);
+                        }
                         for (int i = 0; i < valid; i++)
                         {
                             StoreRow(x, w, (float*)yPtr, ldy, r0 + i, col0, acc + i * 32, 32, rq);
@@ -353,7 +372,15 @@ internal static class QGemm
                     {
                         for (int half = 0; half < 2; half++)
                         {
-                            PanelKernel3x16(Row(0), Row(1), Row(2), panel + half * 64, w.Stride, acc);
+                            if (wide)
+                            {
+                                PanelKernel3x16Wide(Row(0), Row(1), Row(2), panel + half * 64, w.Stride, acc);
+                                AddOutliers(w, xb, x.Stride, r0, valid, col0 + half * 16, 16, acc);
+                            }
+                            else
+                            {
+                                PanelKernel3x16(Row(0), Row(1), Row(2), panel + half * 64, w.Stride, acc);
+                            }
                             for (int i = 0; i < valid; i++)
                             {
                                 StoreRow(x, w, (float*)yPtr, ldy, r0 + i, col0 + half * 16, acc + i * 16, 16, rq);
@@ -443,6 +470,80 @@ internal static class QGemm
             c00 += Avx2.MultiplyAddAdjacent(s00, ones); c01 += Avx2.MultiplyAddAdjacent(s01, ones);
             c10 += Avx2.MultiplyAddAdjacent(s10, ones); c11 += Avx2.MultiplyAddAdjacent(s11, ones);
             c20 += Avx2.MultiplyAddAdjacent(s20, ones); c21 += Avx2.MultiplyAddAdjacent(s21, ones);
+        }
+        c00.Store(acc); c01.Store(acc + 8); c10.Store(acc + 16); c11.Store(acc + 24); c20.Store(acc + 32); c21.Store(acc + 40);
+    }
+
+    /// <summary>Adds the sparse residuals of 8-bit weights (beyond the ±64 dense part) for <paramref name="rows"/>
+    /// activation rows from <paramref name="r0"/> and channels <paramref name="col0"/>.. (+<paramref name="count"/>);
+    /// <paramref name="acc"/> is [rows][count] - exact integer arithmetic.</summary>
+    private static unsafe void AddOutliers(QuantizedMatrix w, byte* x, int ldx, int r0, int rows, int col0, int count, int* acc)
+    {
+        var start = w.OutlierStart;
+        var ks = w.OutlierK;
+        var vs = w.OutlierValue;
+        int end = Math.Min(count, w.Rows - col0);
+        for (int c = 0; c < end; c++)
+        {
+            for (int j = start[col0 + c]; j < start[col0 + c + 1]; j++)
+            {
+                int k = ks[j], v = vs[j];
+                for (int i = 0; i < rows; i++)
+                {
+                    acc[i * count + c] += x[(long)(r0 + i) * ldx + k] * v;
+                }
+            }
+        }
+    }
+
+    /// <summary><see cref="PanelKernel6x32"/> for 8-bit weights clamped to ±64: pair sums reach 255·64·2 = 32640, so
+    /// every step widens to int32 right away.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static unsafe void PanelKernel6x32Wide(byte* x0, byte* x1, byte* x2, byte* x3, byte* x4, byte* x5, sbyte* wp, int k, int* acc)
+    {
+        Vector512<int> c00 = default, c01 = default, c10 = default, c11 = default, c20 = default, c21 = default;
+        Vector512<int> c30 = default, c31 = default, c40 = default, c41 = default, c50 = default, c51 = default;
+        var ones = Vector512.Create((short)1);
+        for (int p = 0; p < k; p += 4)
+        {
+            var w0 = Avx512BW.LoadVector512(wp);
+            var w1 = Avx512BW.LoadVector512(wp + 64);
+            wp += 128;
+            var b = Vector512.Create(Unsafe.ReadUnaligned<int>(x0 + p)).AsByte();
+            c00 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c01 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
+            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x1 + p)).AsByte();
+            c10 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c11 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
+            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x2 + p)).AsByte();
+            c20 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c21 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
+            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x3 + p)).AsByte();
+            c30 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c31 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
+            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x4 + p)).AsByte();
+            c40 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c41 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
+            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x5 + p)).AsByte();
+            c50 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c51 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
+        }
+        c00.Store(acc); c01.Store(acc + 16); c10.Store(acc + 32); c11.Store(acc + 48);
+        c20.Store(acc + 64); c21.Store(acc + 80); c30.Store(acc + 96); c31.Store(acc + 112);
+        c40.Store(acc + 128); c41.Store(acc + 144); c50.Store(acc + 160); c51.Store(acc + 176);
+    }
+
+    /// <summary><see cref="PanelKernel3x16"/> for 8-bit weights clamped to ±64 (widening every step).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static unsafe void PanelKernel3x16Wide(byte* x0, byte* x1, byte* x2, sbyte* wp, int k, int* acc)
+    {
+        Vector256<int> c00 = default, c01 = default, c10 = default, c11 = default, c20 = default, c21 = default;
+        var ones = Vector256.Create((short)1);
+        for (int p = 0; p < k; p += 4)
+        {
+            var w0 = Avx.LoadVector256(wp);
+            var w1 = Avx.LoadVector256(wp + 32);
+            wp += 128;
+            var b = Vector256.Create(Unsafe.ReadUnaligned<int>(x0 + p)).AsByte();
+            c00 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w0), ones); c01 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w1), ones);
+            b = Vector256.Create(Unsafe.ReadUnaligned<int>(x1 + p)).AsByte();
+            c10 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w0), ones); c11 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w1), ones);
+            b = Vector256.Create(Unsafe.ReadUnaligned<int>(x2 + p)).AsByte();
+            c20 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w0), ones); c21 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w1), ones);
         }
         c00.Store(acc); c01.Store(acc + 8); c10.Store(acc + 16); c11.Store(acc + 24); c20.Store(acc + 32); c21.Store(acc + 40);
     }

@@ -33,8 +33,18 @@ internal sealed class QuantizedMatrix
     public int Stride { get; }
     /// <summary>Storage width: 8, 4 or 2 bits per weight.</summary>
     public int Bits { get; }
-    /// <summary>One signed byte per weight (8-bit matrices only, otherwise null).</summary>
+    /// <summary>One signed byte per weight in row order (8-bit matrices on CPUs without the panel kernels, otherwise null).</summary>
     public sbyte[] Data { get; }
+    /// <summary>8-bit matrices on AVX2-capable CPUs: the weights clamped to [-64, 64] in panel layout (so <c>pmaddubsw</c>
+    /// pair sums cannot saturate), with the few remaining residuals in <see cref="OutlierStart"/> /
+    /// <see cref="OutlierK"/> / <see cref="OutlierValue"/> (per channel, CSR).</summary>
+    public sbyte[] PanelData { get; }
+    public int[] OutlierStart { get; }
+    public int[] OutlierK { get; }
+    public sbyte[] OutlierValue { get; }
+    /// <summary>True when the matrix is stored in panel layout (packed low-bit, or <see cref="PanelData"/>).</summary>
+    public bool HasPanels => Packed is not null || PanelData is not null;
+    private const int DenseLimit = 64;
     /// <summary>Packed weights (4- and 2-bit matrices only, otherwise null); <see cref="Stride"/> · Bits / 8 bytes per row.</summary>
     public byte[] Packed { get; }
     public float[] Scale { get; }
@@ -72,6 +82,42 @@ internal sealed class QuantizedMatrix
         }
         SmallRange = min >= -8 && max <= 7;
         Bits = !packLowBits ? 8 : min >= -2 && max <= 1 ? 2 : SmallRange ? 4 : 8;
+        long outliers = 0;
+        if (Bits == 8)
+        {
+            foreach (var v in data.AsSpan(0, rows * cols))
+            {
+                outliers += v > DenseLimit || v < -DenseLimit ? 1 : 0;
+            }
+        }
+        // Real per-channel int8 weights have a handful of values beyond ±64 per row (0.17% in the vision tower);
+        // matrices with many more would spend their time in the sparse correction, so they keep the row layout.
+        if (Bits == 8 && System.Runtime.Intrinsics.X86.Avx2.IsSupported && packLowBits && outliers <= (long)rows * cols / 100)
+        {
+            PanelData = new sbyte[(long)Panels * PanelBytes];
+            OutlierStart = new int[rows + 1];
+            var ks = new List<int>();
+            var vs = new List<sbyte>();
+            for (int r = 0; r < rows; r++)
+            {
+                int p = r / PanelWidth, c = r % PanelWidth;
+                var row = data.AsSpan(r * cols, cols);
+                for (int k = 0; k < cols; k++)
+                {
+                    int v = row[k], d = Math.Clamp(v, -DenseLimit, DenseLimit);
+                    PanelData[(long)p * PanelBytes + (k / 4 * PanelWidth + c) * 4 + (k & 3)] = (sbyte)d;
+                    if (v != d)
+                    {
+                        ks.Add(k);
+                        vs.Add((sbyte)(v - d));
+                    }
+                }
+                OutlierStart[r + 1] = ks.Count;
+            }
+            OutlierK = ks.ToArray();
+            OutlierValue = vs.ToArray();
+            return;
+        }
         if (Bits == 8)
         {
             if (Stride == cols && data.Length == rows * cols)
@@ -162,6 +208,24 @@ internal sealed class QuantizedMatrix
     /// <paramref name="dst"/> (row stride <see cref="Stride"/>).</summary>
     public unsafe void UnpackRows(int r0, int r1, sbyte* dst)
     {
+        if (PanelData is not null)
+        {
+            new Span<sbyte>(dst, (r1 - r0) * Stride).Clear();
+            for (int r = r0; r < r1; r++)
+            {
+                int p = r / PanelWidth, c = r % PanelWidth;
+                sbyte* row = dst + (long)(r - r0) * Stride;
+                for (int k = 0; k < Cols; k++)
+                {
+                    row[k] = PanelData[(long)p * PanelBytes + (k / 4 * PanelWidth + c) * 4 + (k & 3)];
+                }
+                for (int j = OutlierStart[r]; j < OutlierStart[r + 1]; j++)
+                {
+                    row[OutlierK[j]] += OutlierValue[j];
+                }
+            }
+            return;
+        }
         if (Bits == 8)
         {
             fixed (sbyte* src = Data)
@@ -241,5 +305,6 @@ internal sealed class QuantizedMatrix
         return f;
     }
 
-    public long ByteSize => (Data?.LongLength ?? 0) + (Packed?.LongLength ?? 0) + Scale.LongLength * 4 + RowSum.LongLength * 4;
+    public long ByteSize => (Data?.LongLength ?? 0) + (Packed?.LongLength ?? 0) + (PanelData?.LongLength ?? 0) + (OutlierK?.LongLength ?? 0) * 5
+        + Scale.LongLength * 4 + RowSum.LongLength * 4;
 }

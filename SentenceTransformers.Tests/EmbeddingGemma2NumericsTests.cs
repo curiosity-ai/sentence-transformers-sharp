@@ -33,8 +33,24 @@ public class EmbeddingGemma2NumericsTests
         return w;
     }
 
+    /// <summary>Weights of a given storage width; 16 means 8-bit weights shaped like real per-channel int8 ones
+    /// (mostly within ±64, ~0.5% outliers up to ±127), which take the dense + sparse panel path.</summary>
     private static sbyte[] WeightsOfWidth(Random rng, int n, int bits)
-        => bits switch { 2 => RandomWeights(rng, n, -2, 1), 4 => RandomWeights(rng, n, -8, 7), _ => RandomWeights(rng, n, -127, 127) };
+    {
+        if (bits == 16)
+        {
+            var w = RandomWeights(rng, n, -64, 64);
+            for (int i = 0; i < n; i++)
+            {
+                if (rng.Next(200) == 0)
+                {
+                    w[i] = (sbyte)(rng.Next(2) == 0 ? rng.Next(65, 128) : -rng.Next(65, 128));
+                }
+            }
+            return w;
+        }
+        return bits switch { 2 => RandomWeights(rng, n, -2, 1), 4 => RandomWeights(rng, n, -8, 7), _ => RandomWeights(rng, n, -127, 127) };
+    }
 
     // weightBits 4 and 2 exercise the packed storage: fewer than 64 activation rows stream 16-row unpacked blocks,
     // 64 or more expand the whole matrix first.
@@ -51,6 +67,8 @@ public class EmbeddingGemma2NumericsTests
     [InlineData(3, 70, 300, 2)]
     [InlineData(16, 200, 1024, 2)]
     [InlineData(80, 96, 520, 2)]
+    [InlineData(7, 45, 300, 16)]
+    [InlineData(70, 96, 768, 16)]
     public void QGemm_MatchesNaiveIntegerReference(int n, int m, int k, int weightBits)
     {
         var rng = new Random(n * 1000 + m * 10 + k);
@@ -61,7 +79,11 @@ public class EmbeddingGemma2NumericsTests
         // Storage is chosen from the actual values (a tiny random "int4" matrix may well fit in 2 bits).
         int expectedBits = w.All(v => v >= -2 && v <= 1) ? 2 : w.All(v => v >= -8 && v <= 7) ? 4 : 8;
         Assert.Equal(expectedBits, matrix.Bits);
-        Assert.True(weightBits == 8 || matrix.Bits <= weightBits);
+        Assert.True(weightBits >= 8 || matrix.Bits <= weightBits);
+        if (weightBits == 16 && System.Runtime.Intrinsics.X86.Avx2.IsSupported)
+        {
+            Assert.NotNull(matrix.PanelData);   // dense ±64 panels + sparse residuals
+        }
         Assert.Equal(expectedBits < 8, matrix.SmallRange);
         for (int r = 0; r < m; r++)
         {
@@ -115,6 +137,7 @@ public class EmbeddingGemma2NumericsTests
     [InlineData(37, 70, 300, 4)]
     [InlineData(16, 130, 1024, 2)]
     [InlineData(70, 130, 256, 2)]
+    [InlineData(20, 77, 768, 16)]
     public void QGemm_StaticRequantization_MatchesNaive(int n, int m, int k, int weightBits)
     {
         var rng = new Random(42 + n);
