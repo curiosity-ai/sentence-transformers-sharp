@@ -281,17 +281,29 @@ AVX-512 CPUs, because its AVX2 kernels round differently.) ARM64 runs the same 1
 multiply-add code paths but has not been verified. CPUs without FMA instructions (pre-2013 x64) fall back
 to software fused multiply-add, which is exact but several times slower.
 
-**Performance** (4-vCPU AVX-512 VM; LiteRT-LM engine on the same machine for comparison):
+**Performance** (4-vCPU Ice Lake AVX-512 VM, steady state after warm-up; the LiteRT-LM 0.18 engine measured
+on the same machine through its Python API; runs on this VM vary by ±15%):
 
 | Workload | Pure C#, 1 thread | Pure C#, 4 threads | LiteRT-LM, 1 thread | LiteRT-LM, 4 threads |
 | --- | ---: | ---: | ---: | ---: |
-| Short query (15 tokens) | 67 ms | 43 ms | 131 ms | 64 ms |
-| Batch of 32 sentences | 1.6 s | 0.65 s | 4.2 s | 1.9 s |
-| One 1003-token document | 4.8 s | 2.0 s | 2.5 s | 0.88 s |
+| Short query (15 tokens) | 68 ms | 28 ms | 146 ms | 59 ms |
+| Batch of 32 sentences | 1.4 s | 0.45 s | 4.5 s | 1.9 s |
+| One 1003-token document | 4.0 s | 1.2 s | 2.7 s | 1.0 s |
+| One image (640×480, 140 tokens, 440M) | 5.3 s | 1.5 s | 1.7 s | 1.6 s |
+| 1 s of audio (740M) | 450 ms | 216 ms | 510 ms | 288 ms |
+| 3.3 s of audio (740M) | 1.1 s | 0.47 s | 0.95 s | 0.55 s |
 
-The int8 GEMMs use `AvxVnni` (256-bit), an AVX-512BW or AVX2 `vpmaddubsw`/`vpmaddwd` sequence, or ARM
-`sdot`. On long sequences LiteRT-LM is still ahead on AVX-512 servers, because .NET 10 does not expose
-their 512-bit `vpdpbusd`.
+How the managed port gets there:
+- **Integer GEMMs:** `AvxVnni` (256-bit) where available, otherwise an AVX-512BW or AVX2
+  `vpmaddubsw`/`vpmaddwd` sequence, or ARM `sdot`. INT4 and INT2 weights stay packed in memory (half and a
+  quarter of a byte per weight) and are expanded block by block right before use.
+- **Float GEMMs:** a 12 × 32 AVX-512 FMA tile; attention packs `Kᵀ` and `V` once per head.
+- **Scheduling:** a spinning worker pool keeps the many sub-millisecond operations parallel, and the
+  audio graph executor recycles its activation buffers between ops and streaming chunks.
+
+The remaining gap is in the compute-bound int8 GEMMs (long documents, the vision tower) on a single thread.
+The engine runs them with the 512-bit `vpdpbusd` (AVX-512 VNNI) instruction, which .NET 10 only exposes on
+CPUs that also report AVX-VNNI or AVX10.
 
 ### Comparing two texts (cosine similarity)
 
