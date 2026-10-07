@@ -1,3 +1,4 @@
+using SentenceTransformers.EmbeddingGemma2.Numerics;
 using System.Numerics.Tensors;
 using SentenceTransformers.EmbeddingGemma2.LiteRt;
 
@@ -69,7 +70,12 @@ internal sealed class AudioEncoder
     /// <summary>Encodes 16 kHz mono PCM to audio soft tokens [count, 512] in the text embedding space.</summary>
     public float[] Encode(ReadOnlySpan<float> pcm16k, out int count, ParallelOptions po)
     {
-        var mel = Frontend.Compute(pcm16k, out int frames);
+        float[] mel;
+        int frames;
+        using (Profiler.Measure("audio.frontend"))
+        {
+            mel = Frontend.Compute(pcm16k, out frames);
+        }
         return EncodeMel(mel, frames, out count, po);
     }
 
@@ -100,7 +106,11 @@ internal sealed class AudioEncoder
                 [SegmentValues] = values,
                 [SegmentMask] = mask,
             };
-            var outputs = _encoder.Run(inputs, po);
+            Dictionary<string, GraphTensor> outputs;
+            using (Profiler.Measure("audio.encoder"))
+            {
+                outputs = _encoder.Run(inputs, po);
+            }
             var outMask = outputs["mask"];
             int valid = 0;
             for (int i = outMask.B.Length - 1; i >= 0; i--)
@@ -111,7 +121,11 @@ internal sealed class AudioEncoder
                     break;
                 }
             }
-            var adapted = _adapter.Run(new Dictionary<string, GraphTensor> { ["features"] = outputs["features"], ["mask"] = outMask }, po);
+            Dictionary<string, GraphTensor> adapted;
+            using (Profiler.Measure("audio.adapter"))
+            {
+                adapted = _adapter.Run(new Dictionary<string, GraphTensor> { ["features"] = outputs["features"], ["mask"] = outMask }, po);
+            }
             var proj = adapted.Values.First();
             tokens.AddRange(proj.F.AsSpan(0, valid * OutputSize).ToArray());
             count += valid;

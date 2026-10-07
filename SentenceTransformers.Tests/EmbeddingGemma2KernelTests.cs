@@ -54,6 +54,31 @@ public class EmbeddingGemma2KernelTests
     }
 
     [Fact]
+    public void SigmoidAndTanh_VectorPathsMatchScalarBits()
+    {
+        // One-element calls take the scalar loop; long calls the 512/256-bit paths.
+        var rng = new Random(9);
+        var x = new float[4099];
+        for (int i = 0; i < x.Length; i++)
+        {
+            x[i] = (float)(rng.NextDouble() * 200 - 100) * (i % 3 == 0 ? 0.05f : 1f);
+        }
+        x[0] = float.NaN; x[1] = -0f; x[2] = 0f; x[3] = float.PositiveInfinity; x[4] = float.NegativeInfinity; x[5] = -87.5f; x[6] = -104f;
+        var s = new float[x.Length];
+        var t = new float[x.Length];
+        Xnn.Sigmoid(x, s);
+        Xnn.Tanh(x, t);
+        var one = new float[1];
+        for (int i = 0; i < x.Length; i++)
+        {
+            Xnn.Sigmoid(x.AsSpan(i, 1), one);
+            Assert.True(BitConverter.SingleToInt32Bits(one[0]) == BitConverter.SingleToInt32Bits(s[i]), $"sigmoid({x[i]:R}): {s[i]:R} vs scalar {one[0]:R}");
+            Xnn.Tanh(x.AsSpan(i, 1), one);
+            Assert.True(BitConverter.SingleToInt32Bits(one[0]) == BitConverter.SingleToInt32Bits(t[i]), $"tanh({x[i]:R}): {t[i]:R} vs scalar {one[0]:R}");
+        }
+    }
+
+    [Fact]
     public void Softmax_IsNormalizedAndMasksPrefix()
     {
         var rng = new Random(7);

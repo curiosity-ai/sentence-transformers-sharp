@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using SentenceTransformers.EmbeddingGemma2.Numerics;
@@ -439,7 +440,7 @@ internal sealed class GraphExecutor
                     && _sg.Operators.Count(p => p.Inputs.Contains(ins[1])) == 1 && !Signature.Outputs.Values.Contains(ins[1]))
                 {
                     float bScale = bq.Scale[0];
-                    return (v, po) => v[o] = BatchMatMulQuantizedB(v[ins[0]], v[ins[1]], bScale, adjX, adjY, outShape);
+                    return (v, po) => v[o] = BatchMatMulQuantizedB(v[ins[0]], v[ins[1]], bScale, adjX, adjY, outShape, po);
                 }
                 return (v, po) => v[o] = BatchMatMul(v[ins[0]], v[ins[1]], adjX, adjY, outShape, po);
             }
@@ -539,7 +540,22 @@ internal sealed class GraphExecutor
         var wShape = _sg.Tensors[wIdx].Shape;   // conv: [O, kh, kw, I]; depthwise: [1, kh, kw, C·mult]
         var bias = bIdx >= 0 ? _constants[bIdx]?.F : null;
         var outShape = _sg.Tensors[o].Shape;
-        return (v, po) => v[o] = Conv(v[x], w, wShape, bias, outShape, sh, sw, dh, dw, padding == 0 /* SAME */, depthwise);
+        // Regular convolution: weights [OC, kh, kw, C] regrouped once as [kh·kw·C, OC] so each FMA step updates all
+        // output channels of one pixel (per-output order unchanged).
+        float[] wt = null;
+        if (!depthwise)
+        {
+            int oc = wShape[0], taps = wShape[1] * wShape[2] * wShape[3];
+            wt = new float[taps * oc];
+            for (int c = 0; c < oc; c++)
+            {
+                for (int t = 0; t < taps; t++)
+                {
+                    wt[t * oc + c] = w[c * taps + t];
+                }
+            }
+        }
+        return (v, po) => v[o] = Conv(v[x], w, wt, wShape, bias, outShape, sh, sw, dh, dw, padding == 0 /* SAME */, depthwise, po);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1176,29 +1192,25 @@ internal sealed class GraphExecutor
     /// FMA chain over k against B's raw int8 values, and the sum is scaled by B's scale at the end.
     /// B arrives as its dequantized values (exact multiples of <paramref name="bScale"/>).
     /// </summary>
-    private static GraphTensor BatchMatMulQuantizedB(GraphTensor a, GraphTensor b, float bScale, bool adjX, bool adjY, int[] outShape)
+    private static GraphTensor BatchMatMulQuantizedB(GraphTensor a, GraphTensor b, float bScale, bool adjX, bool adjY, int[] outShape, ParallelOptions po)
     {
         int ra = a.Shape.Length, rb = b.Shape.Length;
         int m = adjX ? a.Shape[ra - 1] : a.Shape[ra - 2];
         int k = adjX ? a.Shape[ra - 2] : a.Shape[ra - 1];
         int n = adjY ? b.Shape[rb - 2] : b.Shape[rb - 1];
-        var batchA = a.Shape[..(ra - 2)];
-        var batchB = b.Shape[..(rb - 2)];
-        var batch = BroadcastShape(batchA, batchB);
-        int nb = GraphTensor.Count(batch);
+        var (offA, offB) = BatchOffsets(a.Shape[..(ra - 2)], b.Shape[..(rb - 2)]);
         var r = GraphTensor.Float(outShape);
-        var sa = BroadcastStrides(batchA, batch);
-        var sbb = BroadcastStrides(batchB, batch);
         int matA = a.Shape[ra - 2] * a.Shape[ra - 1];
         int matB = b.Shape[rb - 2] * b.Shape[rb - 1];
-        var qb = new float[k * n];   // B's int8 values as floats, [k, n]
         float invB = 1f / bScale;
-        var idx = new int[batch.Length];
-        int ia = 0, ib = 0;
-        for (int bi = 0; bi < nb; bi++)
+        var af = a.F;
+        var bf = b.F;
+        var rf = r.F;
+        void Batch(int bi)
         {
-            var A = a.F.AsSpan(ia * matA, matA);
-            var B = b.F.AsSpan(ib * matB, matB);
+            var A = af.AsSpan(offA[bi] * matA, matA);
+            var B = bf.AsSpan(offB[bi] * matB, matB);
+            var qb = new float[k * n];   // B's int8 values as floats, [k, n]
             for (int p = 0; p < k; p++)
             {
                 for (int j = 0; j < n; j++)
@@ -1208,7 +1220,7 @@ internal sealed class GraphExecutor
             }
             for (int i = 0; i < m; i++)
             {
-                var dst = r.F.AsSpan((bi * m + i) * n, n);
+                var dst = rf.AsSpan((bi * m + i) * n, n);
                 dst.Clear();
                 for (int p = 0; p < k; p++)
                 {
@@ -1217,21 +1229,57 @@ internal sealed class GraphExecutor
                 }
                 TensorPrimitives.Multiply(dst, bScale, dst);
             }
+        }
+        RunBatches(offA.Length, (long)m * n * k, po, Batch);
+        return r;
+    }
+
+    /// <summary>Flat batch indices of A and B for every (broadcast) batch element of a <c>BATCH_MATMUL</c>.</summary>
+    private static (int[] A, int[] B) BatchOffsets(int[] batchA, int[] batchB)
+    {
+        var batch = BroadcastShape(batchA, batchB);
+        int nb = GraphTensor.Count(batch);
+        var sa = BroadcastStrides(batchA, batch);
+        var sb = BroadcastStrides(batchB, batch);
+        var offA = new int[nb];
+        var offB = new int[nb];
+        var idx = new int[batch.Length];
+        int ia = 0, ib = 0;
+        for (int bi = 0; bi < nb; bi++)
+        {
+            offA[bi] = ia;
+            offB[bi] = ib;
             for (int d = batch.Length - 1; d >= 0; d--)
             {
                 idx[d]++;
                 ia += sa[d];
-                ib += sbb[d];
+                ib += sb[d];
                 if (idx[d] < batch[d])
                 {
                     break;
                 }
                 ia -= sa[d] * batch[d];
-                ib -= sbb[d] * batch[d];
+                ib -= sb[d] * batch[d];
                 idx[d] = 0;
             }
         }
-        return r;
+        return (offA, offB);
+    }
+
+    /// <summary>Runs independent batch elements in parallel once there is enough work to pay for it.</summary>
+    private static void RunBatches(int count, long macsPerBatch, ParallelOptions po, Action<int> batch)
+    {
+        if (count > 1 && macsPerBatch * count >= 1 << 16)
+        {
+            WorkerPool.For(count, po, batch);
+        }
+        else
+        {
+            for (int i = 0; i < count; i++)
+            {
+                batch(i);
+            }
+        }
     }
 
     private static GraphTensor BatchMatMul(GraphTensor a, GraphTensor b, bool adjX, bool adjY, int[] outShape, ParallelOptions po)
@@ -1240,48 +1288,34 @@ internal sealed class GraphExecutor
         int m = adjX ? a.Shape[ra - 1] : a.Shape[ra - 2];
         int k = adjX ? a.Shape[ra - 2] : a.Shape[ra - 1];
         int n = adjY ? b.Shape[rb - 2] : b.Shape[rb - 1];
-        var batchA = a.Shape[..(ra - 2)];
-        var batchB = b.Shape[..(rb - 2)];
-        var batch = BroadcastShape(batchA, batchB);
-        int nb = GraphTensor.Count(batch);
+        var (offA, offB) = BatchOffsets(a.Shape[..(ra - 2)], b.Shape[..(rb - 2)]);
         var r = GraphTensor.Float(outShape);
-        var sa = BroadcastStrides(batchA, batch);
-        var sbb = BroadcastStrides(batchB, batch);
         int matA = a.Shape[ra - 2] * a.Shape[ra - 1];
         int matB = b.Shape[rb - 2] * b.Shape[rb - 1];
-        var tmpA = adjX ? new float[m * k] : null;
-        var tmpB = adjY ? new float[k * n] : null;
-        var idx = new int[batch.Length];
-        int ia = 0, ib = 0;
-        for (int bi = 0; bi < nb; bi++)
+        var af = a.F;
+        var bf = b.F;
+        var rf = r.F;
+        bool parallel = offA.Length > 1 && (long)m * n * k * offA.Length >= 1 << 16;
+        void Batch(int bi)
         {
-            ReadOnlySpan<float> A = a.F.AsSpan(ia * matA, matA);
-            ReadOnlySpan<float> B = b.F.AsSpan(ib * matB, matB);
+            ReadOnlySpan<float> A = af.AsSpan(offA[bi] * matA, matA);
+            ReadOnlySpan<float> B = bf.AsSpan(offB[bi] * matB, matB);
             if (adjX)
             {
+                var tmpA = new float[m * k];
                 for (int i = 0; i < k; i++) for (int j = 0; j < m; j++) tmpA[j * k + i] = A[i * m + j];
                 A = tmpA;
             }
             if (adjY)
             {
+                var tmpB = new float[k * n];
                 for (int i = 0; i < n; i++) for (int j = 0; j < k; j++) tmpB[j * n + i] = B[i * k + j];
                 B = tmpB;
             }
-            SGemm.Multiply(A, k, B, n, r.F.AsSpan(bi * m * n, m * n), n, m, n, k);
-            for (int d = batch.Length - 1; d >= 0; d--)
-            {
-                idx[d]++;
-                ia += sa[d];
-                ib += sbb[d];
-                if (idx[d] < batch[d])
-                {
-                    break;
-                }
-                ia -= sa[d] * batch[d];
-                ib -= sbb[d] * batch[d];
-                idx[d] = 0;
-            }
+            // A single batch element may still be large: let the GEMM parallelize it when batches don't.
+            SGemm.Multiply(A, k, B, n, rf.AsSpan(bi * m * n, m * n), n, m, n, k, 1f, parallel ? null : po);
         }
+        RunBatches(offA.Length, (long)m * n * k, po, Batch);
         return r;
     }
 
@@ -1292,7 +1326,7 @@ internal sealed class GraphExecutor
     /// whose indirection walks the taps column-major. Out-of-image taps read XNNPACK's zero buffer, which leaves
     /// the sums unchanged, so they are skipped.
     /// </summary>
-    private static GraphTensor Conv(GraphTensor x, float[] w, int[] wShape, float[] bias, int[] outShape, int sh, int sw, int dh, int dw, bool same, bool depthwise)
+    private static GraphTensor Conv(GraphTensor x, float[] w, float[] wt, int[] wShape, float[] bias, int[] outShape, int sh, int sw, int dh, int dw, bool same, bool depthwise, ParallelOptions po)
     {
         int H = x.Shape[1], W = x.Shape[2], C = x.Shape[3];
         int OH = outShape[1], OW = outShape[2], OC = outShape[3];
@@ -1308,28 +1342,21 @@ internal sealed class GraphExecutor
         var r = GraphTensor.Float(outShape);
         int mult = depthwise ? OC / C : 0;
         bool dwconv = depthwise && mult == 1;
-        // Regular convolution: weights [OC, kh, kw, C] regrouped as [kh·kw·C, OC] so each FMA step updates all
-        // output channels of one pixel (per-output order unchanged).
-        float[] wt = null;
-        if (!depthwise)
-        {
-            wt = new float[kh * kw * C * OC];
-            for (int oc = 0; oc < OC; oc++)
-            {
-                for (int t = 0; t < kh * kw * C; t++)
-                {
-                    wt[t * OC + oc] = w[oc * kh * kw * C + t];
-                }
-            }
-        }
-        for (int oy = 0; oy < OH; oy++)
+        var xf = x.F;
+        var rf = r.F;
+        void Row(int oy)
         {
             for (int ox = 0; ox < OW; ox++)
             {
-                var acc = r.F.AsSpan((oy * OW + ox) * OC, OC);
+                var acc = rf.AsSpan((oy * OW + ox) * OC, OC);
                 if (bias is not null)
                 {
                     bias.AsSpan(0, OC).CopyTo(acc);
+                }
+                if (!depthwise && Vector256.IsHardwareAccelerated && OC % 8 == 0)
+                {
+                    ConvPixel(xf, wt, acc, oy, ox, H, W, C, OC, kh, kw, sh, sw, dh, dw, padT, padL);
+                    continue;
                 }
                 for (int a = 0; a < (dwconv ? kw : kh); a++)
                 {
@@ -1342,7 +1369,7 @@ internal sealed class GraphExecutor
                         {
                             continue;
                         }
-                        var px = x.F.AsSpan((iy * W + ix) * C, C);
+                        var px = xf.AsSpan((iy * W + ix) * C, C);
                         if (depthwise)
                         {
                             // filter [1, kh, kw, C·mult]: out channel c·mult + m reads input channel c.
@@ -1371,6 +1398,53 @@ internal sealed class GraphExecutor
                 }
             }
         }
+        if ((long)OH * OW * OC * kh * kw * (depthwise ? 1 : C) >= 1 << 20)
+        {
+            WorkerPool.For(OH, po, Row);
+        }
+        else
+        {
+            for (int oy = 0; oy < OH; oy++)
+            {
+                Row(oy);
+            }
+        }
         return r;
+    }
+
+    /// <summary>One output pixel of a regular convolution, 8 output channels at a time in a register: the same
+    /// fused multiply-adds, in the same order (taps row-major, then input channels), as the span loop.</summary>
+    private static void ConvPixel(float[] x, float[] wt, Span<float> acc, int oy, int ox, int H, int W, int C, int OC, int kh, int kw, int sh, int sw, int dh, int dw, int padT, int padL)
+    {
+        ref float wr = ref MemoryMarshal.GetArrayDataReference(wt);
+        ref float xr = ref MemoryMarshal.GetArrayDataReference(x);
+        ref float ar = ref MemoryMarshal.GetReference(acc);
+        for (int o0 = 0; o0 < OC; o0 += 8)
+        {
+            var v = Vector256.LoadUnsafe(ref ar, (nuint)o0);
+            for (int ky = 0; ky < kh; ky++)
+            {
+                int iy = oy * sh + ky * dh - padT;
+                if ((uint)iy >= (uint)H)
+                {
+                    continue;
+                }
+                for (int kx = 0; kx < kw; kx++)
+                {
+                    int ix = ox * sw + kx * dw - padL;
+                    if ((uint)ix >= (uint)W)
+                    {
+                        continue;
+                    }
+                    int px = (iy * W + ix) * C;
+                    int t0 = (ky * kw + kx) * C;
+                    for (int c = 0; c < C; c++)
+                    {
+                        v = Vector256.FusedMultiplyAdd(Vector256.LoadUnsafe(ref wr, (nuint)((t0 + c) * OC + o0)), Vector256.Create(Unsafe.Add(ref xr, px + c)), v);
+                    }
+                }
+            }
+            v.StoreUnsafe(ref ar, (nuint)o0);
+        }
     }
 }
