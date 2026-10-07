@@ -226,6 +226,9 @@ TFLite runtime, no native tokenizer, no image or audio codec libraries:
 All three share the same text tower, so text embeddings are identical across bundles, and images and
 audio land in the same 768-d space as text.
 
+Bundles are downloaded on first use from `https://models.curiosity.ai/embeddinggemma-2/`, where they are
+unmodified copies of the `litert-community` files linked above. Pass `modelUrl` to use another mirror.
+
 ```csharp
 using SentenceTransformers.EmbeddingGemma2;
 
@@ -548,6 +551,9 @@ and the TFLite flatbuffers inside it, with weights taken directly from the int4 
   which routes the heavy `FULLY_CONNECTED` / `BATCH_MATMUL` ops through the same kernels.
 - **Inputs:** the SentencePiece BPE tokenizer, the image decoders and resizer, and the audio front-end
   are C# ports of the libraries the reference runtime uses.
+- **No `unsafe` code:** the package compiles without `AllowUnsafeBlocks`. Kernels take spans and
+  arrays, check their extents once at entry, and use `Vector*.LoadUnsafe`/`StoreUnsafe` on refs in the
+  inner loops, so nothing is pinned.
 
 ## Contributing & building
 

@@ -155,31 +155,27 @@ internal sealed class QuantizedActivations
     private static void QuantizeRowWithMultiplier(ReadOnlySpan<float> x, Span<byte> dst, float multiplier, int zeroPoint)
     {
         int i = 0;
+        dst = dst.Slice(0, x.Length);
         if (Avx2.IsSupported && x.Length >= 32)
         {
-            unsafe
+            ref float xr = ref MemoryMarshal.GetReference(x);
+            ref byte dr = ref MemoryMarshal.GetReference(dst);
+            var vmul = Vector256.Create(multiplier);
+            var vzp = Vector256.Create((short)zeroPoint);
+            var flip = Vector256.Create((byte)0x80);
+            // packs interleave 128-bit lanes; this permutation restores element order.
+            var order = Vector256.Create(0, 4, 1, 5, 2, 6, 3, 7);
+            for (; i + 32 <= x.Length; i += 32)
             {
-                fixed (float* xp = x)
-                fixed (byte* dp = dst)
-                {
-                    var vmul = Vector256.Create(multiplier);
-                    var vzp = Vector256.Create((short)zeroPoint);
-                    var flip = Vector256.Create((byte)0x80);
-                    // packs interleave 128-bit lanes; this permutation restores element order.
-                    var order = Vector256.Create(0, 4, 1, 5, 2, 6, 3, 7);
-                    for (; i + 32 <= x.Length; i += 32)
-                    {
-                        // vcvtps2dq rounds half to even; the saturating packs/adds are XNNPACK's clamps.
-                        var a = Avx.ConvertToVector256Int32(Avx.Multiply(Avx.LoadVector256(xp + i), vmul));
-                        var b = Avx.ConvertToVector256Int32(Avx.Multiply(Avx.LoadVector256(xp + i + 8), vmul));
-                        var c = Avx.ConvertToVector256Int32(Avx.Multiply(Avx.LoadVector256(xp + i + 16), vmul));
-                        var d = Avx.ConvertToVector256Int32(Avx.Multiply(Avx.LoadVector256(xp + i + 24), vmul));
-                        var ab = Avx2.AddSaturate(Avx2.PackSignedSaturate(a, b), vzp);
-                        var cd = Avx2.AddSaturate(Avx2.PackSignedSaturate(c, d), vzp);
-                        var bytes = Avx2.Xor(Avx2.PackSignedSaturate(ab, cd).AsByte(), flip);
-                        Avx.Store(dp + i, Avx2.PermuteVar8x32(bytes.AsInt32(), order).AsByte());
-                    }
-                }
+                // vcvtps2dq rounds half to even; the saturating packs/adds are XNNPACK's clamps.
+                var a = Avx.ConvertToVector256Int32(Avx.Multiply(Vector256.LoadUnsafe(ref xr, (nuint)i), vmul));
+                var b = Avx.ConvertToVector256Int32(Avx.Multiply(Vector256.LoadUnsafe(ref xr, (nuint)i + 8), vmul));
+                var c = Avx.ConvertToVector256Int32(Avx.Multiply(Vector256.LoadUnsafe(ref xr, (nuint)i + 16), vmul));
+                var d = Avx.ConvertToVector256Int32(Avx.Multiply(Vector256.LoadUnsafe(ref xr, (nuint)i + 24), vmul));
+                var ab = Avx2.AddSaturate(Avx2.PackSignedSaturate(a, b), vzp);
+                var cd = Avx2.AddSaturate(Avx2.PackSignedSaturate(c, d), vzp);
+                var bytes = Avx2.Xor(Avx2.PackSignedSaturate(ab, cd).AsByte(), flip);
+                Avx2.PermuteVar8x32(bytes.AsInt32(), order).AsByte().StoreUnsafe(ref dr, (nuint)i);
             }
         }
         for (; i < x.Length; i++)
@@ -266,7 +262,7 @@ internal static class QGemm
         }
     }
 
-    public static void Multiply(QuantizedActivations x, QuantizedMatrix w, Span<float> y, int ldy, ParallelOptions po = null, Requantization requant = null)
+    public static void Multiply(QuantizedActivations x, QuantizedMatrix w, float[] y, int ldy, ParallelOptions po = null, Requantization requant = null)
     {
         using var _ = Profiler.Measure("qgemm");
         using var __ = Profiler.Enabled ? Profiler.Measure($"qg {x.Rows}x{x.Cols}x{w.Rows}{(requant is null ? "" : " rq")}") : default;
@@ -275,6 +271,7 @@ internal static class QGemm
             throw new ArgumentException($"Inner dimensions differ: {x.Cols} vs {w.Cols}.");
         }
         int n = x.Rows, m = w.Rows;
+        CheckOutput(y, n, m, ldy);
         int nBlocks = (n + BlockN - 1) / BlockN;
         int mBlocks = (m + BlockM - 1) / BlockM;
         int blocks = nBlocks * mBlocks;
@@ -289,88 +286,89 @@ internal static class QGemm
             MultiplyPanels(x, w, y, ldy, dop, po, requant);
             return;
         }
-        unsafe
+        if (w.Bits == 8 || n >= UnpackWholeMinRows)
         {
-            fixed (float* yp = y)
+            // Byte weights, or packed weights against enough activation rows that expanding the whole matrix
+            // once (in parallel) costs little: the blocked kernel then reads them as bytes.
+            sbyte[] unpacked = null;
+            try
             {
-                var yPtr = (nint)yp;
-                if (w.Bits == 8 || n >= UnpackWholeMinRows)
+                if (w.Bits != 8)
                 {
-                    // Byte weights, or packed weights against enough activation rows that expanding the whole matrix
-                    // once (in parallel) costs little: the blocked kernel then reads them as bytes.
-                    sbyte[] unpacked = null;
-                    try
+                    unpacked = System.Buffers.ArrayPool<sbyte>.Shared.Rent(m * w.Stride);
+                    WorkerPool.For(mBlocks, dop <= 1 ? 1 : dop, mb =>
                     {
-                        if (w.Bits != 8)
-                        {
-                            unpacked = System.Buffers.ArrayPool<sbyte>.Shared.Rent(m * w.Stride);
-                        }
-                        fixed (sbyte* wp = w.Bits == 8 ? w.Data : unpacked)
-                        {
-                            var wPtr = (nint)wp;
-                            if (w.Bits != 8)
-                            {
-                                WorkerPool.For(mBlocks, dop <= 1 ? 1 : dop, mb => w.UnpackRows(mb * BlockM, Math.Min(m, mb * BlockM + BlockM), (sbyte*)wPtr + (long)mb * BlockM * w.Stride));
-                            }
-                            if (dop <= 1 || blocks == 1)
-                            {
-                                for (int b = 0; b < blocks; b++)
-                                {
-                                    RunBlock(x, w, (sbyte*)wPtr, (float*)yPtr, ldy, b / mBlocks, b % mBlocks, requant);
-                                }
-                            }
-                            else
-                            {
-                                WorkerPool.For(blocks, po, b => RunBlock(x, w, (sbyte*)wPtr, (float*)yPtr, ldy, b / mBlocks, b % mBlocks, requant));
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        if (unpacked is not null)
-                        {
-                            System.Buffers.ArrayPool<sbyte>.Shared.Return(unpacked);
-                        }
-                    }
-                    return;
+                        int r0 = mb * BlockM, r1 = Math.Min(m, r0 + BlockM);
+                        w.UnpackRows(r0, r1, unpacked.AsSpan(r0 * w.Stride, (r1 - r0) * w.Stride));
+                    });
                 }
-                // Packed (4/2-bit) weights against few activation rows (memory-bound): each work item streams one
-                // block of weight rows, expanding it into a cache-resident scratch buffer a few rows at a time. N is
-                // split into groups only when there are too few weight blocks to keep every thread busy.
-                int groups = dop <= 1 ? 1 : Math.Max(1, Math.Min(nBlocks, (2 * dop + mBlocks - 1) / mBlocks));
-                int items = mBlocks * groups;
-                void Item(int it)
+                var wData = w.Bits == 8 ? w.Data : unpacked;
+                if (dop <= 1 || blocks == 1)
                 {
-                    int mb = it / groups, g = it % groups;
-                    int nb0 = g * nBlocks / groups, nb1 = (g + 1) * nBlocks / groups;
-                    if (nb0 >= nb1)
+                    for (int b = 0; b < blocks; b++)
                     {
-                        return;
-                    }
-                    int m0 = mb * BlockM, m1 = Math.Min(m, m0 + BlockM);
-                    int n0 = nb0 * BlockN, n1 = Math.Min(n, nb1 * BlockN);
-                    // Expand UnpackRows weight rows at a time so they stay L1-resident while every activation row of
-                    // this item streams past them.
-                    sbyte* s = UnpackScratch(UnpackRows * w.Stride);
-                    for (int r0 = m0; r0 < m1; r0 += UnpackRows)
-                    {
-                        int r1 = Math.Min(m1, r0 + UnpackRows);
-                        w.UnpackRows(r0, r1, s);
-                        RunRange(x, w, s - (long)r0 * w.Stride, (float*)yPtr, ldy, n0, n1, r0, r1, requant);
-                    }
-                }
-                if (dop <= 1 || items == 1)
-                {
-                    for (int it = 0; it < items; it++)
-                    {
-                        Item(it);
+                        RunBlock(x, w, wData, y, ldy, b / mBlocks, b % mBlocks, requant);
                     }
                 }
                 else
                 {
-                    WorkerPool.For(items, po, Item);
+                    WorkerPool.For(blocks, po, b => RunBlock(x, w, wData, y, ldy, b / mBlocks, b % mBlocks, requant));
                 }
             }
+            finally
+            {
+                if (unpacked is not null)
+                {
+                    System.Buffers.ArrayPool<sbyte>.Shared.Return(unpacked);
+                }
+            }
+            return;
+        }
+        // Packed (4/2-bit) weights against few activation rows (memory-bound): each work item streams one
+        // block of weight rows, expanding it into a cache-resident scratch buffer a few rows at a time. N is
+        // split into groups only when there are too few weight blocks to keep every thread busy.
+        int groups = dop <= 1 ? 1 : Math.Max(1, Math.Min(nBlocks, (2 * dop + mBlocks - 1) / mBlocks));
+        int items = mBlocks * groups;
+        void Item(int it)
+        {
+            int mb = it / groups, g = it % groups;
+            int nb0 = g * nBlocks / groups, nb1 = (g + 1) * nBlocks / groups;
+            if (nb0 >= nb1)
+            {
+                return;
+            }
+            int m0 = mb * BlockM, m1 = Math.Min(m, m0 + BlockM);
+            int n0 = nb0 * BlockN, n1 = Math.Min(n, nb1 * BlockN);
+            // Expand UnpackRows weight rows at a time so they stay L1-resident while every activation row of
+            // this item streams past them.
+            var s = AlignedScratch<sbyte>.Get(UnpackRows * w.Stride);
+            for (int r0 = m0; r0 < m1; r0 += UnpackRows)
+            {
+                int r1 = Math.Min(m1, r0 + UnpackRows);
+                w.UnpackRows(r0, r1, s);
+                RunRange(x, w, s, y, ldy, n0, n1, r0, r1, requant);
+            }
+        }
+        if (dop <= 1 || items == 1)
+        {
+            for (int it = 0; it < items; it++)
+            {
+                Item(it);
+            }
+        }
+        else
+        {
+            WorkerPool.For(items, po, Item);
+        }
+    }
+
+    /// <summary>The kernels index <paramref name="y"/> without bounds checks, so its extent is validated once here.</summary>
+    private static void CheckOutput(float[] y, int n, int m, int ldy)
+    {
+        ArgumentNullException.ThrowIfNull(y);
+        if (n > 0 && (ldy < m || y.Length < (long)(n - 1) * ldy + m))
+        {
+            throw new ArgumentException($"Output of {y.Length} floats is too small for {n} x {m} (row stride {ldy}).", nameof(y));
         }
     }
 
@@ -386,112 +384,106 @@ internal static class QGemm
     /// exactly, and the epilogue performs the same per-element operations.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void MultiplyPanels(QuantizedActivations x, QuantizedMatrix w, Span<float> y, int ldy, int dop, ParallelOptions po, Requantization rq, bool geluGate = false)
+    private static void MultiplyPanels(QuantizedActivations x, QuantizedMatrix w, float[] y, int ldy, int dop, ParallelOptions po, Requantization rq, bool geluGate = false)
     {
         int n = x.Rows, m = w.Rows, panels = w.Panels;
+        CheckOutput(y, n, m, ldy);
         int mr = UseAvx512 ? 6 : 3;
         int tiles = (n + mr - 1) / mr;
         int groups = dop <= 1 ? 1 : Math.Max(1, Math.Min(tiles, (2 * dop + panels - 1) / panels));
         int items = panels * groups;
         bool wide = w.PanelData is not null;   // 8-bit: clamped dense panels + sparse residuals
-        fixed (float* yp = y)
-        fixed (byte* xp = x.Data)
-        fixed (sbyte* pdp = w.PanelData)
-        fixed (int* rsp = w.RowSum)
-        fixed (float* wsp = w.Scale)
-        fixed (float* bp = w.Bias)
-        fixed (float* rqp = rq?.Scale)
-        fixed (int* xzp = x.ZeroPoint)
-        fixed (float* xsp = x.Scale)
+        var xData = x.Data;
+        int xStride = x.Stride;
+        var epi = new Epilogue(w, x, rq, y, ldy, geluGate);
+        void Item(int it)
         {
-            var yPtr = (nint)yp;
-            var xPtr = (nint)xp;
-            var pdPtr = (nint)pdp;
-            var epi = new Epilogue
+            int p = it / groups, g = it % groups;
+            int t0 = (int)((long)g * tiles / groups), t1 = (int)((long)(g + 1) * tiles / groups);
+            if (t0 >= t1)
             {
-                RowSum = rsp, WScale = wsp, Bias = bp, RqScale = rqp, RqOut = rq?.OutputScale ?? 0f,
-                XZero = xzp, XScale = xsp, Y = yp, Ldy = ldy, Channels = m, GeluGate = geluGate,
-            };
-            void Item(int it)
-            {
-                int p = it / groups, g = it % groups;
-                int t0 = (int)((long)g * tiles / groups), t1 = (int)((long)(g + 1) * tiles / groups);
-                if (t0 >= t1)
-                {
-                    return;
-                }
-                sbyte* panel;
-                if (wide)
-                {
-                    panel = (sbyte*)pdPtr + (long)p * w.PanelBytes;
-                }
-                else
-                {
-                    panel = UnpackScratch(w.PanelBytes);
-                    w.UnpackPanels(p, p + 1, panel);
-                }
-                int* acc = stackalloc int[6 * QuantizedMatrix.PanelWidth];
-                byte* xb = (byte*)xPtr;
-                int col0 = p * QuantizedMatrix.PanelWidth;
-                for (int t = t0; t < t1; t++)
-                {
-                    int r0 = t * mr, valid = Math.Min(mr, n - r0);
-                    byte* Row(int i) => xb + (long)(r0 + Math.Min(i, valid - 1)) * x.Stride;
-                    if (UseAvx512)
-                    {
-                        if (wide)
-                        {
-                            PanelKernel6x32Wide(Row(0), Row(1), Row(2), Row(3), Row(4), Row(5), panel, w.Stride, acc);
-                            AddOutliers(w, xb, x.Stride, r0, valid, col0, 32, acc);
-                        }
-                        else
-                        {
-                            PanelKernel6x32(Row(0), Row(1), Row(2), Row(3), Row(4), Row(5), panel, w.Stride, acc);
-                        }
-                        for (int i = 0; i < valid; i++)
-                        {
-                            epi.Row(r0 + i, col0, acc + i * 32, 32);
-                        }
-                    }
-                    else
-                    {
-                        for (int half = 0; half < 2; half++)
-                        {
-                            if (wide)
-                            {
-                                PanelKernel3x16Wide(Row(0), Row(1), Row(2), panel + half * 64, w.Stride, acc);
-                                AddOutliers(w, xb, x.Stride, r0, valid, col0 + half * 16, 16, acc);
-                            }
-                            else
-                            {
-                                PanelKernel3x16(Row(0), Row(1), Row(2), panel + half * 64, w.Stride, acc);
-                            }
-                            for (int i = 0; i < valid; i++)
-                            {
-                                epi.Row(r0 + i, col0 + half * 16, acc + i * 16, 16);
-                            }
-                        }
-                    }
-                }
+                return;
             }
-            if (dop <= 1 || items == 1)
+            Span<sbyte> panelSpan;
+            if (wide)
             {
-                for (int it = 0; it < items; it++)
-                {
-                    Item(it);
-                }
+                panelSpan = w.PanelData.AsSpan(p * w.PanelBytes, w.PanelBytes);
             }
             else
             {
-                WorkerPool.For(items, dop, Item);
+                panelSpan = AlignedScratch<sbyte>.Get(w.PanelBytes);
+                w.UnpackPanels(p, p + 1, panelSpan);
             }
+            ref sbyte panel = ref MemoryMarshal.GetReference(panelSpan);
+            Span<int> accSpan = stackalloc int[6 * QuantizedMatrix.PanelWidth];
+            ref int acc = ref MemoryMarshal.GetReference(accSpan);
+            ref byte xb = ref MemoryMarshal.GetArrayDataReference(xData);
+            int col0 = p * QuantizedMatrix.PanelWidth;
+            for (int t = t0; t < t1; t++)
+            {
+                // A ragged last tile repeats its final row (the extra results are not stored).
+                int r0 = t * mr, valid = Math.Min(mr, n - r0), last = r0 + valid - 1;
+                ref byte x0 = ref Unsafe.Add(ref xb, (nint)r0 * xStride);
+                ref byte x1 = ref Unsafe.Add(ref xb, (nint)Math.Min(r0 + 1, last) * xStride);
+                ref byte x2 = ref Unsafe.Add(ref xb, (nint)Math.Min(r0 + 2, last) * xStride);
+                if (UseAvx512)
+                {
+                    ref byte x3 = ref Unsafe.Add(ref xb, (nint)Math.Min(r0 + 3, last) * xStride);
+                    ref byte x4 = ref Unsafe.Add(ref xb, (nint)Math.Min(r0 + 4, last) * xStride);
+                    ref byte x5 = ref Unsafe.Add(ref xb, (nint)Math.Min(r0 + 5, last) * xStride);
+                    if (wide)
+                    {
+                        PanelKernel6x32Wide(ref x0, ref x1, ref x2, ref x3, ref x4, ref x5, ref panel, w.Stride, ref acc);
+                        AddOutliers(w, xData, xStride, r0, valid, col0, 32, accSpan);
+                    }
+                    else
+                    {
+                        PanelKernel6x32(ref x0, ref x1, ref x2, ref x3, ref x4, ref x5, ref panel, w.Stride, ref acc);
+                    }
+                    for (int i = 0; i < valid; i++)
+                    {
+                        epi.Row(r0 + i, col0, ref Unsafe.Add(ref acc, i * 32), 32);
+                    }
+                }
+                else
+                {
+                    for (int half = 0; half < 2; half++)
+                    {
+                        ref sbyte wh = ref Unsafe.Add(ref panel, half * 64);
+                        if (wide)
+                        {
+                            PanelKernel3x16Wide(ref x0, ref x1, ref x2, ref wh, w.Stride, ref acc);
+                            AddOutliers(w, xData, xStride, r0, valid, col0 + half * 16, 16, accSpan);
+                        }
+                        else
+                        {
+                            PanelKernel3x16(ref x0, ref x1, ref x2, ref wh, w.Stride, ref acc);
+                        }
+                        for (int i = 0; i < valid; i++)
+                        {
+                            epi.Row(r0 + i, col0 + half * 16, ref Unsafe.Add(ref acc, i * 16), 16);
+                        }
+                    }
+                }
+            }
+        }
+        if (dop <= 1 || items == 1)
+        {
+            for (int it = 0; it < items; it++)
+            {
+                Item(it);
+            }
+        }
+        else
+        {
+            WorkerPool.For(items, dop, Item);
         }
     }
 
     /// <summary>6 activation rows × one 32-channel panel (AVX-512BW); <paramref name="acc"/> receives [6][32] int32
     /// sums of <c>xu · w</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void PanelKernel6x32(byte* x0, byte* x1, byte* x2, byte* x3, byte* x4, byte* x5, sbyte* wp, int k, int* acc)
+    private static void PanelKernel6x32(ref byte x0, ref byte x1, ref byte x2, ref byte x3, ref byte x4, ref byte x5, ref sbyte wp, int k, ref int acc)
     {
         Vector512<int> c00 = default, c01 = default, c10 = default, c11 = default, c20 = default, c21 = default;
         Vector512<int> c30 = default, c31 = default, c40 = default, c41 = default, c50 = default, c51 = default;
@@ -502,20 +494,20 @@ internal static class QGemm
             Vector512<short> s30 = default, s31 = default, s40 = default, s41 = default, s50 = default, s51 = default;
             for (int p = k0; p < k0 + 32; p += 4)
             {
-                var w0 = Avx512BW.LoadVector512(wp);
-                var w1 = Avx512BW.LoadVector512(wp + 64);
-                wp += 128;
-                var b = Vector512.Create(Unsafe.ReadUnaligned<int>(x0 + p)).AsByte();
+                var w0 = Vector512.LoadUnsafe(ref wp);
+                var w1 = Vector512.LoadUnsafe(ref wp, 64);
+                wp = ref Unsafe.Add(ref wp, 128);
+                var b = Broadcast512(ref x0, p);
                 s00 = Avx512BW.Add(s00, Avx512BW.MultiplyAddAdjacent(b, w0)); s01 = Avx512BW.Add(s01, Avx512BW.MultiplyAddAdjacent(b, w1));
-                b = Vector512.Create(Unsafe.ReadUnaligned<int>(x1 + p)).AsByte();
+                b = Broadcast512(ref x1, p);
                 s10 = Avx512BW.Add(s10, Avx512BW.MultiplyAddAdjacent(b, w0)); s11 = Avx512BW.Add(s11, Avx512BW.MultiplyAddAdjacent(b, w1));
-                b = Vector512.Create(Unsafe.ReadUnaligned<int>(x2 + p)).AsByte();
+                b = Broadcast512(ref x2, p);
                 s20 = Avx512BW.Add(s20, Avx512BW.MultiplyAddAdjacent(b, w0)); s21 = Avx512BW.Add(s21, Avx512BW.MultiplyAddAdjacent(b, w1));
-                b = Vector512.Create(Unsafe.ReadUnaligned<int>(x3 + p)).AsByte();
+                b = Broadcast512(ref x3, p);
                 s30 = Avx512BW.Add(s30, Avx512BW.MultiplyAddAdjacent(b, w0)); s31 = Avx512BW.Add(s31, Avx512BW.MultiplyAddAdjacent(b, w1));
-                b = Vector512.Create(Unsafe.ReadUnaligned<int>(x4 + p)).AsByte();
+                b = Broadcast512(ref x4, p);
                 s40 = Avx512BW.Add(s40, Avx512BW.MultiplyAddAdjacent(b, w0)); s41 = Avx512BW.Add(s41, Avx512BW.MultiplyAddAdjacent(b, w1));
-                b = Vector512.Create(Unsafe.ReadUnaligned<int>(x5 + p)).AsByte();
+                b = Broadcast512(ref x5, p);
                 s50 = Avx512BW.Add(s50, Avx512BW.MultiplyAddAdjacent(b, w0)); s51 = Avx512BW.Add(s51, Avx512BW.MultiplyAddAdjacent(b, w1));
             }
             c00 += Avx512BW.MultiplyAddAdjacent(s00, ones); c01 += Avx512BW.MultiplyAddAdjacent(s01, ones);
@@ -525,15 +517,23 @@ internal static class QGemm
             c40 += Avx512BW.MultiplyAddAdjacent(s40, ones); c41 += Avx512BW.MultiplyAddAdjacent(s41, ones);
             c50 += Avx512BW.MultiplyAddAdjacent(s50, ones); c51 += Avx512BW.MultiplyAddAdjacent(s51, ones);
         }
-        c00.Store(acc); c01.Store(acc + 16); c10.Store(acc + 32); c11.Store(acc + 48);
-        c20.Store(acc + 64); c21.Store(acc + 80); c30.Store(acc + 96); c31.Store(acc + 112);
-        c40.Store(acc + 128); c41.Store(acc + 144); c50.Store(acc + 160); c51.Store(acc + 176);
+        c00.StoreUnsafe(ref acc); c01.StoreUnsafe(ref acc, 16); c10.StoreUnsafe(ref acc, 32); c11.StoreUnsafe(ref acc, 48);
+        c20.StoreUnsafe(ref acc, 64); c21.StoreUnsafe(ref acc, 80); c30.StoreUnsafe(ref acc, 96); c31.StoreUnsafe(ref acc, 112);
+        c40.StoreUnsafe(ref acc, 128); c41.StoreUnsafe(ref acc, 144); c50.StoreUnsafe(ref acc, 160); c51.StoreUnsafe(ref acc, 176);
     }
+
+    /// <summary>The four activation bytes at <paramref name="x"/> + <paramref name="p"/> broadcast to every 32-bit lane.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector512<byte> Broadcast512(ref byte x, int p) => Vector512.Create(Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref x, p))).AsByte();
+
+    /// <inheritdoc cref="Broadcast512"/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<byte> Broadcast256(ref byte x, int p) => Vector256.Create(Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref x, p))).AsByte();
 
     /// <summary>3 activation rows × 16 channels (half a panel, starting at <paramref name="wp"/>) with AVX2;
     /// <paramref name="acc"/> receives [3][16] int32 sums.</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void PanelKernel3x16(byte* x0, byte* x1, byte* x2, sbyte* wp, int k, int* acc)
+    private static void PanelKernel3x16(ref byte x0, ref byte x1, ref byte x2, ref sbyte wp, int k, ref int acc)
     {
         Vector256<int> c00 = default, c01 = default, c10 = default, c11 = default, c20 = default, c21 = default;
         var ones = Vector256.Create((short)1);
@@ -542,27 +542,28 @@ internal static class QGemm
             Vector256<short> s00 = default, s01 = default, s10 = default, s11 = default, s20 = default, s21 = default;
             for (int p = k0; p < k0 + 32; p += 4)
             {
-                var w0 = Avx.LoadVector256(wp);
-                var w1 = Avx.LoadVector256(wp + 32);
-                wp += 128;
-                var b = Vector256.Create(Unsafe.ReadUnaligned<int>(x0 + p)).AsByte();
+                var w0 = Vector256.LoadUnsafe(ref wp);
+                var w1 = Vector256.LoadUnsafe(ref wp, 32);
+                wp = ref Unsafe.Add(ref wp, 128);
+                var b = Broadcast256(ref x0, p);
                 s00 = Avx2.Add(s00, Avx2.MultiplyAddAdjacent(b, w0)); s01 = Avx2.Add(s01, Avx2.MultiplyAddAdjacent(b, w1));
-                b = Vector256.Create(Unsafe.ReadUnaligned<int>(x1 + p)).AsByte();
+                b = Broadcast256(ref x1, p);
                 s10 = Avx2.Add(s10, Avx2.MultiplyAddAdjacent(b, w0)); s11 = Avx2.Add(s11, Avx2.MultiplyAddAdjacent(b, w1));
-                b = Vector256.Create(Unsafe.ReadUnaligned<int>(x2 + p)).AsByte();
+                b = Broadcast256(ref x2, p);
                 s20 = Avx2.Add(s20, Avx2.MultiplyAddAdjacent(b, w0)); s21 = Avx2.Add(s21, Avx2.MultiplyAddAdjacent(b, w1));
             }
             c00 += Avx2.MultiplyAddAdjacent(s00, ones); c01 += Avx2.MultiplyAddAdjacent(s01, ones);
             c10 += Avx2.MultiplyAddAdjacent(s10, ones); c11 += Avx2.MultiplyAddAdjacent(s11, ones);
             c20 += Avx2.MultiplyAddAdjacent(s20, ones); c21 += Avx2.MultiplyAddAdjacent(s21, ones);
         }
-        c00.Store(acc); c01.Store(acc + 8); c10.Store(acc + 16); c11.Store(acc + 24); c20.Store(acc + 32); c21.Store(acc + 40);
+        c00.StoreUnsafe(ref acc); c01.StoreUnsafe(ref acc, 8); c10.StoreUnsafe(ref acc, 16); c11.StoreUnsafe(ref acc, 24);
+        c20.StoreUnsafe(ref acc, 32); c21.StoreUnsafe(ref acc, 40);
     }
 
     /// <summary>Adds the sparse residuals of 8-bit weights (beyond the ±64 dense part) for <paramref name="rows"/>
     /// activation rows from <paramref name="r0"/> and channels <paramref name="col0"/>.. (+<paramref name="count"/>);
     /// <paramref name="acc"/> is [rows][count] - exact integer arithmetic.</summary>
-    private static unsafe void AddOutliers(QuantizedMatrix w, byte* x, int ldx, int r0, int rows, int col0, int count, int* acc)
+    private static void AddOutliers(QuantizedMatrix w, ReadOnlySpan<byte> x, int ldx, int r0, int rows, int col0, int count, Span<int> acc)
     {
         var start = w.OutlierStart;
         var ks = w.OutlierK;
@@ -575,7 +576,7 @@ internal static class QGemm
                 int k = ks[j], v = vs[j];
                 for (int i = 0; i < rows; i++)
                 {
-                    acc[i * count + c] += x[(long)(r0 + i) * ldx + k] * v;
+                    acc[i * count + c] += x[(r0 + i) * ldx + k] * v;
                 }
             }
         }
@@ -584,314 +585,303 @@ internal static class QGemm
     /// <summary><see cref="PanelKernel6x32"/> for 8-bit weights clamped to ±64: pair sums reach 255·64·2 = 32640, so
     /// every step widens to int32 right away.</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void PanelKernel6x32Wide(byte* x0, byte* x1, byte* x2, byte* x3, byte* x4, byte* x5, sbyte* wp, int k, int* acc)
+    private static void PanelKernel6x32Wide(ref byte x0, ref byte x1, ref byte x2, ref byte x3, ref byte x4, ref byte x5, ref sbyte wp, int k, ref int acc)
     {
         Vector512<int> c00 = default, c01 = default, c10 = default, c11 = default, c20 = default, c21 = default;
         Vector512<int> c30 = default, c31 = default, c40 = default, c41 = default, c50 = default, c51 = default;
         var ones = Vector512.Create((short)1);
         for (int p = 0; p < k; p += 4)
         {
-            var w0 = Avx512BW.LoadVector512(wp);
-            var w1 = Avx512BW.LoadVector512(wp + 64);
-            wp += 128;
-            var b = Vector512.Create(Unsafe.ReadUnaligned<int>(x0 + p)).AsByte();
+            var w0 = Vector512.LoadUnsafe(ref wp);
+            var w1 = Vector512.LoadUnsafe(ref wp, 64);
+            wp = ref Unsafe.Add(ref wp, 128);
+            var b = Broadcast512(ref x0, p);
             c00 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c01 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
-            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x1 + p)).AsByte();
+            b = Broadcast512(ref x1, p);
             c10 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c11 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
-            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x2 + p)).AsByte();
+            b = Broadcast512(ref x2, p);
             c20 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c21 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
-            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x3 + p)).AsByte();
+            b = Broadcast512(ref x3, p);
             c30 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c31 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
-            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x4 + p)).AsByte();
+            b = Broadcast512(ref x4, p);
             c40 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c41 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
-            b = Vector512.Create(Unsafe.ReadUnaligned<int>(x5 + p)).AsByte();
+            b = Broadcast512(ref x5, p);
             c50 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w0), ones); c51 += Avx512BW.MultiplyAddAdjacent(Avx512BW.MultiplyAddAdjacent(b, w1), ones);
         }
-        c00.Store(acc); c01.Store(acc + 16); c10.Store(acc + 32); c11.Store(acc + 48);
-        c20.Store(acc + 64); c21.Store(acc + 80); c30.Store(acc + 96); c31.Store(acc + 112);
-        c40.Store(acc + 128); c41.Store(acc + 144); c50.Store(acc + 160); c51.Store(acc + 176);
+        c00.StoreUnsafe(ref acc); c01.StoreUnsafe(ref acc, 16); c10.StoreUnsafe(ref acc, 32); c11.StoreUnsafe(ref acc, 48);
+        c20.StoreUnsafe(ref acc, 64); c21.StoreUnsafe(ref acc, 80); c30.StoreUnsafe(ref acc, 96); c31.StoreUnsafe(ref acc, 112);
+        c40.StoreUnsafe(ref acc, 128); c41.StoreUnsafe(ref acc, 144); c50.StoreUnsafe(ref acc, 160); c51.StoreUnsafe(ref acc, 176);
     }
 
     /// <summary><see cref="PanelKernel3x16"/> for 8-bit weights clamped to ±64 (widening every step).</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void PanelKernel3x16Wide(byte* x0, byte* x1, byte* x2, sbyte* wp, int k, int* acc)
+    private static void PanelKernel3x16Wide(ref byte x0, ref byte x1, ref byte x2, ref sbyte wp, int k, ref int acc)
     {
         Vector256<int> c00 = default, c01 = default, c10 = default, c11 = default, c20 = default, c21 = default;
         var ones = Vector256.Create((short)1);
         for (int p = 0; p < k; p += 4)
         {
-            var w0 = Avx.LoadVector256(wp);
-            var w1 = Avx.LoadVector256(wp + 32);
-            wp += 128;
-            var b = Vector256.Create(Unsafe.ReadUnaligned<int>(x0 + p)).AsByte();
+            var w0 = Vector256.LoadUnsafe(ref wp);
+            var w1 = Vector256.LoadUnsafe(ref wp, 32);
+            wp = ref Unsafe.Add(ref wp, 128);
+            var b = Broadcast256(ref x0, p);
             c00 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w0), ones); c01 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w1), ones);
-            b = Vector256.Create(Unsafe.ReadUnaligned<int>(x1 + p)).AsByte();
+            b = Broadcast256(ref x1, p);
             c10 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w0), ones); c11 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w1), ones);
-            b = Vector256.Create(Unsafe.ReadUnaligned<int>(x2 + p)).AsByte();
+            b = Broadcast256(ref x2, p);
             c20 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w0), ones); c21 += Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(b, w1), ones);
         }
-        c00.Store(acc); c01.Store(acc + 8); c10.Store(acc + 16); c11.Store(acc + 24); c20.Store(acc + 32); c21.Store(acc + 40);
+        c00.StoreUnsafe(ref acc); c01.StoreUnsafe(ref acc, 8); c10.StoreUnsafe(ref acc, 16); c11.StoreUnsafe(ref acc, 24);
+        c20.StoreUnsafe(ref acc, 32); c21.StoreUnsafe(ref acc, 40);
     }
 
     /// <summary>
-    /// The panel kernels' epilogue with every array pinned once per GEMM: the arithmetic of <see cref="Store"/>, lane
-    /// for lane (16, 4 or 1 channels at a time), so the results are identical.
+    /// The panel kernels' epilogue: the arithmetic of <see cref="Store"/>, lane for lane (16, 4 or 1 channels at a
+    /// time), so the results are identical. The arrays are checked against the GEMM's dimensions when the GEMM
+    /// starts, and indexed through refs here.
     /// </summary>
-    private unsafe struct Epilogue
+    private readonly struct Epilogue
     {
-        public int* RowSum;
-        public float* WScale, Bias, RqScale;
-        public float RqOut;
-        public int* XZero;
-        public float* XScale;
-        public float* Y;
-        public int Ldy, Channels;
+        private readonly int[] _rowSum, _xZero;
+        private readonly float[] _wScale, _bias, _rqScale, _xScale, _y;
+        private readonly float _rqOut;
+        private readonly int _ldy, _channels;
         /// <summary>Store <c>gelu(y) · value</c> over the existing contents of Y (GeGLU) instead of the value.</summary>
-        public bool GeluGate;
+        private readonly bool _geluGate;
+
+        public Epilogue(QuantizedMatrix w, QuantizedActivations x, Requantization rq, float[] y, int ldy, bool geluGate)
+        {
+            _rowSum = w.RowSum;
+            _wScale = w.Scale;
+            _bias = w.Bias;
+            _rqScale = rq?.Scale;
+            _rqOut = rq?.OutputScale ?? 0f;
+            _xZero = x.ZeroPoint;
+            _xScale = x.Scale;
+            _y = y;
+            _ldy = ldy;
+            _channels = w.Rows;
+            _geluGate = geluGate;
+            if (_rowSum.Length < _channels || _wScale.Length < _channels || (_bias is not null && _bias.Length < _channels)
+                || (_rqScale is not null && _rqScale.Length < _channels) || _xZero.Length < x.Rows || _xScale.Length < x.Rows)
+            {
+                throw new ArgumentException("Quantization parameters do not match the matrix dimensions.");
+            }
+        }
 
         /// <summary><paramref name="count"/> consecutive channels of activation row <paramref name="row"/> from
-        /// <paramref name="col0"/>; channels at or past <see cref="Channels"/> are padding.</summary>
+        /// <paramref name="col0"/>; channels at or past the matrix's row count are padding.</summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        public readonly void Row(int row, int col0, int* acc, int count)
+        public void Row(int row, int col0, ref int acc, int count)
         {
-            int n = Math.Min(count, Channels - col0);
-            int zx = 128 + XZero[row];
-            float xs = XScale[row];
-            float* dst = Y + (long)row * Ldy + col0;
-            int* rs = RowSum + col0;
+            int n = Math.Min(count, _channels - col0);
+            int zx = 128 + _xZero[row];
+            float xs = _xScale[row];
+            ref float dst = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(_y), (nint)row * _ldy + col0);
+            ref int rs = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(_rowSum), col0);
+            ref float ws = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(_wScale), col0);
+            bool requant = _rqScale is not null, hasBias = _bias is not null;
+            ref float rqs = ref requant ? ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(_rqScale), col0) : ref Unsafe.NullRef<float>();
+            ref float bias = ref hasBias ? ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(_bias), col0) : ref Unsafe.NullRef<float>();
             int c = 0;
             if (Simd.Use512)
             {
                 for (; c + 16 <= n; c += 16)
                 {
-                    var corr = Vector512.Load(acc + c) - Vector512.Create(zx) * Vector512.Load(rs + c);
-                    if (RqScale != null)
+                    var corr = Vector512.LoadUnsafe(ref acc, (nuint)c) - Vector512.Create(zx) * Vector512.LoadUnsafe(ref rs, (nuint)c);
+                    if (requant)
                     {
-                        var v = Vector512.Round(Vector512.ConvertToSingle(corr) * Vector512.Load(RqScale + col0 + c));
+                        var v = Vector512.Round(Vector512.ConvertToSingle(corr) * Vector512.LoadUnsafe(ref rqs, (nuint)c));
                         var r = Vector512.ConvertToInt32(Vector512.Min(Vector512.Max(v, Vector512.Create(-128f)), Vector512.Create(127f)));
-                        (Vector512.ConvertToSingle(r) * Vector512.Create(RqOut)).Store(dst + c);
+                        (Vector512.ConvertToSingle(r) * Vector512.Create(_rqOut)).StoreUnsafe(ref dst, (nuint)c);
                     }
                     else
                     {
-                        var v = Vector512.ConvertToSingle(corr) * Vector512.Create(xs) * Vector512.Load(WScale + col0 + c);
-                        if (Bias != null)
+                        var v = Vector512.ConvertToSingle(corr) * Vector512.Create(xs) * Vector512.LoadUnsafe(ref ws, (nuint)c);
+                        if (hasBias)
                         {
-                            v += Vector512.Load(Bias + col0 + c);
+                            v += Vector512.LoadUnsafe(ref bias, (nuint)c);
                         }
-                        if (GeluGate)
+                        if (_geluGate)
                         {
-                            v = Xnn.Gelu512(Vector512.Load(dst + c)) * v;
+                            v = Xnn.Gelu512(Vector512.LoadUnsafe(ref dst, (nuint)c)) * v;
                         }
-                        v.Store(dst + c);
+                        v.StoreUnsafe(ref dst, (nuint)c);
                     }
                 }
             }
             for (; c + 4 <= n; c += 4)
             {
-                var corr = Vector128.Load(acc + c) - Vector128.Create(zx) * Vector128.Load(rs + c);
-                if (RqScale != null)
+                var corr = Vector128.LoadUnsafe(ref acc, (nuint)c) - Vector128.Create(zx) * Vector128.LoadUnsafe(ref rs, (nuint)c);
+                if (requant)
                 {
-                    var v = Vector128.Round(Vector128.ConvertToSingle(corr) * Vector128.Load(RqScale + col0 + c));
+                    var v = Vector128.Round(Vector128.ConvertToSingle(corr) * Vector128.LoadUnsafe(ref rqs, (nuint)c));
                     var r = Vector128.ConvertToInt32(Vector128.Min(Vector128.Max(v, Vector128.Create(-128f)), Vector128.Create(127f)));
-                    (Vector128.ConvertToSingle(r) * Vector128.Create(RqOut)).Store(dst + c);
+                    (Vector128.ConvertToSingle(r) * Vector128.Create(_rqOut)).StoreUnsafe(ref dst, (nuint)c);
                 }
                 else
                 {
-                    var v = Vector128.ConvertToSingle(corr) * Vector128.Create(xs) * Vector128.Load(WScale + col0 + c);
-                    if (Bias != null)
+                    var v = Vector128.ConvertToSingle(corr) * Vector128.Create(xs) * Vector128.LoadUnsafe(ref ws, (nuint)c);
+                    if (hasBias)
                     {
-                        v += Vector128.Load(Bias + col0 + c);
+                        v += Vector128.LoadUnsafe(ref bias, (nuint)c);
                     }
-                    if (GeluGate)
+                    if (_geluGate)
                     {
-                        v = Xnn.Gelu(Vector128.Load(dst + c)) * v;
+                        v = Xnn.Gelu(Vector128.LoadUnsafe(ref dst, (nuint)c)) * v;
                     }
-                    v.Store(dst + c);
+                    v.StoreUnsafe(ref dst, (nuint)c);
                 }
             }
             for (; c < n; c++)
             {
-                int corr = acc[c] - zx * rs[c];
-                if (RqScale != null)
+                int corr = Unsafe.Add(ref acc, c) - zx * Unsafe.Add(ref rs, c);
+                ref float d = ref Unsafe.Add(ref dst, c);
+                if (requant)
                 {
-                    int r = (int)Math.Clamp(MathF.Round((float)corr * RqScale[col0 + c], MidpointRounding.ToEven), -128f, 127f);
-                    dst[c] = r * RqOut;
+                    int r = (int)Math.Clamp(MathF.Round((float)corr * Unsafe.Add(ref rqs, c), MidpointRounding.ToEven), -128f, 127f);
+                    d = r * _rqOut;
                 }
                 else
                 {
-                    float v = (float)corr * xs * WScale[col0 + c];
-                    if (Bias != null)
+                    float v = (float)corr * xs * Unsafe.Add(ref ws, c);
+                    if (hasBias)
                     {
-                        v += Bias[col0 + c];
+                        v += Unsafe.Add(ref bias, c);
                     }
-                    if (GeluGate)
+                    if (_geluGate)
                     {
-                        v = Xnn.Gelu(Vector128.CreateScalar(dst[c])).ToScalar() * v;
+                        v = Xnn.Gelu(Vector128.CreateScalar(d)).ToScalar() * v;
                     }
-                    dst[c] = v;
+                    d = v;
                 }
             }
         }
     }
 
-    [ThreadStatic]
-    private static sbyte[] _unpacked;
-
-    /// <summary>This thread's 64-byte aligned scratch for unpacked weight rows (pinned, so the address is stable).</summary>
-    private static unsafe sbyte* UnpackScratch(int bytes)
+    private static void RunBlock(QuantizedActivations x, QuantizedMatrix w, sbyte[] weights, float[] y, int ldy, int nb, int mb, Requantization rq)
     {
-        var a = _unpacked;
-        if (a is null || a.Length < bytes + 64)
-        {
-            _unpacked = a = GC.AllocateUninitializedArray<sbyte>(bytes + 64, pinned: true);
-        }
-        nint p = (nint)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(a));
-        return (sbyte*)((p + 63) & ~(nint)63);
+        int m0 = mb * BlockM, m1 = Math.Min(w.Rows, m0 + BlockM);
+        RunRange(x, w, weights.AsSpan(m0 * w.Stride, (m1 - m0) * w.Stride), y, ldy, nb * BlockN, Math.Min(x.Rows, nb * BlockN + BlockN), m0, m1, rq);
     }
 
-    private static unsafe void RunBlock(QuantizedActivations x, QuantizedMatrix w, sbyte* wBase, float* y, int ldy, int nb, int mb, Requantization rq)
-        => RunRange(x, w, wBase, y, ldy, nb * BlockN, Math.Min(x.Rows, nb * BlockN + BlockN), mb * BlockM, Math.Min(w.Rows, mb * BlockM + BlockM), rq);
-
-    /// <summary>Activation rows <c>n0..n1</c> × weight rows <c>m0..m1</c> (weight row j at <c>wBase + j·Stride</c>).</summary>
-    private static unsafe void RunRange(QuantizedActivations x, QuantizedMatrix w, sbyte* wBase, float* y, int ldy, int n0, int n1, int m0, int m1, Requantization rq)
+    /// <summary>Activation rows <c>n0..n1</c> × weight rows <c>m0..m1</c>; <paramref name="weights"/> holds rows
+    /// <c>m0..m1</c> as bytes (row stride <see cref="QuantizedMatrix.Stride"/>).</summary>
+    private static void RunRange(QuantizedActivations x, QuantizedMatrix w, ReadOnlySpan<sbyte> weights, float[] y, int ldy, int n0, int n1, int m0, int m1, Requantization rq)
     {
         int k = w.Stride;
+        nint ldx = x.Stride;
         bool small = w.SmallRange;
-        int* acc = stackalloc int[TileN * TileM];
-        fixed (byte* xBase = x.Data)
+        if (weights.Length < (m1 - m0) * k || x.Data.Length < n1 * ldx || x.Stride < k)
         {
-            int i = n0;
-            if (UseAvx512)
+            throw new ArgumentException("Weight or activation buffer is too small.");
+        }
+        ref sbyte wBase = ref MemoryMarshal.GetReference(weights);   // row m0
+        ref byte xBase = ref MemoryMarshal.GetArrayDataReference(x.Data);
+        ref float yr = ref MemoryMarshal.GetArrayDataReference(y);
+        Span<int> accSpan = stackalloc int[16];
+        ref int acc = ref MemoryMarshal.GetReference(accSpan);
+        int i = n0;
+        if (UseAvx512)
+        {
+            // 4-row tiles; a ragged last tile repeats its final row and only stores the valid ones.
+            for (; i < n1; i += 4)
             {
-                // 4-row tiles; a ragged last tile repeats its final row and only stores the valid ones.
-                int* acc16 = stackalloc int[16];
-                for (; i < n1; i += 4)
-                {
-                    int valid = Math.Min(4, n1 - i);
-                    byte* x0 = xBase + (long)i * x.Stride;
-                    byte* x1 = xBase + (long)(i + Math.Min(1, valid - 1)) * x.Stride;
-                    byte* x2 = xBase + (long)(i + Math.Min(2, valid - 1)) * x.Stride;
-                    byte* x3 = xBase + (long)(i + Math.Min(3, valid - 1)) * x.Stride;
-                    int j = m0;
-                    for (; j + 4 <= m1; j += 4)
-                    {
-                        sbyte* w0 = wBase + (long)j * k;
-                        Dot4x4Avx512(x0, x1, x2, x3, w0, k, small, acc16);
-                        if (valid == 4)
-                        {
-                            Store4x4(x, w, y, ldy, i, j, acc16, rq);
-                        }
-                        else
-                        {
-                            for (int a = 0; a < valid; a++)
-                            {
-                                Store1x4(x, w, y, ldy, i + a, j, Vector128.Load(acc16 + 4 * a), rq);
-                            }
-                        }
-                    }
-                    for (; j < m1; j++)
-                    {
-                        sbyte* wr = wBase + (long)j * k;
-                        for (int a = 0; a < valid; a++)
-                        {
-                            Store(x, w, y, ldy, i + a, j, Dot1x1(xBase + (long)(i + a) * x.Stride, wr, k, small), rq);
-                        }
-                    }
-                }
-                return;
-            }
-            for (; i + TileN <= n1; i += TileN)
-            {
-                byte* x0 = xBase + (long)i * x.Stride;
-                byte* x1 = x0 + x.Stride;
+                int valid = Math.Min(4, n1 - i);
+                ref byte x0 = ref Unsafe.Add(ref xBase, i * ldx);
+                ref byte x1 = ref Unsafe.Add(ref xBase, (i + Math.Min(1, valid - 1)) * ldx);
+                ref byte x2 = ref Unsafe.Add(ref xBase, (i + Math.Min(2, valid - 1)) * ldx);
+                ref byte x3 = ref Unsafe.Add(ref xBase, (i + Math.Min(3, valid - 1)) * ldx);
                 int j = m0;
-                for (; j + TileM <= m1; j += TileM)
+                for (; j + 4 <= m1; j += 4)
                 {
-                    sbyte* w0 = wBase + (long)j * k;
-                    Dot2x4(x0, x1, w0, w0 + k, w0 + 2 * k, w0 + 3 * k, k, small, acc);
-                    Store1x4(x, w, y, ldy, i, j, Vector128.Load(acc), rq);
-                    Store1x4(x, w, y, ldy, i + 1, j, Vector128.Load(acc + TileM), rq);
+                    Dot4x4Avx512(ref x0, ref x1, ref x2, ref x3, ref Unsafe.Add(ref wBase, (nint)(j - m0) * k), k, small, ref acc);
+                    for (int a = 0; a < valid; a++)
+                    {
+                        Store1x4(x, w, ref yr, ldy, i + a, j, Vector128.LoadUnsafe(ref acc, (nuint)(4 * a)), rq);
+                    }
                 }
                 for (; j < m1; j++)
                 {
-                    sbyte* wr = wBase + (long)j * k;
-                    Store(x, w, y, ldy, i, j, Dot1x1(x0, wr, k, small), rq);
-                    Store(x, w, y, ldy, i + 1, j, Dot1x1(x1, wr, k, small), rq);
+                    ref sbyte wr = ref Unsafe.Add(ref wBase, (nint)(j - m0) * k);
+                    for (int a = 0; a < valid; a++)
+                    {
+                        Store(x, w, ref yr, ldy, i + a, j, Dot1x1(ref Unsafe.Add(ref xBase, (i + a) * ldx), ref wr, k, small), rq);
+                    }
                 }
             }
-            for (; i < n1; i++)
+            return;
+        }
+        for (; i + TileN <= n1; i += TileN)
+        {
+            ref byte x0 = ref Unsafe.Add(ref xBase, i * ldx);
+            ref byte x1 = ref Unsafe.Add(ref x0, ldx);
+            int j = m0;
+            for (; j + TileM <= m1; j += TileM)
             {
-                byte* xr = xBase + (long)i * x.Stride;
-                int j = m0;
-                for (; j + TileM <= m1; j += TileM)
-                {
-                    sbyte* w0 = wBase + (long)j * k;
-                    // Reuse the 2x4 kernel with the same row twice: still 4 outputs per pass.
-                    Dot2x4(xr, xr, w0, w0 + k, w0 + 2 * k, w0 + 3 * k, k, small, acc);
-                    Store1x4(x, w, y, ldy, i, j, Vector128.Load(acc), rq);
-                }
-                for (; j < m1; j++)
-                {
-                    Store(x, w, y, ldy, i, j, Dot1x1(xr, wBase + (long)j * k, k, small), rq);
-                }
+                ref sbyte w0 = ref Unsafe.Add(ref wBase, (nint)(j - m0) * k);
+                Dot2x4(ref x0, ref x1, ref w0, ref Unsafe.Add(ref w0, k), ref Unsafe.Add(ref w0, 2 * k), ref Unsafe.Add(ref w0, 3 * k), k, small, ref acc);
+                Store1x4(x, w, ref yr, ldy, i, j, Vector128.LoadUnsafe(ref acc), rq);
+                Store1x4(x, w, ref yr, ldy, i + 1, j, Vector128.LoadUnsafe(ref acc, TileM), rq);
+            }
+            for (; j < m1; j++)
+            {
+                ref sbyte wr = ref Unsafe.Add(ref wBase, (nint)(j - m0) * k);
+                Store(x, w, ref yr, ldy, i, j, Dot1x1(ref x0, ref wr, k, small), rq);
+                Store(x, w, ref yr, ldy, i + 1, j, Dot1x1(ref x1, ref wr, k, small), rq);
             }
         }
-    }
-
-    /// <summary>Vectorized epilogue for a 4×4 tile (same arithmetic order as <see cref="Store"/>).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void Store4x4(QuantizedActivations x, QuantizedMatrix w, float* y, int ldy, int row, int col, int* acc, Requantization rq)
-    {
-        for (int a = 0; a < 4; a++)
+        for (; i < n1; i++)
         {
-            Store1x4(x, w, y, ldy, row + a, col, Vector128.Load(acc + 4 * a), rq);
+            ref byte xr = ref Unsafe.Add(ref xBase, i * ldx);
+            int j = m0;
+            for (; j + TileM <= m1; j += TileM)
+            {
+                ref sbyte w0 = ref Unsafe.Add(ref wBase, (nint)(j - m0) * k);
+                // Reuse the 2x4 kernel with the same row twice: still 4 outputs per pass.
+                Dot2x4(ref xr, ref xr, ref w0, ref Unsafe.Add(ref w0, k), ref Unsafe.Add(ref w0, 2 * k), ref Unsafe.Add(ref w0, 3 * k), k, small, ref acc);
+                Store1x4(x, w, ref yr, ldy, i, j, Vector128.LoadUnsafe(ref acc), rq);
+            }
+            for (; j < m1; j++)
+            {
+                Store(x, w, ref yr, ldy, i, j, Dot1x1(ref xr, ref Unsafe.Add(ref wBase, (nint)(j - m0) * k), k, small), rq);
+            }
         }
     }
 
     /// <summary>Epilogue for one row × 4 consecutive columns: the arithmetic of <see cref="Store"/>, lane-wise
     /// (round half to even, clamp and the integer round trip are all exact per lane, so the bits are the same).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void Store1x4(QuantizedActivations x, QuantizedMatrix w, float* y, int ldy, int row, int col, Vector128<int> acc, Requantization rq)
+    private static void Store1x4(QuantizedActivations x, QuantizedMatrix w, ref float y, int ldy, int row, int col, Vector128<int> acc, Requantization rq)
     {
-        fixed (int* rsp = w.RowSum)
+        var corr = acc - Vector128.Create(128 + x.ZeroPoint[row]) * Vector128.Create<int>(w.RowSum.AsSpan(col, 4));
+        ref float dst = ref Unsafe.Add(ref y, (nint)row * ldy + col);
+        if (rq is not null)
         {
-            var corr = acc - Vector128.Create(128 + x.ZeroPoint[row]) * Vector128.Load(rsp + col);
-            float* dst = y + (long)row * ldy + col;
-            if (rq is not null)
-            {
-                fixed (float* sp = rq.Scale)
-                {
-                    var v = Vector128.Round(Vector128.ConvertToSingle(corr) * Vector128.Load(sp + col));
-                    var r = Vector128.ConvertToInt32(Vector128.Min(Vector128.Max(v, Vector128.Create(-128f)), Vector128.Create(127f)));
-                    (Vector128.ConvertToSingle(r) * Vector128.Create(rq.OutputScale)).Store(dst);
-                }
-                return;
-            }
-            fixed (float* swp = w.Scale)
-            {
-                var v = Vector128.ConvertToSingle(corr) * Vector128.Create(x.Scale[row]) * Vector128.Load(swp + col);
-                if (w.Bias is not null)
-                {
-                    fixed (float* bp = w.Bias)
-                    {
-                        v += Vector128.Load(bp + col);
-                    }
-                }
-                v.Store(dst);
-            }
+            var v = Vector128.Round(Vector128.ConvertToSingle(corr) * Vector128.Create<float>(rq.Scale.AsSpan(col, 4)));
+            var r = Vector128.ConvertToInt32(Vector128.Min(Vector128.Max(v, Vector128.Create(-128f)), Vector128.Create(127f)));
+            (Vector128.ConvertToSingle(r) * Vector128.Create(rq.OutputScale)).StoreUnsafe(ref dst);
+            return;
         }
+        var s = Vector128.ConvertToSingle(corr) * Vector128.Create(x.Scale[row]) * Vector128.Create<float>(w.Scale.AsSpan(col, 4));
+        if (w.Bias is not null)
+        {
+            s += Vector128.Create<float>(w.Bias.AsSpan(col, 4));
+        }
+        s.StoreUnsafe(ref dst);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void Store(QuantizedActivations x, QuantizedMatrix w, float* y, int ldy, int row, int col, int acc, Requantization rq)
+    private static void Store(QuantizedActivations x, QuantizedMatrix w, ref float y, int ldy, int row, int col, int acc, Requantization rq)
     {
         // Σ (q - zx)·w = Σ xu·w − (128 + zx)·Σ w, exact in int32.
         int corrected = acc - (128 + x.ZeroPoint[row]) * w.RowSum[col];
+        ref float dst = ref Unsafe.Add(ref y, (nint)row * ldy + col);
         if (rq is not null)
         {
             // Through an integer like the int8 output tensor, so a zero result dequantizes to +0 (never -0).
             int r = (int)Math.Clamp(MathF.Round((float)corrected * rq.Scale[col], MidpointRounding.ToEven), -128f, 127f);
-            y[(long)row * ldy + col] = r * rq.OutputScale;
+            dst = r * rq.OutputScale;
             return;
         }
         float v = (float)corrected * x.Scale[row] * w.Scale[col];
@@ -899,34 +889,34 @@ internal static class QGemm
         {
             v += w.Bias[col];
         }
-        y[(long)row * ldy + col] = v;
+        dst = v;
     }
 
     /// <summary>2 activation rows × 4 weight rows of unsigned·signed byte dot products (k multiple of 64).</summary>
-    private static unsafe void Dot2x4(byte* x0, byte* x1, sbyte* w0, sbyte* w1, sbyte* w2, sbyte* w3, int k, bool small, int* acc)
+    private static void Dot2x4(ref byte x0, ref byte x1, ref sbyte w0, ref sbyte w1, ref sbyte w2, ref sbyte w3, int k, bool small, ref int acc)
     {
         if (UseVnni)
         {
             Vector256<int> a00 = default, a01 = default, a02 = default, a03 = default;
             Vector256<int> a10 = default, a11 = default, a12 = default, a13 = default;
-            for (int p = 0; p < k; p += 32)
+            for (nuint p = 0; p < (nuint)k; p += 32)
             {
-                var u0 = Avx.LoadVector256(x0 + p);
-                var u1 = Avx.LoadVector256(x1 + p);
-                var b = Avx.LoadVector256(w0 + p);
+                var u0 = Vector256.LoadUnsafe(ref x0, p);
+                var u1 = Vector256.LoadUnsafe(ref x1, p);
+                var b = Vector256.LoadUnsafe(ref w0, p);
                 a00 = AvxVnni.MultiplyWideningAndAdd(a00, u0, b);
                 a10 = AvxVnni.MultiplyWideningAndAdd(a10, u1, b);
-                b = Avx.LoadVector256(w1 + p);
+                b = Vector256.LoadUnsafe(ref w1, p);
                 a01 = AvxVnni.MultiplyWideningAndAdd(a01, u0, b);
                 a11 = AvxVnni.MultiplyWideningAndAdd(a11, u1, b);
-                b = Avx.LoadVector256(w2 + p);
+                b = Vector256.LoadUnsafe(ref w2, p);
                 a02 = AvxVnni.MultiplyWideningAndAdd(a02, u0, b);
                 a12 = AvxVnni.MultiplyWideningAndAdd(a12, u1, b);
-                b = Avx.LoadVector256(w3 + p);
+                b = Vector256.LoadUnsafe(ref w3, p);
                 a03 = AvxVnni.MultiplyWideningAndAdd(a03, u0, b);
                 a13 = AvxVnni.MultiplyWideningAndAdd(a13, u1, b);
             }
-            Reduce8(a00, a01, a02, a03, a10, a11, a12, a13, acc);
+            Reduce8(a00, a01, a02, a03, a10, a11, a12, a13, ref acc);
             return;
         }
         if (UseAvx2 && small)
@@ -935,24 +925,24 @@ internal static class QGemm
             var ones = Vector256.Create((short)1);
             Vector256<int> a00 = default, a01 = default, a02 = default, a03 = default;
             Vector256<int> a10 = default, a11 = default, a12 = default, a13 = default;
-            for (int p = 0; p < k; p += 32)
+            for (nuint p = 0; p < (nuint)k; p += 32)
             {
-                var u0 = Avx.LoadVector256(x0 + p);
-                var u1 = Avx.LoadVector256(x1 + p);
-                var b = Avx.LoadVector256(w0 + p);
+                var u0 = Vector256.LoadUnsafe(ref x0, p);
+                var u1 = Vector256.LoadUnsafe(ref x1, p);
+                var b = Vector256.LoadUnsafe(ref w0, p);
                 a00 = Avx2.Add(a00, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(u0, b), ones));
                 a10 = Avx2.Add(a10, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(u1, b), ones));
-                b = Avx.LoadVector256(w1 + p);
+                b = Vector256.LoadUnsafe(ref w1, p);
                 a01 = Avx2.Add(a01, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(u0, b), ones));
                 a11 = Avx2.Add(a11, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(u1, b), ones));
-                b = Avx.LoadVector256(w2 + p);
+                b = Vector256.LoadUnsafe(ref w2, p);
                 a02 = Avx2.Add(a02, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(u0, b), ones));
                 a12 = Avx2.Add(a12, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(u1, b), ones));
-                b = Avx.LoadVector256(w3 + p);
+                b = Vector256.LoadUnsafe(ref w3, p);
                 a03 = Avx2.Add(a03, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(u0, b), ones));
                 a13 = Avx2.Add(a13, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(u1, b), ones));
             }
-            Reduce8(a00, a01, a02, a03, a10, a11, a12, a13, acc);
+            Reduce8(a00, a01, a02, a03, a10, a11, a12, a13, ref acc);
             return;
         }
         if (UseAvx2)
@@ -960,83 +950,83 @@ internal static class QGemm
             // Full int8 weights: widen both operands to int16 and use pmaddwd (exact, no saturation).
             Vector256<int> a00 = default, a01 = default, a02 = default, a03 = default;
             Vector256<int> a10 = default, a11 = default, a12 = default, a13 = default;
-            for (int p = 0; p < k; p += 16)
+            for (nuint p = 0; p < (nuint)k; p += 16)
             {
-                var u0 = Avx2.ConvertToVector256Int16(Sse2.LoadVector128(x0 + p));
-                var u1 = Avx2.ConvertToVector256Int16(Sse2.LoadVector128(x1 + p));
-                var b = Avx2.ConvertToVector256Int16(Sse2.LoadVector128(w0 + p));
+                var u0 = Avx2.ConvertToVector256Int16(Vector128.LoadUnsafe(ref x0, p));
+                var u1 = Avx2.ConvertToVector256Int16(Vector128.LoadUnsafe(ref x1, p));
+                var b = Avx2.ConvertToVector256Int16(Vector128.LoadUnsafe(ref w0, p));
                 a00 = Avx2.Add(a00, Avx2.MultiplyAddAdjacent(u0, b));
                 a10 = Avx2.Add(a10, Avx2.MultiplyAddAdjacent(u1, b));
-                b = Avx2.ConvertToVector256Int16(Sse2.LoadVector128(w1 + p));
+                b = Avx2.ConvertToVector256Int16(Vector128.LoadUnsafe(ref w1, p));
                 a01 = Avx2.Add(a01, Avx2.MultiplyAddAdjacent(u0, b));
                 a11 = Avx2.Add(a11, Avx2.MultiplyAddAdjacent(u1, b));
-                b = Avx2.ConvertToVector256Int16(Sse2.LoadVector128(w2 + p));
+                b = Avx2.ConvertToVector256Int16(Vector128.LoadUnsafe(ref w2, p));
                 a02 = Avx2.Add(a02, Avx2.MultiplyAddAdjacent(u0, b));
                 a12 = Avx2.Add(a12, Avx2.MultiplyAddAdjacent(u1, b));
-                b = Avx2.ConvertToVector256Int16(Sse2.LoadVector128(w3 + p));
+                b = Avx2.ConvertToVector256Int16(Vector128.LoadUnsafe(ref w3, p));
                 a03 = Avx2.Add(a03, Avx2.MultiplyAddAdjacent(u0, b));
                 a13 = Avx2.Add(a13, Avx2.MultiplyAddAdjacent(u1, b));
             }
-            Reduce8(a00, a01, a02, a03, a10, a11, a12, a13, acc);
+            Reduce8(a00, a01, a02, a03, a10, a11, a12, a13, ref acc);
             return;
         }
-        acc[0] = Dot1x1(x0, w0, k, small);
-        acc[1] = Dot1x1(x0, w1, k, small);
-        acc[2] = Dot1x1(x0, w2, k, small);
-        acc[3] = Dot1x1(x0, w3, k, small);
-        acc[4] = Dot1x1(x1, w0, k, small);
-        acc[5] = Dot1x1(x1, w1, k, small);
-        acc[6] = Dot1x1(x1, w2, k, small);
-        acc[7] = Dot1x1(x1, w3, k, small);
+        acc = Dot1x1(ref x0, ref w0, k, small);
+        Unsafe.Add(ref acc, 1) = Dot1x1(ref x0, ref w1, k, small);
+        Unsafe.Add(ref acc, 2) = Dot1x1(ref x0, ref w2, k, small);
+        Unsafe.Add(ref acc, 3) = Dot1x1(ref x0, ref w3, k, small);
+        Unsafe.Add(ref acc, 4) = Dot1x1(ref x1, ref w0, k, small);
+        Unsafe.Add(ref acc, 5) = Dot1x1(ref x1, ref w1, k, small);
+        Unsafe.Add(ref acc, 6) = Dot1x1(ref x1, ref w2, k, small);
+        Unsafe.Add(ref acc, 7) = Dot1x1(ref x1, ref w3, k, small);
     }
 
     /// <summary>4 activation rows × 4 weight rows with 512-bit AVX-512BW (k multiple of 64).</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void Dot4x4Avx512(byte* x0, byte* x1, byte* x2, byte* x3, sbyte* w0, int k, bool small, int* acc)
+    private static void Dot4x4Avx512(ref byte x0, ref byte x1, ref byte x2, ref byte x3, ref sbyte w0, int k, bool small, ref int acc)
     {
-        sbyte* w1 = w0 + k, w2 = w1 + k, w3 = w2 + k;
+        ref sbyte w1 = ref Unsafe.Add(ref w0, k);
+        ref sbyte w2 = ref Unsafe.Add(ref w1, k);
+        ref sbyte w3 = ref Unsafe.Add(ref w2, k);
+        if (small)
+        {
+            Dot4x4Avx512Small(ref x0, ref x1, ref x2, ref x3, ref w0, ref w1, ref w2, ref w3, k, ref acc);
+            return;
+        }
         Vector512<int> a00 = default, a01 = default, a02 = default, a03 = default;
         Vector512<int> a10 = default, a11 = default, a12 = default, a13 = default;
         Vector512<int> a20 = default, a21 = default, a22 = default, a23 = default;
         Vector512<int> a30 = default, a31 = default, a32 = default, a33 = default;
-        if (small)
+        for (nuint p = 0; p < (nuint)k; p += 32)
         {
-            Dot4x4Avx512Small(x0, x1, x2, x3, w0, w1, w2, w3, k, acc);
-            return;
+            var u0 = Avx512BW.ConvertToVector512Int16(Vector256.LoadUnsafe(ref x0, p));
+            var u1 = Avx512BW.ConvertToVector512Int16(Vector256.LoadUnsafe(ref x1, p));
+            var u2 = Avx512BW.ConvertToVector512Int16(Vector256.LoadUnsafe(ref x2, p));
+            var u3 = Avx512BW.ConvertToVector512Int16(Vector256.LoadUnsafe(ref x3, p));
+            var b = Avx512BW.ConvertToVector512Int16(Vector256.LoadUnsafe(ref w0, p));
+            a00 = Avx512F.Add(a00, Avx512BW.MultiplyAddAdjacent(u0, b));
+            a10 = Avx512F.Add(a10, Avx512BW.MultiplyAddAdjacent(u1, b));
+            a20 = Avx512F.Add(a20, Avx512BW.MultiplyAddAdjacent(u2, b));
+            a30 = Avx512F.Add(a30, Avx512BW.MultiplyAddAdjacent(u3, b));
+            b = Avx512BW.ConvertToVector512Int16(Vector256.LoadUnsafe(ref w1, p));
+            a01 = Avx512F.Add(a01, Avx512BW.MultiplyAddAdjacent(u0, b));
+            a11 = Avx512F.Add(a11, Avx512BW.MultiplyAddAdjacent(u1, b));
+            a21 = Avx512F.Add(a21, Avx512BW.MultiplyAddAdjacent(u2, b));
+            a31 = Avx512F.Add(a31, Avx512BW.MultiplyAddAdjacent(u3, b));
+            b = Avx512BW.ConvertToVector512Int16(Vector256.LoadUnsafe(ref w2, p));
+            a02 = Avx512F.Add(a02, Avx512BW.MultiplyAddAdjacent(u0, b));
+            a12 = Avx512F.Add(a12, Avx512BW.MultiplyAddAdjacent(u1, b));
+            a22 = Avx512F.Add(a22, Avx512BW.MultiplyAddAdjacent(u2, b));
+            a32 = Avx512F.Add(a32, Avx512BW.MultiplyAddAdjacent(u3, b));
+            b = Avx512BW.ConvertToVector512Int16(Vector256.LoadUnsafe(ref w3, p));
+            a03 = Avx512F.Add(a03, Avx512BW.MultiplyAddAdjacent(u0, b));
+            a13 = Avx512F.Add(a13, Avx512BW.MultiplyAddAdjacent(u1, b));
+            a23 = Avx512F.Add(a23, Avx512BW.MultiplyAddAdjacent(u2, b));
+            a33 = Avx512F.Add(a33, Avx512BW.MultiplyAddAdjacent(u3, b));
         }
-        {
-            for (int p = 0; p < k; p += 32)
-            {
-                var u0 = Avx512BW.ConvertToVector512Int16(Avx.LoadVector256(x0 + p));
-                var u1 = Avx512BW.ConvertToVector512Int16(Avx.LoadVector256(x1 + p));
-                var u2 = Avx512BW.ConvertToVector512Int16(Avx.LoadVector256(x2 + p));
-                var u3 = Avx512BW.ConvertToVector512Int16(Avx.LoadVector256(x3 + p));
-                var b = Avx512BW.ConvertToVector512Int16(Avx.LoadVector256(w0 + p));
-                a00 = Avx512F.Add(a00, Avx512BW.MultiplyAddAdjacent(u0, b));
-                a10 = Avx512F.Add(a10, Avx512BW.MultiplyAddAdjacent(u1, b));
-                a20 = Avx512F.Add(a20, Avx512BW.MultiplyAddAdjacent(u2, b));
-                a30 = Avx512F.Add(a30, Avx512BW.MultiplyAddAdjacent(u3, b));
-                b = Avx512BW.ConvertToVector512Int16(Avx.LoadVector256(w1 + p));
-                a01 = Avx512F.Add(a01, Avx512BW.MultiplyAddAdjacent(u0, b));
-                a11 = Avx512F.Add(a11, Avx512BW.MultiplyAddAdjacent(u1, b));
-                a21 = Avx512F.Add(a21, Avx512BW.MultiplyAddAdjacent(u2, b));
-                a31 = Avx512F.Add(a31, Avx512BW.MultiplyAddAdjacent(u3, b));
-                b = Avx512BW.ConvertToVector512Int16(Avx.LoadVector256(w2 + p));
-                a02 = Avx512F.Add(a02, Avx512BW.MultiplyAddAdjacent(u0, b));
-                a12 = Avx512F.Add(a12, Avx512BW.MultiplyAddAdjacent(u1, b));
-                a22 = Avx512F.Add(a22, Avx512BW.MultiplyAddAdjacent(u2, b));
-                a32 = Avx512F.Add(a32, Avx512BW.MultiplyAddAdjacent(u3, b));
-                b = Avx512BW.ConvertToVector512Int16(Avx.LoadVector256(w3 + p));
-                a03 = Avx512F.Add(a03, Avx512BW.MultiplyAddAdjacent(u0, b));
-                a13 = Avx512F.Add(a13, Avx512BW.MultiplyAddAdjacent(u1, b));
-                a23 = Avx512F.Add(a23, Avx512BW.MultiplyAddAdjacent(u2, b));
-                a33 = Avx512F.Add(a33, Avx512BW.MultiplyAddAdjacent(u3, b));
-            }
-        }
-        Sse2.Store(acc, HSum4(Fold(a00), Fold(a01), Fold(a02), Fold(a03)));
-        Sse2.Store(acc + 4, HSum4(Fold(a10), Fold(a11), Fold(a12), Fold(a13)));
-        Sse2.Store(acc + 8, HSum4(Fold(a20), Fold(a21), Fold(a22), Fold(a23)));
-        Sse2.Store(acc + 12, HSum4(Fold(a30), Fold(a31), Fold(a32), Fold(a33)));
+        HSum4(Fold(a00), Fold(a01), Fold(a02), Fold(a03)).StoreUnsafe(ref acc);
+        HSum4(Fold(a10), Fold(a11), Fold(a12), Fold(a13)).StoreUnsafe(ref acc, 4);
+        HSum4(Fold(a20), Fold(a21), Fold(a22), Fold(a23)).StoreUnsafe(ref acc, 8);
+        HSum4(Fold(a30), Fold(a31), Fold(a32), Fold(a33)).StoreUnsafe(ref acc, 12);
     }
 
     /// <summary>
@@ -1045,19 +1035,16 @@ internal static class QGemm
     /// tiles stay in registers; int32 totals live in a stack buffer touched once per 512-byte block.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void Dot4x4Avx512Small(byte* x0, byte* x1, byte* x2, byte* x3, sbyte* w0, sbyte* w1, sbyte* w2, sbyte* w3, int k, int* acc)
+    private static void Dot4x4Avx512Small(ref byte x0, ref byte x1, ref byte x2, ref byte x3, ref sbyte w0, ref sbyte w1, ref sbyte w2, ref sbyte w3, int k, ref int acc)
     {
         var ones = Vector512.Create((short)1);
         if (k <= 512)
         {
-            Dot4x4Avx512SmallBlock(x0, x1, x2, x3, w0, w1, w2, w3, 0, k, ones, acc);
+            Dot4x4Avx512SmallBlock(ref x0, ref x1, ref x2, ref x3, ref w0, ref w1, ref w2, ref w3, 0, k, ones, ref acc);
             return;
         }
-        var tot = stackalloc Vector512<int>[16];
-        for (int t = 0; t < 16; t++)
-        {
-            tot[t] = default;
-        }
+        Span<Vector512<int>> tot = stackalloc Vector512<int>[16];
+        tot.Clear();
         for (int p0 = 0; p0 < k; p0 += 512)
         {
             int pEnd = Math.Min(k, p0 + 512);
@@ -1065,28 +1052,28 @@ internal static class QGemm
             Vector512<short> s10 = default, s11 = default, s12 = default, s13 = default;
             Vector512<short> s20 = default, s21 = default, s22 = default, s23 = default;
             Vector512<short> s30 = default, s31 = default, s32 = default, s33 = default;
-            for (int p = p0; p < pEnd; p += 64)
+            for (nuint p = (nuint)p0; p < (nuint)pEnd; p += 64)
             {
-                var u0 = Avx512BW.LoadVector512(x0 + p);
-                var u1 = Avx512BW.LoadVector512(x1 + p);
-                var u2 = Avx512BW.LoadVector512(x2 + p);
-                var u3 = Avx512BW.LoadVector512(x3 + p);
-                var b = Avx512BW.LoadVector512(w0 + p);
+                var u0 = Vector512.LoadUnsafe(ref x0, p);
+                var u1 = Vector512.LoadUnsafe(ref x1, p);
+                var u2 = Vector512.LoadUnsafe(ref x2, p);
+                var u3 = Vector512.LoadUnsafe(ref x3, p);
+                var b = Vector512.LoadUnsafe(ref w0, p);
                 s00 = Avx512BW.Add(s00, Avx512BW.MultiplyAddAdjacent(u0, b));
                 s10 = Avx512BW.Add(s10, Avx512BW.MultiplyAddAdjacent(u1, b));
                 s20 = Avx512BW.Add(s20, Avx512BW.MultiplyAddAdjacent(u2, b));
                 s30 = Avx512BW.Add(s30, Avx512BW.MultiplyAddAdjacent(u3, b));
-                b = Avx512BW.LoadVector512(w1 + p);
+                b = Vector512.LoadUnsafe(ref w1, p);
                 s01 = Avx512BW.Add(s01, Avx512BW.MultiplyAddAdjacent(u0, b));
                 s11 = Avx512BW.Add(s11, Avx512BW.MultiplyAddAdjacent(u1, b));
                 s21 = Avx512BW.Add(s21, Avx512BW.MultiplyAddAdjacent(u2, b));
                 s31 = Avx512BW.Add(s31, Avx512BW.MultiplyAddAdjacent(u3, b));
-                b = Avx512BW.LoadVector512(w2 + p);
+                b = Vector512.LoadUnsafe(ref w2, p);
                 s02 = Avx512BW.Add(s02, Avx512BW.MultiplyAddAdjacent(u0, b));
                 s12 = Avx512BW.Add(s12, Avx512BW.MultiplyAddAdjacent(u1, b));
                 s22 = Avx512BW.Add(s22, Avx512BW.MultiplyAddAdjacent(u2, b));
                 s32 = Avx512BW.Add(s32, Avx512BW.MultiplyAddAdjacent(u3, b));
-                b = Avx512BW.LoadVector512(w3 + p);
+                b = Vector512.LoadUnsafe(ref w3, p);
                 s03 = Avx512BW.Add(s03, Avx512BW.MultiplyAddAdjacent(u0, b));
                 s13 = Avx512BW.Add(s13, Avx512BW.MultiplyAddAdjacent(u1, b));
                 s23 = Avx512BW.Add(s23, Avx512BW.MultiplyAddAdjacent(u2, b));
@@ -1111,49 +1098,49 @@ internal static class QGemm
         }
         for (int r = 0; r < 4; r++)
         {
-            Sse2.Store(acc + 4 * r, HSum4(Fold(tot[4 * r]), Fold(tot[4 * r + 1]), Fold(tot[4 * r + 2]), Fold(tot[4 * r + 3])));
+            HSum4(Fold(tot[4 * r]), Fold(tot[4 * r + 1]), Fold(tot[4 * r + 2]), Fold(tot[4 * r + 3])).StoreUnsafe(ref acc, (nuint)(4 * r));
         }
     }
 
     /// <summary>One ≤512-byte block of <see cref="Dot4x4Avx512Small"/>, reduced straight to 16 int sums.</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void Dot4x4Avx512SmallBlock(byte* x0, byte* x1, byte* x2, byte* x3, sbyte* w0, sbyte* w1, sbyte* w2, sbyte* w3, int p0, int pEnd, Vector512<short> ones, int* acc)
+    private static void Dot4x4Avx512SmallBlock(ref byte x0, ref byte x1, ref byte x2, ref byte x3, ref sbyte w0, ref sbyte w1, ref sbyte w2, ref sbyte w3, int p0, int pEnd, Vector512<short> ones, ref int acc)
     {
         Vector512<short> s00 = default, s01 = default, s02 = default, s03 = default;
         Vector512<short> s10 = default, s11 = default, s12 = default, s13 = default;
         Vector512<short> s20 = default, s21 = default, s22 = default, s23 = default;
         Vector512<short> s30 = default, s31 = default, s32 = default, s33 = default;
-        for (int p = p0; p < pEnd; p += 64)
+        for (nuint p = (nuint)p0; p < (nuint)pEnd; p += 64)
         {
-            var u0 = Avx512BW.LoadVector512(x0 + p);
-            var u1 = Avx512BW.LoadVector512(x1 + p);
-            var u2 = Avx512BW.LoadVector512(x2 + p);
-            var u3 = Avx512BW.LoadVector512(x3 + p);
-            var b = Avx512BW.LoadVector512(w0 + p);
+            var u0 = Vector512.LoadUnsafe(ref x0, p);
+            var u1 = Vector512.LoadUnsafe(ref x1, p);
+            var u2 = Vector512.LoadUnsafe(ref x2, p);
+            var u3 = Vector512.LoadUnsafe(ref x3, p);
+            var b = Vector512.LoadUnsafe(ref w0, p);
             s00 = Avx512BW.Add(s00, Avx512BW.MultiplyAddAdjacent(u0, b));
             s10 = Avx512BW.Add(s10, Avx512BW.MultiplyAddAdjacent(u1, b));
             s20 = Avx512BW.Add(s20, Avx512BW.MultiplyAddAdjacent(u2, b));
             s30 = Avx512BW.Add(s30, Avx512BW.MultiplyAddAdjacent(u3, b));
-            b = Avx512BW.LoadVector512(w1 + p);
+            b = Vector512.LoadUnsafe(ref w1, p);
             s01 = Avx512BW.Add(s01, Avx512BW.MultiplyAddAdjacent(u0, b));
             s11 = Avx512BW.Add(s11, Avx512BW.MultiplyAddAdjacent(u1, b));
             s21 = Avx512BW.Add(s21, Avx512BW.MultiplyAddAdjacent(u2, b));
             s31 = Avx512BW.Add(s31, Avx512BW.MultiplyAddAdjacent(u3, b));
-            b = Avx512BW.LoadVector512(w2 + p);
+            b = Vector512.LoadUnsafe(ref w2, p);
             s02 = Avx512BW.Add(s02, Avx512BW.MultiplyAddAdjacent(u0, b));
             s12 = Avx512BW.Add(s12, Avx512BW.MultiplyAddAdjacent(u1, b));
             s22 = Avx512BW.Add(s22, Avx512BW.MultiplyAddAdjacent(u2, b));
             s32 = Avx512BW.Add(s32, Avx512BW.MultiplyAddAdjacent(u3, b));
-            b = Avx512BW.LoadVector512(w3 + p);
+            b = Vector512.LoadUnsafe(ref w3, p);
             s03 = Avx512BW.Add(s03, Avx512BW.MultiplyAddAdjacent(u0, b));
             s13 = Avx512BW.Add(s13, Avx512BW.MultiplyAddAdjacent(u1, b));
             s23 = Avx512BW.Add(s23, Avx512BW.MultiplyAddAdjacent(u2, b));
             s33 = Avx512BW.Add(s33, Avx512BW.MultiplyAddAdjacent(u3, b));
         }
-        Sse2.Store(acc, HSum4(W(s00, ones), W(s01, ones), W(s02, ones), W(s03, ones)));
-        Sse2.Store(acc + 4, HSum4(W(s10, ones), W(s11, ones), W(s12, ones), W(s13, ones)));
-        Sse2.Store(acc + 8, HSum4(W(s20, ones), W(s21, ones), W(s22, ones), W(s23, ones)));
-        Sse2.Store(acc + 12, HSum4(W(s30, ones), W(s31, ones), W(s32, ones), W(s33, ones)));
+        HSum4(W(s00, ones), W(s01, ones), W(s02, ones), W(s03, ones)).StoreUnsafe(ref acc);
+        HSum4(W(s10, ones), W(s11, ones), W(s12, ones), W(s13, ones)).StoreUnsafe(ref acc, 4);
+        HSum4(W(s20, ones), W(s21, ones), W(s22, ones), W(s23, ones)).StoreUnsafe(ref acc, 8);
+        HSum4(W(s30, ones), W(s31, ones), W(s32, ones), W(s33, ones)).StoreUnsafe(ref acc, 12);
     }
 
     /// <summary>Widens an int16 accumulator to int32 pair sums and folds 512 -> 256 bits.</summary>
@@ -1164,14 +1151,12 @@ internal static class QGemm
     private static Vector256<int> Fold(Vector512<int> v) => Avx2.Add(v.GetLower(), v.GetUpper());
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void Reduce8(Vector256<int> a00, Vector256<int> a01, Vector256<int> a02, Vector256<int> a03,
-                                       Vector256<int> a10, Vector256<int> a11, Vector256<int> a12, Vector256<int> a13, int* acc)
+    private static void Reduce8(Vector256<int> a00, Vector256<int> a01, Vector256<int> a02, Vector256<int> a03,
+                                Vector256<int> a10, Vector256<int> a11, Vector256<int> a12, Vector256<int> a13, ref int acc)
     {
         // Pairwise horizontal adds reduce four 8-lane accumulators to one vector of four sums per row.
-        var r0 = HSum4(a00, a01, a02, a03);
-        var r1 = HSum4(a10, a11, a12, a13);
-        Sse2.Store(acc, r0);
-        Sse2.Store(acc + 4, r1);
+        HSum4(a00, a01, a02, a03).StoreUnsafe(ref acc);
+        HSum4(a10, a11, a12, a13).StoreUnsafe(ref acc, 4);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1183,14 +1168,14 @@ internal static class QGemm
         return Sse2.Add(abcd.GetLower(), abcd.GetUpper());
     }
 
-    private static unsafe int Dot1x1(byte* x, sbyte* w, int k, bool small)
+    private static int Dot1x1(ref byte x, ref sbyte w, int k, bool small)
     {
         if (UseVnni)
         {
             Vector256<int> a = default;
-            for (int p = 0; p < k; p += 32)
+            for (nuint p = 0; p < (nuint)k; p += 32)
             {
-                a = AvxVnni.MultiplyWideningAndAdd(a, Avx.LoadVector256(x + p), Avx.LoadVector256(w + p));
+                a = AvxVnni.MultiplyWideningAndAdd(a, Vector256.LoadUnsafe(ref x, p), Vector256.LoadUnsafe(ref w, p));
             }
             return Vector256.Sum(a);
         }
@@ -1198,18 +1183,18 @@ internal static class QGemm
         {
             var ones = Vector256.Create((short)1);
             Vector256<int> a = default;
-            for (int p = 0; p < k; p += 32)
+            for (nuint p = 0; p < (nuint)k; p += 32)
             {
-                a = Avx2.Add(a, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(Avx.LoadVector256(x + p), Avx.LoadVector256(w + p)), ones));
+                a = Avx2.Add(a, Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(Vector256.LoadUnsafe(ref x, p), Vector256.LoadUnsafe(ref w, p)), ones));
             }
             return Vector256.Sum(a);
         }
         if (UseAvx2)
         {
             Vector256<int> a = default;
-            for (int p = 0; p < k; p += 16)
+            for (nuint p = 0; p < (nuint)k; p += 16)
             {
-                a = Avx2.Add(a, Avx2.MultiplyAddAdjacent(Avx2.ConvertToVector256Int16(Sse2.LoadVector128(x + p)), Avx2.ConvertToVector256Int16(Sse2.LoadVector128(w + p))));
+                a = Avx2.Add(a, Avx2.MultiplyAddAdjacent(Avx2.ConvertToVector256Int16(Vector128.LoadUnsafe(ref x, p)), Avx2.ConvertToVector256Int16(Vector128.LoadUnsafe(ref w, p))));
             }
             return Vector256.Sum(a);
         }
@@ -1220,10 +1205,10 @@ internal static class QGemm
             Vector128<int> a = default;
             Vector128<int> wsum = default;
             var ones = Vector128.Create((sbyte)1);
-            for (int p = 0; p < k; p += 16)
+            for (nuint p = 0; p < (nuint)k; p += 16)
             {
-                var q = AdvSimd.Xor(AdvSimd.LoadVector128(x + p), flip).AsSByte();
-                var b = AdvSimd.LoadVector128(w + p);
+                var q = AdvSimd.Xor(Vector128.LoadUnsafe(ref x, p), flip).AsSByte();
+                var b = Vector128.LoadUnsafe(ref w, p);
                 a = Dp.DotProduct(a, q, b);
                 wsum = Dp.DotProduct(wsum, ones, b);
             }
@@ -1232,10 +1217,10 @@ internal static class QGemm
         if (Vector128.IsHardwareAccelerated)
         {
             Vector128<int> a = default;
-            for (int p = 0; p < k; p += 16)
+            for (nuint p = 0; p < (nuint)k; p += 16)
             {
-                var (xl, xh) = Vector128.Widen(Vector128.Load(x + p));
-                var (wl, wh) = Vector128.Widen(Vector128.Load(w + p));
+                var (xl, xh) = Vector128.Widen(Vector128.LoadUnsafe(ref x, p));
+                var (wl, wh) = Vector128.Widen(Vector128.LoadUnsafe(ref w, p));
                 // 255·128 overflows int16, so widen both operands to int32 before multiplying.
                 var (xll, xlh) = Vector128.Widen(xl.AsInt16());
                 var (xhl, xhh) = Vector128.Widen(xh.AsInt16());
@@ -1248,7 +1233,7 @@ internal static class QGemm
         int s = 0;
         for (int p = 0; p < k; p++)
         {
-            s += x[p] * w[p];
+            s += Unsafe.Add(ref x, p) * Unsafe.Add(ref w, p);
         }
         return s;
     }

@@ -371,7 +371,7 @@ internal sealed class TextEncoder
         RunLayer(Layers[layerIndex], x, offsets, total, sc, po);
     }
 
-    private static void Fc(Scratch sc, float[] input, int rows, QuantizedMatrix w, Span<float> output, ParallelOptions po)
+    private static void Fc(Scratch sc, float[] input, int rows, QuantizedMatrix w, float[] output, ParallelOptions po)
     {
         sc.Qa.Quantize(input, rows, w.Cols, w.Cols, po);
         QGemm.Multiply(sc.Qa, w, output, w.Rows, po);

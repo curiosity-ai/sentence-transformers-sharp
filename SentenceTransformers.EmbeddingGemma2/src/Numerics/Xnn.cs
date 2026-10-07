@@ -404,7 +404,7 @@ internal static class Xnn
 
     /// <summary>16 lanes at a time of <see cref="Sigmoid"/>: the 32-entry table lives in two registers and is
     /// indexed with <c>vpermt2ps</c> (XNNPACK's "perm2"); otherwise as <see cref="SigmoidAvx2"/>.</summary>
-    private static unsafe int SigmoidAvx512(ReadOnlySpan<float> x, Span<float> y)
+    private static int SigmoidAvx512(ReadOnlySpan<float> x, Span<float> y)
     {
         var magic = Vector512.Create(F(0x48C00000));
         var log2e = Vector512.Create(F(0x3FB8AA3B));
@@ -415,12 +415,8 @@ internal static class Xnn
         var minNormal = Vector512.Create(1.17549435E-38f);
         var one = Vector512.Create(1f);
         var signBit = Vector512.Create(int.MinValue);
-        Vector512<float> tableLo, tableHi;
-        fixed (float* table = SigmoidTable)
-        {
-            tableLo = Vector512.Load(table);
-            tableHi = Vector512.Load(table + 16);
-        }
+        var tableLo = Vector512.Create<float>(SigmoidTable);
+        var tableHi = Vector512.Create<float>(SigmoidTable.AsSpan(16));
         int i = 0;
         ref float xr = ref MemoryMarshal.GetReference(x);
         ref float yr = ref MemoryMarshal.GetReference(y);
@@ -453,7 +449,7 @@ internal static class Xnn
     /// set of in-register permutes, and <c>scalef(p, ⌊n⌋)</c> is the exact product <c>p · 2^⌊n⌋</c> (n ≤ 0 and p &lt; 2, so whenever
     /// <c>⌊n⌋ &lt; −126</c> the result is below the smallest normal and flushed to +0 anyway; NaN stays NaN).
     /// Returns the number of elements done.</summary>
-    private static unsafe int SigmoidAvx2(ReadOnlySpan<float> x, Span<float> y)
+    private static int SigmoidAvx2(ReadOnlySpan<float> x, Span<float> y)
     {
         var magic = Vector256.Create(F(0x48C00000));
         var log2e = Vector256.Create(F(0x3FB8AA3B));
@@ -465,37 +461,34 @@ internal static class Xnn
         var one = Vector256.Create(1f);
         var signBit = Vector256.Create(int.MinValue);
         int i = 0;
-        fixed (float* table = SigmoidTable)
+        var t0 = Vector256.Create<float>(SigmoidTable);
+        var t1 = Vector256.Create<float>(SigmoidTable.AsSpan(8));
+        var t2 = Vector256.Create<float>(SigmoidTable.AsSpan(16));
+        var t3 = Vector256.Create<float>(SigmoidTable.AsSpan(24));
+        ref float xr = ref MemoryMarshal.GetReference(x);
+        ref float yr = ref MemoryMarshal.GetReference(y);
+        for (; i + 8 <= x.Length; i += 8)
         {
-            var t0 = Avx.LoadVector256(table);
-            var t1 = Avx.LoadVector256(table + 8);
-            var t2 = Avx.LoadVector256(table + 16);
-            var t3 = Avx.LoadVector256(table + 24);
-            ref float xr = ref MemoryMarshal.GetReference(x);
-            ref float yr = ref MemoryMarshal.GetReference(y);
-            for (; i + 8 <= x.Length; i += 8)
-            {
-                var xv = Vector256.LoadUnsafe(ref xr, (nuint)i);
-                var xb = xv.AsInt32();
-                var z = (xb | signBit).AsSingle();
-                var n = Vector256.FusedMultiplyAdd(z, log2e, magic);
-                var idx = n.AsInt32() & Vector256.Create(31);
-                var l = Lookup32(t0, t1, t2, t3, idx);
-                n -= magic;
-                var t = Vector256.FusedMultiplyAdd(n, ln2Hi, z);
-                t = Vector256.FusedMultiplyAdd(n, ln2Lo, t);
-                var p = Vector256.FusedMultiplyAdd(t, c2, c1);
-                t *= l;
-                p = Vector256.FusedMultiplyAdd(t, p, l);
-                var fn = Vector256.Floor(n);
-                var pow2 = Vector256.ShiftLeft(Vector256.ConvertToInt32(fn) + Vector256.Create(127), 23).AsSingle();
-                // Underflow to +0, except that a NaN p (x = ±∞) must stay NaN as scalef keeps it.
-                var e = Vector256.ConditionalSelect(Vector256.LessThan(fn, Vector256.Create(-126f)) & Vector256.Equals(p, p), Vector256<float>.Zero, p * pow2);
-                e = Vector256.ConditionalSelect(Vector256.LessThan(Vector256.Abs(e), minNormal), Vector256<float>.Zero, e);
-                var f = e / (e + one);
-                var r = Vector256.ConditionalSelect(Vector256.GreaterThanOrEqual(xb, Vector256<int>.Zero).AsSingle(), one - f, f);
-                r.StoreUnsafe(ref yr, (nuint)i);
-            }
+            var xv = Vector256.LoadUnsafe(ref xr, (nuint)i);
+            var xb = xv.AsInt32();
+            var z = (xb | signBit).AsSingle();
+            var n = Vector256.FusedMultiplyAdd(z, log2e, magic);
+            var idx = n.AsInt32() & Vector256.Create(31);
+            var l = Lookup32(t0, t1, t2, t3, idx);
+            n -= magic;
+            var t = Vector256.FusedMultiplyAdd(n, ln2Hi, z);
+            t = Vector256.FusedMultiplyAdd(n, ln2Lo, t);
+            var p = Vector256.FusedMultiplyAdd(t, c2, c1);
+            t *= l;
+            p = Vector256.FusedMultiplyAdd(t, p, l);
+            var fn = Vector256.Floor(n);
+            var pow2 = Vector256.ShiftLeft(Vector256.ConvertToInt32(fn) + Vector256.Create(127), 23).AsSingle();
+            // Underflow to +0, except that a NaN p (x = ±∞) must stay NaN as scalef keeps it.
+            var e = Vector256.ConditionalSelect(Vector256.LessThan(fn, Vector256.Create(-126f)) & Vector256.Equals(p, p), Vector256<float>.Zero, p * pow2);
+            e = Vector256.ConditionalSelect(Vector256.LessThan(Vector256.Abs(e), minNormal), Vector256<float>.Zero, e);
+            var f = e / (e + one);
+            var r = Vector256.ConditionalSelect(Vector256.GreaterThanOrEqual(xb, Vector256<int>.Zero).AsSingle(), one - f, f);
+            r.StoreUnsafe(ref yr, (nuint)i);
         }
         return i;
     }

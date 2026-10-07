@@ -101,9 +101,9 @@ internal static class Attention
                     }
                     else
                     {
-                        SGemm.Multiply(qBlock, qStride, kt[gi], ld, scores, ld, rows, ld, hd, scale);
+                        SGemm.Multiply(q.AsMemory((start + r0) * qStride + h * hd), qStride, kt[gi], ld, scores, ld, rows, ld, hd, scale);
                         Ops.SoftmaxRows(scores, rows, n, ld, maskedKeys);
-                        SGemm.Multiply(scores, ld, v.AsSpan(start * kvStride + g * hd), kvStride, oBlock, qStride, rows, hd, n);
+                        SGemm.Multiply(scores, ld, v.AsMemory(start * kvStride + g * hd), kvStride, output.AsMemory((start + r0) * qStride + h * hd), qStride, rows, hd, n);
                     }
                 }
                 finally

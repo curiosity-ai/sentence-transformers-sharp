@@ -166,7 +166,7 @@ public sealed class SentenceEncoder : IDisposable, ISentenceEncoder
     /// by default under the temp folder) and loads it.
     /// </summary>
     /// <param name="model">Which bundle: text-only 270M (default), text+vision 440M, or text+vision+audio 740M.</param>
-    /// <param name="modelUrl">Override the download URL (defaults to the Hugging Face <c>litert-community</c> repo).</param>
+    /// <param name="modelUrl">Override the download URL (defaults to <see cref="EmbeddingGemma2Models.GetDownloadUrl"/>, a copy of the <c>litert-community</c> bundle on <c>models.curiosity.ai</c>).</param>
     /// <param name="downloadToPath">Where to cache the <c>.litertlm</c> file.</param>
     /// <param name="reportProgress">Optional download progress callback (~2 Hz).</param>
     /// <param name="parallelOptions">Default concurrency for encoding (defaults to all cores). Use

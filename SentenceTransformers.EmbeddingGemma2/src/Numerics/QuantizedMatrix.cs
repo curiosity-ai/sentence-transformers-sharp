@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using SentenceTransformers.EmbeddingGemma2.LiteRt;
 
@@ -169,52 +171,53 @@ internal sealed class QuantizedMatrix
     }
 
     /// <summary>Expands panels <paramref name="p0"/>..<paramref name="p1"/> of a packed matrix to one signed byte per
-    /// weight at <paramref name="dst"/> (<see cref="PanelBytes"/> each, in panel layout).</summary>
-    public unsafe void UnpackPanels(int p0, int p1, sbyte* dst)
+    /// weight into <paramref name="dst"/> (<see cref="PanelBytes"/> each, in panel layout).</summary>
+    public void UnpackPanels(int p0, int p1, Span<sbyte> dst)
     {
-        fixed (byte* packed = Packed)
+        long groups = (long)(p1 - p0) * PanelBytes / 64;
+        ArgumentOutOfRangeException.ThrowIfLessThan(dst.Length, groups * 64, nameof(dst));
+        // Validated once here; the loop below then indexes without per-element bounds checks.
+        var packed = Packed.AsSpan(p0 * PackedPanelBytes, (p1 - p0) * PackedPanelBytes);
+        ref byte src = ref MemoryMarshal.GetReference(packed);
+        ref byte d = ref Unsafe.As<sbyte, byte>(ref MemoryMarshal.GetReference(dst));
+        if (Bits == 4)
         {
-            byte* src = packed + (long)p0 * PackedPanelBytes;
-            long groups = (long)(p1 - p0) * PanelBytes / 64;
-            byte* d = (byte*)dst;
-            if (Bits == 4)
+            var mask = Vector256.Create((byte)0x0F);
+            var bias = Vector256.Create((byte)8);
+            for (nuint gi = 0; gi < (nuint)groups; gi++)
             {
-                var mask = Vector256.Create((byte)0x0F);
-                var bias = Vector256.Create((byte)8);
-                for (long gi = 0; gi < groups; gi++, src += 32, d += 64)
-                {
-                    var v = Vector256.Load(src);
-                    ((v & mask) - bias).Store(d);
-                    ((Vector256.ShiftRightLogical(v, 4) & mask) - bias).Store(d + 32);
-                }
+                var v = Vector256.LoadUnsafe(ref src, gi * 32);
+                ((v & mask) - bias).StoreUnsafe(ref d, gi * 64);
+                ((Vector256.ShiftRightLogical(v, 4) & mask) - bias).StoreUnsafe(ref d, gi * 64 + 32);
             }
-            else
+        }
+        else
+        {
+            var mask = Vector128.Create((byte)0x03);
+            var bias = Vector128.Create((byte)2);
+            for (nuint gi = 0; gi < (nuint)groups; gi++)
             {
-                var mask = Vector128.Create((byte)0x03);
-                var bias = Vector128.Create((byte)2);
-                for (long gi = 0; gi < groups; gi++, src += 16, d += 64)
-                {
-                    var v = Vector128.Load(src);
-                    ((v & mask) - bias).Store(d);
-                    ((Vector128.ShiftRightLogical(v, 2) & mask) - bias).Store(d + 16);
-                    ((Vector128.ShiftRightLogical(v, 4) & mask) - bias).Store(d + 32);
-                    ((Vector128.ShiftRightLogical(v, 6) & mask) - bias).Store(d + 48);
-                }
+                var v = Vector128.LoadUnsafe(ref src, gi * 16);
+                ((v & mask) - bias).StoreUnsafe(ref d, gi * 64);
+                ((Vector128.ShiftRightLogical(v, 2) & mask) - bias).StoreUnsafe(ref d, gi * 64 + 16);
+                ((Vector128.ShiftRightLogical(v, 4) & mask) - bias).StoreUnsafe(ref d, gi * 64 + 32);
+                ((Vector128.ShiftRightLogical(v, 6) & mask) - bias).StoreUnsafe(ref d, gi * 64 + 48);
             }
         }
     }
 
-    /// <summary>Rows <paramref name="r0"/>..<paramref name="r1"/> as one signed byte per weight in row order at
+    /// <summary>Rows <paramref name="r0"/>..<paramref name="r1"/> as one signed byte per weight in row order into
     /// <paramref name="dst"/> (row stride <see cref="Stride"/>).</summary>
-    public unsafe void UnpackRows(int r0, int r1, sbyte* dst)
+    public void UnpackRows(int r0, int r1, Span<sbyte> dst)
     {
+        dst = dst.Slice(0, (r1 - r0) * Stride);
         if (PanelData is not null)
         {
-            new Span<sbyte>(dst, (r1 - r0) * Stride).Clear();
+            dst.Clear();
             for (int r = r0; r < r1; r++)
             {
                 int p = r / PanelWidth, c = r % PanelWidth;
-                sbyte* row = dst + (long)(r - r0) * Stride;
+                var row = dst.Slice((r - r0) * Stride, Stride);
                 for (int k = 0; k < Cols; k++)
                 {
                     row[k] = PanelData[(long)p * PanelBytes + (k / 4 * PanelWidth + c) * 4 + (k & 3)];
@@ -228,44 +231,35 @@ internal sealed class QuantizedMatrix
         }
         if (Bits == 8)
         {
-            fixed (sbyte* src = Data)
-            {
-                Buffer.MemoryCopy(src + (long)r0 * Stride, dst, (long)(r1 - r0) * Stride, (long)(r1 - r0) * Stride);
-            }
+            Data.AsSpan(r0 * Stride, (r1 - r0) * Stride).CopyTo(dst);
             return;
         }
         var panel = new sbyte[PanelBytes];
-        fixed (sbyte* pp = panel)
+        var words = MemoryMarshal.Cast<sbyte, int>(panel);
+        for (int p = r0 / PanelWidth; p * PanelWidth < r1; p++)
         {
-            for (int p = r0 / PanelWidth; p * PanelWidth < r1; p++)
+            UnpackPanels(p, p + 1, panel);
+            for (int c = 0; c < PanelWidth; c++)
             {
-                UnpackPanels(p, p + 1, pp);
-                for (int c = 0; c < PanelWidth; c++)
+                int r = p * PanelWidth + c;
+                if (r < r0 || r >= r1)
                 {
-                    int r = p * PanelWidth + c;
-                    if (r < r0 || r >= r1)
-                    {
-                        continue;
-                    }
-                    int* row = (int*)(dst + (long)(r - r0) * Stride);
-                    int* src = (int*)pp + c;
-                    for (int k4 = 0; k4 < Stride / 4; k4++)
-                    {
-                        row[k4] = src[k4 * PanelWidth];
-                    }
+                    continue;
+                }
+                var row = MemoryMarshal.Cast<sbyte, int>(dst.Slice((r - r0) * Stride, Stride));
+                for (int k4 = 0; k4 < row.Length; k4++)
+                {
+                    row[k4] = words[k4 * PanelWidth + c];
                 }
             }
         }
     }
 
     /// <summary>Row <paramref name="r"/> as one signed byte per weight (<see cref="Stride"/> long).</summary>
-    public unsafe sbyte[] Row(int r)
+    public sbyte[] Row(int r)
     {
         var row = new sbyte[Stride];
-        fixed (sbyte* d = row)
-        {
-            UnpackRows(r, r + 1, d);
-        }
+        UnpackRows(r, r + 1, row);
         return row;
     }
 

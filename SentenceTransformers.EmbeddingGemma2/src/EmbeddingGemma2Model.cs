@@ -18,9 +18,9 @@ public enum EmbeddingGemma2Model
 /// <summary>Download locations and capabilities of the <see cref="EmbeddingGemma2Model"/> variants.</summary>
 public static class EmbeddingGemma2Models
 {
-    private const string HuggingFace = "https://huggingface.co/litert-community/";
+    private const string ModelsBaseUrl = "https://models.curiosity.ai/embeddinggemma-2/";
 
-    /// <summary>Hugging Face repository id of the bundle (under <c>litert-community</c>).</summary>
+    /// <summary>Hugging Face repository id the bundle is published under (<c>litert-community/&lt;id&gt;</c>).</summary>
     public static string GetRepository(EmbeddingGemma2Model model) => model switch
     {
         EmbeddingGemma2Model.Text270M => "embeddinggemma-2-text-270m-litert-lm",
@@ -38,8 +38,9 @@ public static class EmbeddingGemma2Models
         _ => throw new ArgumentOutOfRangeException(nameof(model)),
     };
 
-    /// <summary>Default download URL (Hugging Face <c>resolve/main</c>).</summary>
-    public static string GetDownloadUrl(EmbeddingGemma2Model model) => $"{HuggingFace}{GetRepository(model)}/resolve/main/{GetFileName(model)}";
+    /// <summary>Default download URL: an unmodified copy of the <c>litert-community</c> Hugging Face bundle
+    /// (same bytes, see <see cref="GetFileSize"/>) hosted on <c>models.curiosity.ai</c>.</summary>
+    public static string GetDownloadUrl(EmbeddingGemma2Model model) => ModelsBaseUrl + GetFileName(model);
 
     /// <summary>Exact size in bytes of the published bundle (used to validate cached downloads).</summary>
     public static long GetFileSize(EmbeddingGemma2Model model) => model switch

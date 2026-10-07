@@ -98,7 +98,7 @@ internal static class StbImageResize
     /// <param name="newWidth">Destination width in pixels.</param>
     /// <param name="newHeight">Destination height in pixels.</param>
     /// <returns>The resized image, <c>newWidth * newHeight * 3</c> bytes.</returns>
-    internal static unsafe byte[] ResizeRgb(ReadOnlySpan<byte> rgb, int width, int height, int newWidth, int newHeight)
+    internal static byte[] ResizeRgb(ReadOnlySpan<byte> rgb, int width, int height, int newWidth, int newHeight)
     {
         if (width <= 0 || height <= 0)
         {
@@ -114,14 +114,8 @@ internal static class StbImageResize
         }
 
         var output = new byte[checked(newWidth * newHeight * Channels)];
-        var resize = new Resize(width, height, newWidth, newHeight);
-        fixed (byte* input = rgb)
-        fixed (byte* outputPtr = output)
-        fixed (float* srgbToLinear = SrgbUcharToLinearFloat)
-        fixed (uint* fp32ToSrgb8 = Fp32ToSrgb8Tab4)
-        {
-            resize.Run(input, outputPtr, srgbToLinear, fp32ToSrgb8);
-        }
+        var resize = new Resize(rgb, output, width, height, newWidth, newHeight);
+        resize.Run();
         return output;
     }
 
@@ -227,11 +221,12 @@ internal static class StbImageResize
         outLastPixel = (int)Math.Floor(outPixelInfluenceUpperbound - 0.5);
     }
 
-    /// <summary><c>stbir__calculate_coefficients_upsample</c>. <paramref name="contributor"/> points at an
+    /// <summary><c>stbir__calculate_coefficients_upsample</c>. <paramref name="contributor"/> starts at an
     /// <c>{ n0, n1 }</c> pair. Like stb, this may write (and sum) one coefficient past the group's width;
-    /// that spill lands in the next group (or the next scratch region) and is overwritten later.</summary>
-    private static unsafe void CalculateCoefficientsUpsample(int inFirstPixel, int inLastPixel, float inCenterOfOut,
-                                                             int* contributor, float* coefficientGroup)
+    /// that spill lands in the next group (or the next scratch region) and is overwritten later, which is why
+    /// both spans run to the end of the scratch block.</summary>
+    private static void CalculateCoefficientsUpsample(int inFirstPixel, int inLastPixel, float inCenterOfOut,
+                                                      Span<int> contributor, Span<float> coefficientGroup)
     {
         int i;
         float totalFilter = 0;
@@ -277,8 +272,8 @@ internal static class StbImageResize
     }
 
     /// <summary><c>stbir__calculate_coefficients_downsample</c> (same spill behaviour as the upsample builder).</summary>
-    private static unsafe void CalculateCoefficientsDownsample(float scaleRatio, int outFirstPixel, int outLastPixel, float outCenterOfIn,
-                                                               int* contributor, float* coefficientGroup)
+    private static void CalculateCoefficientsDownsample(float scaleRatio, int outFirstPixel, int outLastPixel, float outCenterOfIn,
+                                                        Span<int> contributor, Span<float> coefficientGroup)
     {
         int i;
 
@@ -306,7 +301,7 @@ internal static class StbImageResize
 
     /// <summary><c>stbir__normalize_downsample_coefficients</c>: makes every output pixel's weights sum to one,
     /// then drops leading zero / out-of-image coefficients and clamps <c>n1</c> to the output.</summary>
-    private static unsafe void NormalizeDownsampleCoefficients(int* contributors, float* coefficients, float scaleRatio, int inputSize, int outputSize)
+    private static void NormalizeDownsampleCoefficients(Span<int> contributors, Span<float> coefficients, float scaleRatio, int inputSize, int outputSize)
     {
         int numContributors = GetContributors(scaleRatio, inputSize, outputSize);
         int numCoefficients = GetCoefficientWidth(scaleRatio);
@@ -391,7 +386,7 @@ internal static class StbImageResize
     }
 
     /// <summary><c>stbir__calculate_filters</c>: builds the contributor ranges and coefficients of one axis.</summary>
-    private static unsafe void CalculateFilters(int* contributors, float* coefficients, float scaleRatio, float shift, int inputSize, int outputSize)
+    private static void CalculateFilters(Span<int> contributors, Span<float> coefficients, float scaleRatio, float shift, int inputSize, int outputSize)
     {
         int n;
         int totalContributors = GetContributors(scaleRatio, inputSize, outputSize);
@@ -405,7 +400,7 @@ internal static class StbImageResize
             for (n = 0; n < totalContributors; n++)
             {
                 CalculateSampleRangeUpsample(n, outPixelsRadius, scaleRatio, shift, out int inFirstPixel, out int inLastPixel, out float inCenterOfOut);
-                CalculateCoefficientsUpsample(inFirstPixel, inLastPixel, inCenterOfOut, contributors + 2 * n, coefficients + coefficientWidth * n);
+                CalculateCoefficientsUpsample(inFirstPixel, inLastPixel, inCenterOfOut, contributors.Slice(2 * n), coefficients.Slice(coefficientWidth * n));
             }
         }
         else
@@ -418,7 +413,7 @@ internal static class StbImageResize
             {
                 int nAdjusted = n - margin;
                 CalculateSampleRangeDownsample(nAdjusted, inPixelsRadius, scaleRatio, shift, out int outFirstPixel, out int outLastPixel, out float outCenterOfIn);
-                CalculateCoefficientsDownsample(scaleRatio, outFirstPixel, outLastPixel, outCenterOfIn, contributors + 2 * n, coefficients + coefficientWidth * n);
+                CalculateCoefficientsDownsample(scaleRatio, outFirstPixel, outLastPixel, outCenterOfIn, contributors.Slice(2 * n), coefficients.Slice(coefficientWidth * n));
             }
 
             NormalizeDownsampleCoefficients(contributors, coefficients, scaleRatio, inputSize, outputSize);
@@ -427,7 +422,7 @@ internal static class StbImageResize
 
     /// <summary><c>stbir__linear_to_srgb_uchar</c> (IEEE-float version): piecewise-linear table encode.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe byte LinearToSrgbUchar(float value, uint* fp32ToSrgb8Tab4)
+    private static byte LinearToSrgbUchar(float value)
     {
         const uint AlmostOneBits = 0x3f7fffff;          // 1-eps
         const uint MinValBits = (127 - 13) << 23;       // 2^-13
@@ -447,7 +442,7 @@ internal static class StbImageResize
 
         // Do the table lookup and unpack bias, scale
         uint u = BitConverter.SingleToUInt32Bits(value);
-        uint tab = fp32ToSrgb8Tab4[(u - MinValBits) >> 20];
+        uint tab = Fp32ToSrgb8Tab4[(u - MinValBits) >> 20];
         uint bias = (tab >> 16) << 9;
         uint scale = tab & 0xffff;
 
@@ -460,16 +455,20 @@ internal static class StbImageResize
     /// multiply-add of stb's vertical passes. Each element keeps its own separate multiply then add (never
     /// fused), so the vectorized form is bit-identical to the scalar C loop.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void MultiplyAccumulate(float* dst, float* src, float coefficient, int count)
+    private static void MultiplyAccumulate(Span<float> dst, ReadOnlySpan<float> src, float coefficient, int count)
     {
+        dst = dst.Slice(0, count);
+        src = src.Slice(0, count);
+        ref float d = ref MemoryMarshal.GetReference(dst);
+        ref float sr = ref MemoryMarshal.GetReference(src);
         int i = 0;
         if (Vector256.IsHardwareAccelerated)
         {
             var c = Vector256.Create(coefficient);
             for (; i <= count - Vector256<float>.Count; i += Vector256<float>.Count)
             {
-                var product = Vector256.Multiply(Vector256.Load(src + i), c);
-                Vector256.Store(Vector256.Add(Vector256.Load(dst + i), product), dst + i);
+                var product = Vector256.Multiply(Vector256.LoadUnsafe(ref sr, (nuint)i), c);
+                Vector256.Add(Vector256.LoadUnsafe(ref d, (nuint)i), product).StoreUnsafe(ref d, (nuint)i);
             }
         }
         else if (Vector128.IsHardwareAccelerated)
@@ -477,8 +476,8 @@ internal static class StbImageResize
             var c = Vector128.Create(coefficient);
             for (; i <= count - Vector128<float>.Count; i += Vector128<float>.Count)
             {
-                var product = Vector128.Multiply(Vector128.Load(src + i), c);
-                Vector128.Store(Vector128.Add(Vector128.Load(dst + i), product), dst + i);
+                var product = Vector128.Multiply(Vector128.LoadUnsafe(ref sr, (nuint)i), c);
+                Vector128.Add(Vector128.LoadUnsafe(ref d, (nuint)i), product).StoreUnsafe(ref d, (nuint)i);
             }
         }
         for (; i < count; i++)
@@ -490,9 +489,10 @@ internal static class StbImageResize
     /// <summary>
     /// <c>stbir__info</c> plus the scratch block of <c>stbir__resize_allocated</c> for one call: the
     /// transform (<c>stbir__calculate_transform</c>), the buffer sizes (<c>stbir__calculate_memory</c>) and
-    /// the passes that run over them. Instances are never shared.
+    /// the passes that run over them. The scratch block is one zeroed float array (the integer contributor
+    /// regions are views of the same memory), and every stb pointer into it is an element offset.
     /// </summary>
-    private sealed unsafe class Resize
+    private ref struct Resize
     {
         private readonly int _inputW;
         private readonly int _inputH;
@@ -512,39 +512,31 @@ internal static class StbImageResize
         private readonly int _ringBufferLength;     // floats per ring buffer entry (output_w * channels)
         private readonly int _ringBufferNumEntries;
 
-        // Region sizes in bytes, in tempmem order.
-        private readonly long _horizontalContributorsSize;
-        private readonly long _horizontalCoefficientsSize;
-        private readonly long _verticalContributorsSize;
-        private readonly long _verticalCoefficientsSize;
-        private readonly long _decodeBufferSize;
-        private readonly long _horizontalBufferSize;
-        private readonly long _ringBufferSize;
-        private readonly long _encodeBufferSize;
+        // Region offsets in the scratch block (in 4-byte elements), in tempmem order; -1 for an unused buffer.
+        private readonly int _horizontalContributors;
+        private readonly int _horizontalCoefficients;
+        private readonly int _verticalContributors;
+        private readonly int _verticalCoefficients;
+        private readonly int _decodeBuffer;
+        private readonly int _horizontalBuffer;
+        private readonly int _ringBuffer;
+        private readonly int _encodeBuffer;
 
-        // Pointers into the scratch block (valid only during Run).
-        private int* _horizontalContributors;
-        private float* _horizontalCoefficients;
-        private int* _verticalContributors;
-        private float* _verticalCoefficients;
-        private float* _decodeBuffer;
-        private float* _horizontalBuffer;
-        private float* _ringBuffer;
-        private float* _encodeBuffer;
-
-        private byte* _input;
-        private byte* _output;
-        private float* _srgbToLinear;
-        private uint* _fp32ToSrgb8;
+        private readonly Span<float> _scratch;
+        private readonly Span<int> _scratchInts;
+        private readonly ReadOnlySpan<byte> _input;
+        private readonly Span<byte> _output;
 
         private int _ringBufferFirstScanline;
         private int _ringBufferLastScanline;
         private int _ringBufferBeginIndex;
 
         /// <summary><c>stbir__setup</c>, <c>stbir__calculate_transform</c> (s0 = t0 = 0, s1 = t1 = 1, no
-        /// transform) and <c>stbir__calculate_memory</c>.</summary>
-        public Resize(int inputW, int inputH, int outputW, int outputH)
+        /// transform), <c>stbir__calculate_memory</c> and the scratch layout of <c>stbir__resize_allocated</c>.</summary>
+        public Resize(ReadOnlySpan<byte> input, Span<byte> output, int inputW, int inputH, int outputW, int outputH)
         {
+            _input = input;
+            _output = output;
             _inputW = inputW;
             _inputH = inputH;
             _outputW = outputW;
@@ -570,158 +562,137 @@ internal static class StbImageResize
             _verticalFilterPixelMargin = GetFilterPixelMargin(_verticalScale);
             _ringBufferLength = outputW * Channels;
 
-            _horizontalContributorsSize = (long)horizontalNumContributors * 2 * sizeof(int);
-            _horizontalCoefficientsSize = (long)horizontalNumContributors * _horizontalCoefficientWidth * sizeof(float);
-            _verticalContributorsSize = (long)verticalNumContributors * 2 * sizeof(int);
-            _verticalCoefficientsSize = (long)verticalNumContributors * _verticalCoefficientWidth * sizeof(float);
-            _decodeBufferSize = (long)(inputW + pixelMargin * 2) * Channels * sizeof(float);
-            _horizontalBufferSize = (long)outputW * Channels * sizeof(float);
-            _ringBufferSize = (long)outputW * Channels * _ringBufferNumEntries * sizeof(float);
-            _encodeBufferSize = (long)outputW * Channels * sizeof(float);
+            // Region sizes in elements (every region holds 4-byte ints or floats).
+            long horizontalContributorsSize = (long)horizontalNumContributors * 2;
+            long horizontalCoefficientsSize = (long)horizontalNumContributors * _horizontalCoefficientWidth;
+            long verticalContributorsSize = (long)verticalNumContributors * 2;
+            long verticalCoefficientsSize = (long)verticalNumContributors * _verticalCoefficientWidth;
+            long decodeBufferSize = (long)(inputW + pixelMargin * 2) * Channels;
+            long horizontalBufferSize = (long)outputW * Channels;
+            long ringBufferSize = (long)outputW * Channels * _ringBufferNumEntries;
+            long encodeBufferSize = (long)outputW * Channels;
 
             if (UseUpsampling(_verticalScale))
             {
                 // The horizontal buffer is only used when downsampling the height.
-                _horizontalBufferSize = 0;
+                horizontalBufferSize = 0;
             }
             else
             {
                 // The encode buffer is only used when upsampling the height.
-                _encodeBufferSize = 0;
+                encodeBufferSize = 0;
             }
+
+            long p = 0;
+            _horizontalContributors = (int)p;
+            p += horizontalContributorsSize;
+            _horizontalCoefficients = (int)p;
+            p += horizontalCoefficientsSize;
+            _verticalContributors = (int)p;
+            p += verticalContributorsSize;
+            _verticalCoefficients = (int)p;
+            p += verticalCoefficientsSize;
+            _decodeBuffer = (int)p;
+            p += decodeBufferSize;
+            if (UseUpsampling(_verticalScale))
+            {
+                _horizontalBuffer = -1;
+                _ringBuffer = (int)p;
+                p += ringBufferSize;
+                _encodeBuffer = (int)p;
+            }
+            else
+            {
+                _horizontalBuffer = (int)p;
+                p += horizontalBufferSize;
+                _ringBuffer = (int)p;
+                _encodeBuffer = -1;
+            }
+
+            long memoryRequired = horizontalContributorsSize + horizontalCoefficientsSize
+                                + verticalContributorsSize + verticalCoefficientsSize
+                                + decodeBufferSize + horizontalBufferSize
+                                + ringBufferSize + encodeBufferSize;
+            _scratch = new float[checked((int)(memoryRequired + ScratchPaddingBytes / sizeof(float)))];
+            _scratchInts = MemoryMarshal.Cast<float, int>(_scratch);
+
+            // This signals that the ring buffer is empty
+            _ringBufferBeginIndex = -1;
+            _ringBufferFirstScanline = 0;
+            _ringBufferLastScanline = 0;
         }
 
-        /// <summary><c>stbir__resize_allocated</c>: lays out the zeroed scratch block, builds both filters and
-        /// runs the up- or downsampling scanline loop.</summary>
-        public void Run(byte* input, byte* output, float* srgbToLinear, uint* fp32ToSrgb8)
+        /// <summary><c>stbir__resize_allocated</c> after the layout: builds both filters and runs the up- or
+        /// downsampling scanline loop.</summary>
+        public void Run()
         {
-            long memoryRequired = _horizontalContributorsSize + _horizontalCoefficientsSize
-                                + _verticalContributorsSize + _verticalCoefficientsSize
-                                + _decodeBufferSize + _horizontalBufferSize
-                                + _ringBufferSize + _encodeBufferSize;
+            // Filter regions run to the end of the block: the builders' spills land in the next region, as in stb.
+            CalculateFilters(_scratchInts.Slice(_horizontalContributors), _scratch.Slice(_horizontalCoefficients), _horizontalScale, _horizontalShift, _inputW, _outputW);
+            CalculateFilters(_scratchInts.Slice(_verticalContributors), _scratch.Slice(_verticalCoefficients), _verticalScale, _verticalShift, _inputH, _outputH);
 
-            byte* tempmem = (byte*)NativeMemory.AllocZeroed((nuint)(memoryRequired + ScratchPaddingBytes));
-            try
+            if (UseUpsampling(_verticalScale))
             {
-                _input = input;
-                _output = output;
-                _srgbToLinear = srgbToLinear;
-                _fp32ToSrgb8 = fp32ToSrgb8;
-
-                byte* p = tempmem;
-                _horizontalContributors = (int*)p;
-                p += _horizontalContributorsSize;
-                _horizontalCoefficients = (float*)p;
-                p += _horizontalCoefficientsSize;
-                _verticalContributors = (int*)p;
-                p += _verticalContributorsSize;
-                _verticalCoefficients = (float*)p;
-                p += _verticalCoefficientsSize;
-                _decodeBuffer = (float*)p;
-                p += _decodeBufferSize;
-
-                if (UseUpsampling(_verticalScale))
-                {
-                    _horizontalBuffer = null;
-                    _ringBuffer = (float*)p;
-                    p += _ringBufferSize;
-                    _encodeBuffer = (float*)p;
-                }
-                else
-                {
-                    _horizontalBuffer = (float*)p;
-                    p += _horizontalBufferSize;
-                    _ringBuffer = (float*)p;
-                    _encodeBuffer = null;
-                }
-
-                // This signals that the ring buffer is empty
-                _ringBufferBeginIndex = -1;
-                _ringBufferFirstScanline = 0;
-                _ringBufferLastScanline = 0;
-
-                CalculateFilters(_horizontalContributors, _horizontalCoefficients, _horizontalScale, _horizontalShift, _inputW, _outputW);
-                CalculateFilters(_verticalContributors, _verticalCoefficients, _verticalScale, _verticalShift, _inputH, _outputH);
-
-                if (UseUpsampling(_verticalScale))
-                {
-                    BufferLoopUpsample();
-                }
-                else
-                {
-                    BufferLoopDownsample();
-                }
+                BufferLoopUpsample();
             }
-            finally
+            else
             {
-                NativeMemory.Free(tempmem);
-                _horizontalContributors = null;
-                _horizontalCoefficients = null;
-                _verticalContributors = null;
-                _verticalCoefficients = null;
-                _decodeBuffer = null;
-                _horizontalBuffer = null;
-                _ringBuffer = null;
-                _encodeBuffer = null;
-                _input = null;
-                _output = null;
-                _srgbToLinear = null;
-                _fp32ToSrgb8 = null;
+                BufferLoopDownsample();
             }
         }
 
-        /// <summary><c>stbir__get_decode_buffer</c>: index 0 starts after the left margin, so negative indexes
-        /// address the margin.</summary>
-        private float* DecodeBufferOrigin => _decodeBuffer + _horizontalFilterPixelMargin * Channels;
+        /// <summary><c>stbir__get_decode_buffer</c>: the element offset of decoded pixel 0; the left margin
+        /// lies before it.</summary>
+        private readonly int DecodeBufferOrigin => _decodeBuffer + _horizontalFilterPixelMargin * Channels;
 
         /// <summary><c>stbir__decode_scanline</c> for <c>STBIR__DECODE(STBIR_TYPE_UINT8, STBIR_COLORSPACE_SRGB)</c>
         /// with clamped edges (no alpha, so the premultiply step is skipped: <c>STBIR_FLAG_ALPHA_PREMULTIPLIED</c>
         /// is forced on for <c>alpha_channel &lt; 0</c>).</summary>
-        private void DecodeScanline(int n)
+        private readonly void DecodeScanline(int n)
         {
-            float* decodeBuffer = DecodeBufferOrigin;
-            byte* inputData = _input + (long)EdgeClamp(n, _inputH) * _inputW * Channels;
-            float* table = _srgbToLinear;
-            int maxX = _inputW + _horizontalFilterPixelMargin;
-            int x = -_horizontalFilterPixelMargin;
+            var decodeBuffer = _scratch.Slice(_decodeBuffer);   // pixel x lives at (x + margin) * Channels
+            var inputData = _input.Slice(EdgeClamp(n, _inputH) * _inputW * Channels, _inputW * Channels);
+            var table = SrgbUcharToLinearFloat;
+            int margin = _horizontalFilterPixelMargin;
+            int maxX = _inputW + margin;
+            int x = -margin;
 
             // Left margin, interior, right margin (stbir__edge_wrap is the identity inside the image).
             for (; x < 0 && x < maxX; x++)
             {
-                DecodePixel(decodeBuffer + x * Channels, inputData + EdgeClamp(x, _inputW) * Channels, table);
+                DecodePixel(decodeBuffer.Slice((x + margin) * Channels), inputData.Slice(EdgeClamp(x, _inputW) * Channels), table);
             }
             int interiorEnd = Math.Min(_inputW, maxX);
             for (; x < interiorEnd; x++)
             {
-                DecodePixel(decodeBuffer + x * Channels, inputData + x * Channels, table);
+                DecodePixel(decodeBuffer.Slice((x + margin) * Channels), inputData.Slice(x * Channels), table);
             }
             for (; x < maxX; x++)
             {
-                DecodePixel(decodeBuffer + x * Channels, inputData + EdgeClamp(x, _inputW) * Channels, table);
+                DecodePixel(decodeBuffer.Slice((x + margin) * Channels), inputData.Slice(EdgeClamp(x, _inputW) * Channels), table);
             }
         }
 
         /// <summary>One pixel of the sRGB decode: <c>stbir__srgb_uchar_to_linear_float[byte]</c> per channel.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void DecodePixel(float* dst, byte* src, float* table)
+        private static void DecodePixel(Span<float> dst, ReadOnlySpan<byte> src, float[] table)
         {
             dst[0] = table[src[0]];
             dst[1] = table[src[1]];
             dst[2] = table[src[2]];
         }
 
-        /// <summary><c>stbir__get_ring_buffer_entry</c>.</summary>
-        private float* GetRingBufferEntry(int index) => _ringBuffer + (long)index * _ringBufferLength;
+        /// <summary><c>stbir__get_ring_buffer_entry</c> (to the end of the block, like the C pointer).</summary>
+        private readonly Span<float> GetRingBufferEntry(int index) => _scratch.Slice(_ringBuffer + index * _ringBufferLength);
 
         /// <summary><c>stbir__get_ring_buffer_scanline</c>.</summary>
-        private float* GetRingBufferScanline(int getScanline)
+        private readonly Span<float> GetRingBufferScanline(int getScanline)
         {
             int ringBufferIndex = (_ringBufferBeginIndex + (getScanline - _ringBufferFirstScanline)) % _ringBufferNumEntries;
             return GetRingBufferEntry(ringBufferIndex);
         }
 
         /// <summary><c>stbir__add_empty_ring_buffer_entry</c>: appends scanline <paramref name="n"/> and zeroes it.</summary>
-        private float* AddEmptyRingBufferEntry(int n)
+        private Span<float> AddEmptyRingBufferEntry(int n)
         {
             int ringBufferIndex;
 
@@ -737,18 +708,19 @@ internal static class StbImageResize
                 ringBufferIndex = (_ringBufferBeginIndex + (_ringBufferLastScanline - _ringBufferFirstScanline)) % _ringBufferNumEntries;
             }
 
-            float* ringBuffer = GetRingBufferEntry(ringBufferIndex);
-            new Span<float>(ringBuffer, _ringBufferLength).Clear();
+            var ringBuffer = GetRingBufferEntry(ringBufferIndex);
+            ringBuffer.Slice(0, _ringBufferLength).Clear();
             return ringBuffer;
         }
 
         /// <summary><c>stbir__resample_horizontal_upsample</c> (3-channel case): gathers each output pixel from
         /// its contributing decoded input pixels, in increasing input order.</summary>
-        private void ResampleHorizontalUpsample(float* outputBuffer)
+        private readonly void ResampleHorizontalUpsample(Span<float> outputBuffer)
         {
-            float* decodeBuffer = DecodeBufferOrigin;
-            int* contributors = _horizontalContributors;
-            float* coefficients = _horizontalCoefficients;
+            int decodeBuffer = DecodeBufferOrigin;
+            var scratch = _scratch;
+            var contributors = _scratchInts.Slice(_horizontalContributors);
+            var coefficients = _scratch.Slice(_horizontalCoefficients);
             int coefficientWidth = _horizontalCoefficientWidth;
 
             for (int x = 0; x < _outputW; x++)
@@ -756,17 +728,17 @@ internal static class StbImageResize
                 int n0 = contributors[2 * x];
                 int n1 = contributors[2 * x + 1];
 
-                float* outPixel = outputBuffer + x * Channels;
-                float* coefficientGroup = coefficients + coefficientWidth * x;
+                var outPixel = outputBuffer.Slice(x * Channels, Channels);
+                var coefficientGroup = coefficients.Slice(coefficientWidth * x);
                 float o0 = outPixel[0], o1 = outPixel[1], o2 = outPixel[2];
 
                 for (int k = n0; k <= n1; k++)
                 {
-                    float* inPixel = decodeBuffer + k * Channels;
+                    int inPixel = decodeBuffer + k * Channels;
                     float coefficient = coefficientGroup[k - n0];
-                    o0 += inPixel[0] * coefficient;
-                    o1 += inPixel[1] * coefficient;
-                    o2 += inPixel[2] * coefficient;
+                    o0 += scratch[inPixel] * coefficient;
+                    o1 += scratch[inPixel + 1] * coefficient;
+                    o2 += scratch[inPixel + 2] * coefficient;
                 }
 
                 outPixel[0] = o0;
@@ -777,11 +749,12 @@ internal static class StbImageResize
 
         /// <summary><c>stbir__resample_horizontal_downsample</c> (3-channel case): scatters each decoded input
         /// pixel (margins included) into the output pixels it contributes to.</summary>
-        private void ResampleHorizontalDownsample(float* outputBuffer)
+        private readonly void ResampleHorizontalDownsample(Span<float> outputBuffer)
         {
-            float* decodeBuffer = DecodeBufferOrigin;
-            int* contributors = _horizontalContributors;
-            float* coefficients = _horizontalCoefficients;
+            int decodeBuffer = DecodeBufferOrigin;
+            var scratch = _scratch;
+            var contributors = _scratchInts.Slice(_horizontalContributors);
+            var coefficients = _scratch.Slice(_horizontalCoefficients);
             int coefficientWidth = _horizontalCoefficientWidth;
             int filterPixelMargin = _horizontalFilterPixelMargin;
             int maxX = _inputW + filterPixelMargin * 2;
@@ -791,13 +764,13 @@ internal static class StbImageResize
                 int n0 = contributors[2 * x];
                 int n1 = contributors[2 * x + 1];
 
-                float* inPixel = decodeBuffer + (x - filterPixelMargin) * Channels;
-                float i0 = inPixel[0], i1 = inPixel[1], i2 = inPixel[2];
-                float* coefficientGroup = coefficients + coefficientWidth * x;
+                int inPixel = decodeBuffer + (x - filterPixelMargin) * Channels;
+                float i0 = scratch[inPixel], i1 = scratch[inPixel + 1], i2 = scratch[inPixel + 2];
+                var coefficientGroup = coefficients.Slice(coefficientWidth * x);
 
                 for (int k = n0; k <= n1; k++)
                 {
-                    float* outPixel = outputBuffer + k * Channels;
+                    var outPixel = outputBuffer.Slice(k * Channels, Channels);
                     float coefficient = coefficientGroup[k - n0];
                     outPixel[0] += i0 * coefficient;
                     outPixel[1] += i1 * coefficient;
@@ -824,74 +797,77 @@ internal static class StbImageResize
 
         /// <summary><c>stbir__decode_and_resample_downsample</c>: decodes input row <paramref name="n"/> and resamples
         /// it horizontally into the (zeroed) horizontal buffer.</summary>
-        private void DecodeAndResampleDownsample(int n)
+        private readonly void DecodeAndResampleDownsample(int n)
         {
             DecodeScanline(n);
 
-            new Span<float>(_horizontalBuffer, _outputW * Channels).Clear();
+            var horizontalBuffer = _scratch.Slice(_horizontalBuffer);
+            horizontalBuffer.Slice(0, _outputW * Channels).Clear();
 
             if (UseUpsampling(_horizontalScale))
             {
-                ResampleHorizontalUpsample(_horizontalBuffer);
+                ResampleHorizontalUpsample(horizontalBuffer);
             }
             else
             {
-                ResampleHorizontalDownsample(_horizontalBuffer);
+                ResampleHorizontalDownsample(horizontalBuffer);
             }
         }
 
         /// <summary><c>stbir__encode_scanline</c> for <c>STBIR__DECODE(STBIR_TYPE_UINT8, STBIR_COLORSPACE_SRGB)</c>
         /// with no alpha channel: every channel goes through <c>stbir__linear_to_srgb_uchar</c>.</summary>
-        private void EncodeScanline(byte* outputBuffer, float* encodeBuffer)
+        private readonly void EncodeScanline(int row, ReadOnlySpan<float> encodeBuffer)
         {
             int count = _outputW * Channels;
-            uint* table = _fp32ToSrgb8;
+            var outputBuffer = _output.Slice(row * count, count);
+            encodeBuffer = encodeBuffer.Slice(0, count);
             for (int i = 0; i < count; i++)
             {
-                outputBuffer[i] = LinearToSrgbUchar(encodeBuffer[i], table);
+                outputBuffer[i] = LinearToSrgbUchar(encodeBuffer[i]);
             }
         }
 
         /// <summary><c>stbir__resample_vertical_upsample</c>: gathers output row <paramref name="n"/> from its
         /// ring buffer scanlines into the encode buffer, then encodes it.</summary>
-        private void ResampleVerticalUpsample(int n)
+        private readonly void ResampleVerticalUpsample(int n)
         {
             int count = _outputW * Channels;
             int contributor = n;
-            float* coefficientGroup = _verticalCoefficients + _verticalCoefficientWidth * contributor;
-            int n0 = _verticalContributors[2 * contributor];
-            int n1 = _verticalContributors[2 * contributor + 1];
-            float* encodeBuffer = _encodeBuffer;
+            var coefficientGroup = _scratch.Slice(_verticalCoefficients + _verticalCoefficientWidth * contributor);
+            int n0 = _scratchInts[_verticalContributors + 2 * contributor];
+            int n1 = _scratchInts[_verticalContributors + 2 * contributor + 1];
+            var encodeBuffer = _scratch.Slice(_encodeBuffer);
 
-            new Span<float>(encodeBuffer, count).Clear();
+            encodeBuffer.Slice(0, count).Clear();
 
             int coefficientCounter = 0;
             for (int k = n0; k <= n1; k++)
             {
                 int coefficientIndex = coefficientCounter++;
-                float* ringBufferEntry = GetRingBufferScanline(k);
+                var ringBufferEntry = GetRingBufferScanline(k);
                 float coefficient = coefficientGroup[coefficientIndex];
                 MultiplyAccumulate(encodeBuffer, ringBufferEntry, coefficient, count);
             }
 
-            EncodeScanline(_output + (long)n * count, encodeBuffer);
+            EncodeScanline(n, encodeBuffer);
         }
 
         /// <summary><c>stbir__resample_vertical_downsample</c>: scatters the horizontal buffer of input row
         /// <paramref name="n"/> into the ring buffer scanlines it contributes to.</summary>
-        private void ResampleVerticalDownsample(int n)
+        private readonly void ResampleVerticalDownsample(int n)
         {
             int count = _outputW * Channels;
             int contributor = n + _verticalFilterPixelMargin;
-            float* coefficientGroup = _verticalCoefficients + _verticalCoefficientWidth * contributor;
-            int n0 = _verticalContributors[2 * contributor];
-            int n1 = _verticalContributors[2 * contributor + 1];
+            var coefficientGroup = _scratch.Slice(_verticalCoefficients + _verticalCoefficientWidth * contributor);
+            int n0 = _scratchInts[_verticalContributors + 2 * contributor];
+            int n1 = _scratchInts[_verticalContributors + 2 * contributor + 1];
+            var horizontalBuffer = _scratch.Slice(_horizontalBuffer);
 
             for (int k = n0; k <= n1; k++)
             {
                 float coefficient = coefficientGroup[k - n0];
-                float* ringBufferEntry = GetRingBufferScanline(k);
-                MultiplyAccumulate(ringBufferEntry, _horizontalBuffer, coefficient, count);
+                var ringBufferEntry = GetRingBufferScanline(k);
+                MultiplyAccumulate(ringBufferEntry, horizontalBuffer, coefficient, count);
             }
         }
 
@@ -948,8 +924,6 @@ internal static class StbImageResize
         /// <paramref name="firstNecessaryScanline"/>.</summary>
         private void EmptyRingBuffer(int firstNecessaryScanline)
         {
-            int count = _outputW * Channels;
-
             if (_ringBufferBeginIndex >= 0)
             {
                 // Get rid of whatever we don't need anymore.
@@ -957,8 +931,7 @@ internal static class StbImageResize
                 {
                     if (_ringBufferFirstScanline >= 0 && _ringBufferFirstScanline < _outputH)
                     {
-                        float* ringBufferEntry = GetRingBufferEntry(_ringBufferBeginIndex);
-                        EncodeScanline(_output + (long)_ringBufferFirstScanline * count, ringBufferEntry);
+                        EncodeScanline(_ringBufferFirstScanline, GetRingBufferEntry(_ringBufferBeginIndex));
                     }
 
                     if (_ringBufferFirstScanline == _ringBufferLastScanline)
