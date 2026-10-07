@@ -15,9 +15,9 @@ namespace SentenceTransformers.EmbeddingGemma2.Numerics;
 /// <para>
 /// Each function mirrors one kernel of google/XNNPACK as bundled with LiteRT-LM 0.18: the arithmetic order, the fused multiply-adds, the SIMD lane layout of reductions and the
 /// polynomial / rational approximations are reproduced exactly. The 16-lane accumulators of the AVX-512 kernels
-/// are emulated with 128-bit vectors, so results are identical on every CPU (x86 with or without AVX-512,
-/// ARM64), except for <see cref="ReciprocalSqrt"/>, whose initial estimate needs the AVX-512
-/// <c>vrsqrt14ps</c> instruction and falls back to a correctly rounded estimate elsewhere (≤ 1 ulp apart).
+/// are emulated with 128-bit vectors and the AVX-512 <c>vrsqrt14ps</c> estimate is emulated in software where the
+/// instruction is unavailable (<see cref="Rsqrt14"/>), so results are identical on every CPU (x86 with or
+/// without AVX-512, ARM64).
 /// </para>
 /// </summary>
 internal static class Xnn
@@ -118,7 +118,7 @@ internal static class Xnn
     {
         float y = Avx512F.VL.IsSupported
             ? Avx512F.VL.ReciprocalSqrt14(Vector128.CreateScalarUnsafe(a)).ToScalar()
-            : 1f / MathF.Sqrt(a);
+            : Rsqrt14.Estimate(a);
         float t1 = y * y;
         float t2 = a * t1;
         float t3 = t2 - 1f;

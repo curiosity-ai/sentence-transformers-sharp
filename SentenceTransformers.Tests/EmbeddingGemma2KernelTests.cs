@@ -1,5 +1,7 @@
 using SentenceTransformers.EmbeddingGemma2.Audio;
 using SentenceTransformers.EmbeddingGemma2.Numerics;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace SentenceTransformers.Tests;
 
@@ -115,6 +117,32 @@ public class EmbeddingGemma2KernelTests
             {
                 double e = x[r * dim + i] * inv * w[i];
                 Assert.True(Math.Abs(y[r * dim + i] - e) <= 1e-6 * Math.Max(1, Math.Abs(e)), $"row {r} [{i}]");
+            }
+        }
+    }
+
+    [Fact]
+    public void Rsqrt14_MatchesHardwareEstimate()
+    {
+        var inputs = new List<float> { 0f, -0f, float.PositiveInfinity, float.NegativeInfinity, float.NaN, -1f, 1f, 4f, 0.25f, 2f, 0.5f,
+            float.Epsilon, 1e-40f, float.MaxValue, 1.17549435E-38f, BitConverter.UInt32BitsToSingle(0x7FC12345) };
+        var rng = new Random(5);
+        for (int i = 0; i < 1_000_000; i++)
+        {
+            inputs.Add(BitConverter.UInt32BitsToSingle((uint)rng.NextInt64(0, 1L << 32)));
+        }
+        foreach (float a in inputs)
+        {
+            float emu = Rsqrt14.Estimate(a);
+            if (Avx512F.VL.IsSupported)
+            {
+                float hw = Avx512F.VL.ReciprocalSqrt14(Vector128.CreateScalarUnsafe(a)).ToScalar();
+                Assert.True(BitConverter.SingleToUInt32Bits(hw) == BitConverter.SingleToUInt32Bits(emu), $"rsqrt14(0x{BitConverter.SingleToUInt32Bits(a):X8})");
+            }
+            else if (a > 0 && float.IsFinite(a))
+            {
+                // vrsqrt14 guarantees a relative error below 2^-14.
+                Assert.True(Math.Abs(emu * Math.Sqrt(a) - 1) < 1.0 / 16384, $"rsqrt14({a:R}) = {emu:R}");
             }
         }
     }

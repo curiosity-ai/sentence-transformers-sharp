@@ -258,8 +258,8 @@ Set `OverflowStrategy` to `ChunkAndAverage` or `Error` to change that; the long-
 the image cost (the default is 140 soft tokens per image).
 
 **Fidelity.** The package is a port of the `litert-lm` runtime's embedding engine, not an approximation.
-On x64 with AVX-512 it reproduces the LiteRT-LM 0.18 CPU engine's embeddings **bit for bit** (maximum
-absolute difference 0) for text, images, interleaved text + image, and audio:
+It reproduces the embeddings of the LiteRT-LM 0.18 CPU engine (XNNPACK's AVX-512 path) **bit for bit**
+(maximum absolute difference 0) for text, images, interleaved text + image, and audio:
 - **Text:** the SentencePiece tokenizer is token-for-token identical to the reference.
 - **Images:** decoding (PNG / JPEG / BMP) and the sRGB Catmull-Rom resize reproduce `stb_image` /
   `stb_image_resize` v0.97 (the version the engine links) byte for byte.
@@ -273,9 +273,13 @@ absolute difference 0) for text, images, interleaved text + image, and audio:
   `sin`/`cos`) are ports of XNNPACK's AVX-512 polynomial kernels rather than calls into the .NET math
   library.
 
-Other CPUs run the same algorithms, but hardware estimates (the AVX-512 `rsqrt14` seed) and the absence of
-fused multiply-add can change the last bit of intermediate results, so embeddings agree with the engine to
-~1e-6 rather than exactly.
+The results do not depend on the host CPU. The 16-lane AVX-512 reductions are emulated with 128-bit
+vectors, and the `vrsqrt14` estimate is reproduced from a table measured on AVX-512 hardware where the
+instruction is missing. On x64 this is verified with AVX-512, AVX2, SSE-only and scalar code paths, so
+the same input gives the same embedding on any machine. (The engine itself only gives these values on
+AVX-512 CPUs, because its AVX2 kernels round differently.) ARM64 runs the same 128-bit, fused
+multiply-add code paths but has not been verified. CPUs without FMA instructions (pre-2013 x64) fall back
+to software fused multiply-add, which is exact but several times slower.
 
 **Performance** (4-vCPU AVX-512 VM; LiteRT-LM engine on the same machine for comparison):
 

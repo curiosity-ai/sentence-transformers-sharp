@@ -11,9 +11,8 @@ namespace SentenceTransformers.Tests;
 /// <c>Resources/embeddinggemma2</c> were produced by <c>scripts/generate_embeddinggemma2_reference.py</c>.
 /// <para>
 /// Opt-in: each test returns early unless the bundle it needs is available (see
-/// <see cref="EmbeddingGemma2TestAssets"/>). On x64 with AVX-512 the embeddings must equal the engine's bit for
-/// bit (see <see cref="EmbeddingGemma2TestAssets.ExpectBitExactEngineParity"/>); elsewhere they are compared by
-/// cosine. The per-layer agreement with the TFLite interpreter is checked by
+/// <see cref="EmbeddingGemma2TestAssets"/>). On x64 the embeddings must equal the engine's bit for bit (see
+/// <see cref="EmbeddingGemma2TestAssets.ExpectBitExactEngineParity"/>); elsewhere they are compared by cosine. The per-layer agreement with the TFLite interpreter is checked by
 /// <see cref="EmbeddingGemma2ReferenceTests"/>.
 /// </para>
 /// </summary>

@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics.X86;
 using System.Text.Json;
 using SentenceTransformers.EmbeddingGemma2;
 
@@ -98,12 +97,12 @@ internal static class EmbeddingGemma2TestAssets
     }
 
     /// <summary>
-    /// The port reproduces the LiteRT-LM engine bit for bit where it executes the same instructions as the
-    /// engine's XNNPACK AVX-512 kernels (x64 with AVX-512VL and FMA). Elsewhere the reciprocal square root
-    /// seed and fused multiply-adds can differ in the last bit, which int8 activation quantization can
-    /// amplify, so only cosine agreement is checked.
+    /// The port reproduces the LiteRT-LM engine's AVX-512 results bit for bit independently of the host's
+    /// instruction set (XNNPACK's kernels, including the <c>vrsqrt14</c> estimate, are emulated where the
+    /// hardware lacks them). That is verified on x64 (AVX-512, AVX2, SSE-only and scalar code paths); on other
+    /// architectures only cosine agreement is asserted.
     /// </summary>
-    public static bool ExpectBitExactEngineParity => Avx512F.VL.IsSupported && Fma.IsSupported;
+    public static bool ExpectBitExactEngineParity => RuntimeInformation.ProcessArchitecture == Architecture.X64;
 
     /// <summary>Asserts <paramref name="actual"/> equals the engine's embedding exactly on
     /// <see cref="ExpectBitExactEngineParity"/> hardware, and has cosine ≥ <paramref name="minCosine"/> elsewhere.</summary>
