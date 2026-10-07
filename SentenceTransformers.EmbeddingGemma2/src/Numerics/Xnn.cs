@@ -509,7 +509,7 @@ internal static class Xnn
     /// </summary>
     public static void Softmax(Span<float> row, bool maskedPrefix = false)
     {
-        float max = TensorPrimitives.Max<float>(row);
+        float max = RowMax(row);
         var vmax = Vector128.Create(max);
         int n = row.Length;
         // Elements handled by the 64-wide loop (alternating accumulators); the rest go to the folded accumulator.
@@ -517,7 +517,27 @@ internal static class Xnn
         Span<Vector128<float>> acc = stackalloc Vector128<float>[8];
         acc.Clear();
         int j = 0;
-        if (Vector256.IsHardwareAccelerated && blockEnd >= 32)
+        if (Vector512.IsHardwareAccelerated && blockEnd >= 32)
+        {
+            // One 512-bit register per 16-lane accumulator: exactly the AVX-512 kernel's layout.
+            ref float r0 = ref MemoryMarshal.GetReference(row);
+            var vmax16 = Vector512.Create(max);
+            Vector512<float> a = default, b = default;
+            for (; j + 32 <= blockEnd; j += 32)
+            {
+                a += ExpStore(ref r0, j, vmax16);
+                b += ExpStore(ref r0, j + 16, vmax16);
+            }
+            acc[0] = a.GetLower().GetLower();
+            acc[1] = a.GetLower().GetUpper();
+            acc[2] = a.GetUpper().GetLower();
+            acc[3] = a.GetUpper().GetUpper();
+            acc[4] = b.GetLower().GetLower();
+            acc[5] = b.GetLower().GetUpper();
+            acc[6] = b.GetUpper().GetLower();
+            acc[7] = b.GetUpper().GetUpper();
+        }
+        else if (Vector256.IsHardwareAccelerated && blockEnd >= 32)
         {
             // Same lanes, two 256-bit halves per 16-lane accumulator: every lane sees the same operations in the
             // same order, so the result is identical to the 128-bit loop below.
@@ -554,6 +574,67 @@ internal static class Xnn
         }
         float scale = 1f / ReduceAdd(acc[0], acc[1], acc[2], acc[3]);
         TensorPrimitives.Multiply(row, scale, row);
+    }
+
+    /// <summary>
+    /// Row maximum with <see cref="MathF.Max(float, float)"/>'s NaN propagation, computed with native
+    /// <c>maxps</c> plus a separate NaN check. Only the sign of a zero maximum can differ from
+    /// <see cref="TensorPrimitives.Max{T}(ReadOnlySpan{T})"/>, and <c>exp(x − (±0))</c> is the same either way.
+    /// </summary>
+    private static float RowMax(ReadOnlySpan<float> row)
+    {
+        int n = row.Length, i = 0;
+        float max = float.NegativeInfinity;
+        bool nan = false;
+        ref float r = ref MemoryMarshal.GetReference(row);
+        if (Vector256.IsHardwareAccelerated && n >= 16)
+        {
+            var m0 = Vector256.Create(float.NegativeInfinity);
+            var m1 = m0;
+            var bad = Vector256<float>.Zero;
+            for (; i + 16 <= n; i += 16)
+            {
+                var v0 = Vector256.LoadUnsafe(ref r, (nuint)i);
+                var v1 = Vector256.LoadUnsafe(ref r, (nuint)i + 8);
+                m0 = Vector256.MaxNative(m0, v0);
+                m1 = Vector256.MaxNative(m1, v1);
+                bad |= ~(Vector256.Equals(v0, v0) & Vector256.Equals(v1, v1));
+            }
+            nan = bad != Vector256<float>.Zero;
+            var m = Vector256.MaxNative(m0, m1);
+            for (int k = 0; k < 8; k++)
+            {
+                max = MathF.Max(max, m.GetElement(k));
+            }
+        }
+        for (; i < n; i++)
+        {
+            float v = Unsafe.Add(ref r, i);
+            nan |= float.IsNaN(v);
+            max = MathF.Max(max, v);
+        }
+        return nan ? float.NaN : max;
+    }
+
+    /// <summary>The 512-bit form of <see cref="ExpGroup"/> for 16 in-range elements.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector512<float> ExpStore(ref float row, int j, Vector512<float> vmax)
+    {
+        var x = Vector512.LoadUnsafe(ref row, (nuint)j) - vmax;
+        var n = Vector512.FusedMultiplyAdd(x, Vector512.Create(ExpLog2e.ToScalar()), Vector512.Create(ExpMagicBias.ToScalar()));
+        var sc = Vector512.ShiftLeft(n.AsInt32(), 23).AsSingle();
+        n -= Vector512.Create(ExpMagicBias.ToScalar());
+        var t = Vector512.FusedMultiplyAdd(n, Vector512.Create(ExpMinusLn2Hi.ToScalar()), x);
+        t = Vector512.FusedMultiplyAdd(n, Vector512.Create(ExpMinusLn2Lo.ToScalar()), t);
+        var p = Vector512.FusedMultiplyAdd(Vector512.Create(ExpC5.ToScalar()), t, Vector512.Create(ExpC4.ToScalar()));
+        p = Vector512.FusedMultiplyAdd(p, t, Vector512.Create(ExpC3.ToScalar()));
+        p = Vector512.FusedMultiplyAdd(p, t, Vector512.Create(ExpC2.ToScalar()));
+        p = Vector512.FusedMultiplyAdd(p, t, Vector512.Create(ExpC1.ToScalar()));
+        t *= sc;
+        var f = Vector512.FusedMultiplyAdd(t, p, sc);
+        f = Vector512.ConditionalSelect(Vector512.LessThan(x, Vector512.Create(ExpDenormCutoff.ToScalar())), Vector512<float>.Zero, f);
+        f.StoreUnsafe(ref row, (nuint)j);
+        return f;
     }
 
     /// <summary>The 256-bit form of <see cref="ExpGroup"/> for 8 in-range elements.</summary>

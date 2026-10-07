@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
@@ -160,6 +161,8 @@ internal static class QGemm
     private const int TileM = 4;   // weight rows per micro-tile
     private const int BlockN = 32;
     private const int BlockM = 64;
+    private const int UnpackRows = 16;   // packed weights: rows expanded per pass (16 × K bytes, L1-resident)
+    private const int UnpackWholeMinRows = 64;   // from this many activation rows, expand packed weights once up front
 
     private static readonly bool UseVnni = AvxVnni.IsSupported;
     private static readonly bool UseAvx512 = Avx512BW.IsSupported;
@@ -210,30 +213,111 @@ internal static class QGemm
             fixed (float* yp = y)
             {
                 var yPtr = (nint)yp;
-                if (dop <= 1 || blocks == 1)
+                if (w.Bits == 8 || n >= UnpackWholeMinRows)
                 {
-                    for (int b = 0; b < blocks; b++)
+                    // Byte weights, or packed weights against enough activation rows that expanding the whole matrix
+                    // once (in parallel) costs little: the blocked kernel then reads them as bytes.
+                    sbyte[] unpacked = null;
+                    try
                     {
-                        RunBlock(x, w, (float*)yPtr, ldy, b / mBlocks, b % mBlocks, requant);
+                        if (w.Bits != 8)
+                        {
+                            unpacked = System.Buffers.ArrayPool<sbyte>.Shared.Rent(m * w.Stride);
+                        }
+                        fixed (sbyte* wp = w.Bits == 8 ? w.Data : unpacked)
+                        {
+                            var wPtr = (nint)wp;
+                            if (w.Bits != 8)
+                            {
+                                WorkerPool.For(mBlocks, dop <= 1 ? 1 : dop, mb => w.Unpack(mb * BlockM, Math.Min(m, mb * BlockM + BlockM), (sbyte*)wPtr + (long)mb * BlockM * w.Stride));
+                            }
+                            if (dop <= 1 || blocks == 1)
+                            {
+                                for (int b = 0; b < blocks; b++)
+                                {
+                                    RunBlock(x, w, (sbyte*)wPtr, (float*)yPtr, ldy, b / mBlocks, b % mBlocks, requant);
+                                }
+                            }
+                            else
+                            {
+                                WorkerPool.For(blocks, po, b => RunBlock(x, w, (sbyte*)wPtr, (float*)yPtr, ldy, b / mBlocks, b % mBlocks, requant));
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (unpacked is not null)
+                        {
+                            System.Buffers.ArrayPool<sbyte>.Shared.Return(unpacked);
+                        }
+                    }
+                    return;
+                }
+                // Packed (4/2-bit) weights against few activation rows (memory-bound): each work item streams one
+                // block of weight rows, expanding it into a cache-resident scratch buffer a few rows at a time. N is
+                // split into groups only when there are too few weight blocks to keep every thread busy.
+                int groups = dop <= 1 ? 1 : Math.Max(1, Math.Min(nBlocks, (2 * dop + mBlocks - 1) / mBlocks));
+                int items = mBlocks * groups;
+                void Item(int it)
+                {
+                    int mb = it / groups, g = it % groups;
+                    int nb0 = g * nBlocks / groups, nb1 = (g + 1) * nBlocks / groups;
+                    if (nb0 >= nb1)
+                    {
+                        return;
+                    }
+                    int m0 = mb * BlockM, m1 = Math.Min(m, m0 + BlockM);
+                    int n0 = nb0 * BlockN, n1 = Math.Min(n, nb1 * BlockN);
+                    // Expand UnpackRows weight rows at a time so they stay L1-resident while every activation row of
+                    // this item streams past them.
+                    sbyte* s = UnpackScratch(UnpackRows * w.Stride);
+                    for (int r0 = m0; r0 < m1; r0 += UnpackRows)
+                    {
+                        int r1 = Math.Min(m1, r0 + UnpackRows);
+                        w.Unpack(r0, r1, s);
+                        RunRange(x, w, s - (long)r0 * w.Stride, (float*)yPtr, ldy, n0, n1, r0, r1, requant);
+                    }
+                }
+                if (dop <= 1 || items == 1)
+                {
+                    for (int it = 0; it < items; it++)
+                    {
+                        Item(it);
                     }
                 }
                 else
                 {
-                    WorkerPool.For(blocks, po, b => RunBlock(x, w, (float*)yPtr, ldy, b / mBlocks, b % mBlocks, requant));
+                    WorkerPool.For(items, po, Item);
                 }
             }
         }
     }
 
-    private static unsafe void RunBlock(QuantizedActivations x, QuantizedMatrix w, float* y, int ldy, int nb, int mb, Requantization rq)
+    [ThreadStatic]
+    private static sbyte[] _unpacked;
+
+    /// <summary>This thread's 64-byte aligned scratch for unpacked weight rows (pinned, so the address is stable).</summary>
+    private static unsafe sbyte* UnpackScratch(int bytes)
     {
-        int n0 = nb * BlockN, n1 = Math.Min(x.Rows, n0 + BlockN);
-        int m0 = mb * BlockM, m1 = Math.Min(w.Rows, m0 + BlockM);
+        var a = _unpacked;
+        if (a is null || a.Length < bytes + 64)
+        {
+            _unpacked = a = GC.AllocateUninitializedArray<sbyte>(bytes + 64, pinned: true);
+        }
+        nint p = (nint)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(a));
+        return (sbyte*)((p + 63) & ~(nint)63);
+    }
+
+    private static unsafe void RunBlock(QuantizedActivations x, QuantizedMatrix w, sbyte* wBase, float* y, int ldy, int nb, int mb, Requantization rq)
+        => RunRange(x, w, wBase, y, ldy, nb * BlockN, Math.Min(x.Rows, nb * BlockN + BlockN), mb * BlockM, Math.Min(w.Rows, mb * BlockM + BlockM), rq);
+
+    /// <summary>Activation rows <c>n0..n1</c> × weight rows <c>m0..m1</c> (weight row j at <c>wBase + j·Stride</c>).</summary>
+    private static unsafe void RunRange(QuantizedActivations x, QuantizedMatrix w, sbyte* wBase, float* y, int ldy, int n0, int n1, int m0, int m1, Requantization rq)
+    {
         int k = w.Stride;
         bool small = w.SmallRange;
         int* acc = stackalloc int[TileN * TileM];
         fixed (byte* xBase = x.Data)
-        fixed (sbyte* wBase = w.Data)
         {
             int i = n0;
             if (UseAvx512)

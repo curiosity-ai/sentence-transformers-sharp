@@ -33,24 +33,40 @@ public class EmbeddingGemma2NumericsTests
         return w;
     }
 
+    private static sbyte[] WeightsOfWidth(Random rng, int n, int bits)
+        => bits switch { 2 => RandomWeights(rng, n, -2, 1), 4 => RandomWeights(rng, n, -8, 7), _ => RandomWeights(rng, n, -127, 127) };
+
+    // weightBits 4 and 2 exercise the packed storage: fewer than 64 activation rows stream 16-row unpacked blocks,
+    // 64 or more expand the whole matrix first.
     [Theory]
-    [InlineData(1, 1, 1, true)]
-    [InlineData(3, 5, 7, true)]
-    [InlineData(37, 70, 300, true)]
-    [InlineData(64, 128, 512, true)]
-    [InlineData(65, 96, 520, true)]
-    [InlineData(33, 129, 1536, true)]
-    [InlineData(5, 9, 77, false)]
-    [InlineData(37, 70, 300, false)]
-    [InlineData(64, 64, 768, false)]
-    public void QGemm_MatchesNaiveIntegerReference(int n, int m, int k, bool smallRange)
+    [InlineData(1, 1, 1, 4)]
+    [InlineData(3, 5, 7, 4)]
+    [InlineData(37, 70, 300, 4)]
+    [InlineData(64, 128, 512, 4)]
+    [InlineData(65, 96, 520, 4)]
+    [InlineData(33, 129, 1536, 4)]
+    [InlineData(5, 9, 77, 8)]
+    [InlineData(37, 70, 300, 8)]
+    [InlineData(64, 64, 768, 8)]
+    [InlineData(3, 70, 300, 2)]
+    [InlineData(16, 200, 1024, 2)]
+    [InlineData(80, 96, 520, 2)]
+    public void QGemm_MatchesNaiveIntegerReference(int n, int m, int k, int weightBits)
     {
         var rng = new Random(n * 1000 + m * 10 + k);
         var x = RandomFloats(rng, n * k, 3f);
-        var w = smallRange ? RandomWeights(rng, m * k, -8, 7) : RandomWeights(rng, m * k, -127, 127);
+        var w = WeightsOfWidth(rng, m * k, weightBits);
         var scale = RandomFloats(rng, m, 0.01f).Select(s => MathF.Abs(s) + 1e-3f).ToArray();
         var matrix = new QuantizedMatrix(m, k, w, scale) { Bias = RandomFloats(rng, m) };
-        Assert.Equal(smallRange, matrix.SmallRange);
+        // Storage is chosen from the actual values (a tiny random "int4" matrix may well fit in 2 bits).
+        int expectedBits = w.All(v => v >= -2 && v <= 1) ? 2 : w.All(v => v >= -8 && v <= 7) ? 4 : 8;
+        Assert.Equal(expectedBits, matrix.Bits);
+        Assert.True(weightBits == 8 || matrix.Bits <= weightBits);
+        Assert.Equal(expectedBits < 8, matrix.SmallRange);
+        for (int r = 0; r < m; r++)
+        {
+            Assert.Equal(w.AsSpan(r * k, k).ToArray(), matrix.Row(r).AsSpan(0, k).ToArray());
+        }
 
         var qa = new QuantizedActivations();
         qa.Quantize(x, n, k, k);
@@ -95,13 +111,15 @@ public class EmbeddingGemma2NumericsTests
     }
 
     [Theory]
-    [InlineData(10, 12, 64, false)]
-    [InlineData(37, 70, 300, true)]
-    public void QGemm_StaticRequantization_MatchesNaive(int n, int m, int k, bool smallRange)
+    [InlineData(10, 12, 64, 8)]
+    [InlineData(37, 70, 300, 4)]
+    [InlineData(16, 130, 1024, 2)]
+    [InlineData(70, 130, 256, 2)]
+    public void QGemm_StaticRequantization_MatchesNaive(int n, int m, int k, int weightBits)
     {
         var rng = new Random(42 + n);
         var x = RandomFloats(rng, n * k, 2f);
-        var w = smallRange ? RandomWeights(rng, m * k, -8, 7) : RandomWeights(rng, m * k, -127, 127);
+        var w = WeightsOfWidth(rng, m * k, weightBits);
         var wScale = Enumerable.Range(0, m).Select(i => 0.002f + 0.0001f * i).ToArray();
         var matrix = new QuantizedMatrix(m, k, w, wScale);
         float inScale = 2f / 127f, outScale = 0.05f;
