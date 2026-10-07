@@ -4,7 +4,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Platforms>AnyCPU</Platforms>
     <LangVersion>latest</LangVersion>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>SentenceTransformers.EmbeddingGemma2</RootNamespace>
   </PropertyGroup>
 

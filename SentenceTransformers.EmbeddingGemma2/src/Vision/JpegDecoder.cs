@@ -7,6 +7,7 @@
 // is arithmetically identical to the scalar one, and stb's SIMD YCbCr->RGB kernel only accelerates the
 // 4-channel case, so 3-channel output always uses the scalar stbi__YCbCr_to_RGB_row formula.
 
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -1707,23 +1708,19 @@ internal static class JpegDecoder
     /// IDCT of one dequantized 8x8 block into <paramref name="dst"/> at <paramref name="offset"/>
     /// (row stride <paramref name="stride"/>), with stbi__idct_simd semantics.
     /// </summary>
-    private static unsafe void Idct(short[] block, byte[] dst, int offset, int stride)
+    private static void Idct(short[] block, byte[] dst, int offset, int stride)
     {
         if ((uint)offset > (uint)dst.Length || (uint)(offset + 7 * stride + 8) > (uint)dst.Length)
         {
             throw new InvalidDataException("Corrupt JPEG: block outside the component plane");
         }
-        fixed (short* d = block)
-        fixed (byte* o = dst)
+        if (Sse2.IsSupported)
         {
-            if (Sse2.IsSupported)
-            {
-                IdctSse2(d, o + offset, stride);
-            }
-            else
-            {
-                IdctScalar(d, o + offset, stride);
-            }
+            IdctSse2(block, dst.AsSpan(offset), stride);
+        }
+        else
+        {
+            IdctScalar(block, dst.AsSpan(offset), stride);
         }
     }
 
@@ -1732,10 +1729,10 @@ internal static class JpegDecoder
     /// out-of-range coefficients: sums of input pairs wrap at 16 bits (_mm_add_epi16) and the column
     /// pass output saturates to 16 bits (_mm_packs_epi32) before the row pass.
     /// </summary>
-    internal static unsafe void IdctScalar(short* data, byte* output, int stride)
+    internal static void IdctScalar(ReadOnlySpan<short> data, Span<byte> output, int stride)
     {
-        short* tmp = stackalloc short[64];
-        int* o = stackalloc int[8];
+        Span<short> tmp = stackalloc short[64];
+        Span<int> o = stackalloc int[8];
         for (int c = 0; c < 8; ++c)
         {
             Idct1D(data[c], data[8 + c], data[16 + c], data[24 + c], data[32 + c], data[40 + c], data[48 + c], data[56 + c], ColumnBias, 10, o);
@@ -1747,9 +1744,9 @@ internal static class JpegDecoder
         }
         for (int r = 0; r < 8; ++r)
         {
-            short* s = tmp + r * 8;
+            var s = tmp.Slice(r * 8, 8);
             Idct1D(s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], RowBias, 17, o);
-            byte* dst = output + r * stride;
+            var dst = output.Slice(r * stride, 8);
             for (int k = 0; k < 8; ++k)
             {
                 int v = o[k];
@@ -1760,7 +1757,7 @@ internal static class JpegDecoder
 
     /// <summary>One 1-D pass of stbi__idct_simd's dct_pass (results before the final saturating pack).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void Idct1D(int s0, int s1, int s2, int s3, int s4, int s5, int s6, int s7, int bias, int shift, int* o)
+    private static void Idct1D(int s0, int s1, int s2, int s3, int s4, int s5, int s6, int s7, int bias, int shift, Span<int> o)
     {
         unchecked
         {
@@ -1804,16 +1801,16 @@ internal static class JpegDecoder
     }
 
     /// <summary>Direct port of stbi__idct_simd (SSE2) using .NET hardware intrinsics.</summary>
-    internal static unsafe void IdctSse2(short* data, byte* output, int stride)
+    internal static void IdctSse2(ReadOnlySpan<short> data, Span<byte> output, int stride)
     {
-        Vector128<short> row0 = Sse2.LoadVector128(data);
-        Vector128<short> row1 = Sse2.LoadVector128(data + 8);
-        Vector128<short> row2 = Sse2.LoadVector128(data + 16);
-        Vector128<short> row3 = Sse2.LoadVector128(data + 24);
-        Vector128<short> row4 = Sse2.LoadVector128(data + 32);
-        Vector128<short> row5 = Sse2.LoadVector128(data + 40);
-        Vector128<short> row6 = Sse2.LoadVector128(data + 48);
-        Vector128<short> row7 = Sse2.LoadVector128(data + 56);
+        Vector128<short> row0 = Vector128.Create(data.Slice(0, 8));
+        Vector128<short> row1 = Vector128.Create(data.Slice(8, 8));
+        Vector128<short> row2 = Vector128.Create(data.Slice(16, 8));
+        Vector128<short> row3 = Vector128.Create(data.Slice(24, 8));
+        Vector128<short> row4 = Vector128.Create(data.Slice(32, 8));
+        Vector128<short> row5 = Vector128.Create(data.Slice(40, 8));
+        Vector128<short> row6 = Vector128.Create(data.Slice(48, 8));
+        Vector128<short> row7 = Vector128.Create(data.Slice(56, 8));
 
         // column pass
         DctPass(ref row0, ref row1, ref row2, ref row3, ref row4, ref row5, ref row6, ref row7, Vector128.Create(ColumnBias), 10);
@@ -1852,21 +1849,14 @@ internal static class JpegDecoder
         Interleave8(ref p0, ref p2);
         Interleave8(ref p1, ref p3);
 
-        *(ulong*)output = p0.AsUInt64().GetElement(0);
-        output += stride;
-        *(ulong*)output = p0.AsUInt64().GetElement(1);
-        output += stride;
-        *(ulong*)output = p2.AsUInt64().GetElement(0);
-        output += stride;
-        *(ulong*)output = p2.AsUInt64().GetElement(1);
-        output += stride;
-        *(ulong*)output = p1.AsUInt64().GetElement(0);
-        output += stride;
-        *(ulong*)output = p1.AsUInt64().GetElement(1);
-        output += stride;
-        *(ulong*)output = p3.AsUInt64().GetElement(0);
-        output += stride;
-        *(ulong*)output = p3.AsUInt64().GetElement(1);
+        BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(0, 8), p0.AsUInt64().GetElement(0));
+        BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(stride, 8), p0.AsUInt64().GetElement(1));
+        BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(2 * stride, 8), p2.AsUInt64().GetElement(0));
+        BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(3 * stride, 8), p2.AsUInt64().GetElement(1));
+        BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(4 * stride, 8), p1.AsUInt64().GetElement(0));
+        BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(5 * stride, 8), p1.AsUInt64().GetElement(1));
+        BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(6 * stride, 8), p3.AsUInt64().GetElement(0));
+        BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(7 * stride, 8), p3.AsUInt64().GetElement(1));
     }
 
     /// <summary>dct_interleave16.</summary>

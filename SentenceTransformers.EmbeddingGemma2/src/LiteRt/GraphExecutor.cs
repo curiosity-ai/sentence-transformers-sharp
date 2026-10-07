@@ -1298,22 +1298,24 @@ internal sealed class GraphExecutor
         bool parallel = offA.Length > 1 && (long)m * n * k * offA.Length >= 1 << 16;
         void Batch(int bi)
         {
-            ReadOnlySpan<float> A = af.AsSpan(offA[bi] * matA, matA);
-            ReadOnlySpan<float> B = bf.AsSpan(offB[bi] * matB, matB);
+            ReadOnlyMemory<float> A = af.AsMemory(offA[bi] * matA, matA);
+            ReadOnlyMemory<float> B = bf.AsMemory(offB[bi] * matB, matB);
             if (adjX)
             {
                 var tmpA = new float[m * k];
-                for (int i = 0; i < k; i++) for (int j = 0; j < m; j++) tmpA[j * k + i] = A[i * m + j];
+                var src = A.Span;
+                for (int i = 0; i < k; i++) for (int j = 0; j < m; j++) tmpA[j * k + i] = src[i * m + j];
                 A = tmpA;
             }
             if (adjY)
             {
                 var tmpB = new float[k * n];
-                for (int i = 0; i < n; i++) for (int j = 0; j < k; j++) tmpB[j * n + i] = B[i * k + j];
+                var src = B.Span;
+                for (int i = 0; i < n; i++) for (int j = 0; j < k; j++) tmpB[j * n + i] = src[i * k + j];
                 B = tmpB;
             }
             // A single batch element may still be large: let the GEMM parallelize it when batches don't.
-            SGemm.Multiply(A, k, B, n, rf.AsSpan(bi * m * n, m * n), n, m, n, k, 1f, parallel ? null : po);
+            SGemm.Multiply(A, k, B, n, rf.AsMemory(bi * m * n, m * n), n, m, n, k, 1f, parallel ? null : po);
         }
         RunBatches(offA.Length, (long)m * n * k, po, Batch);
         return r;

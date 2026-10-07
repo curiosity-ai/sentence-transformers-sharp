@@ -1,6 +1,6 @@
-using System.Buffers;
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
@@ -29,55 +29,63 @@ internal static class SGemm
 
     /// <summary><c>C = alpha · A·B</c>, or <c>C += A·B</c> when <paramref name="accumulate"/> is set (then
     /// <paramref name="alpha"/> must be 1). Every output is one sequential FMA chain over k starting from zero (or
-    /// from C), like XNNPACK's broadcast GEMM kernels - which start from the bias, hence <paramref name="accumulate"/>.</summary>
-    public static unsafe void Multiply(ReadOnlySpan<float> a, int lda, ReadOnlySpan<float> b, int ldb, Span<float> c, int ldc,
-                                       int m, int n, int k, float alpha = 1f, ParallelOptions po = null, bool accumulate = false)
+    /// from C), like XNNPACK's broadcast GEMM kernels - which start from the bias, hence <paramref name="accumulate"/>.
+    /// The operands are <see cref="Memory{T}"/> so that parallel work items can reach them (spans cannot cross threads).</summary>
+    public static void Multiply(ReadOnlyMemory<float> a, int lda, ReadOnlyMemory<float> b, int ldb, Memory<float> c, int ldc,
+                                int m, int n, int k, float alpha = 1f, ParallelOptions po = null, bool accumulate = false)
     {
         if (m == 0 || n == 0)
         {
             return;
         }
+        CheckExtent(a.Length, m, k, lda, nameof(a));
+        CheckExtent(b.Length, k, n, ldb, nameof(b));
+        CheckExtent(c.Length, m, n, ldc, nameof(c));
         int dop = po?.MaxDegreeOfParallelism ?? 1;
         if (dop == -1)
         {
             dop = Environment.ProcessorCount;
         }
-        fixed (float* ap = a)
-        fixed (float* bp = b)
-        fixed (float* cp = c)
+        if (!Vector256.IsHardwareAccelerated || !UseFma)
         {
-            nint aa = (nint)ap, bb = (nint)bp, cc = (nint)cp;
-            if (!Vector256.IsHardwareAccelerated || !UseFma)
-            {
-                Portable((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, 0, m, n, k, alpha, accumulate);
-                return;
-            }
-            int chunks = (m + RowChunk - 1) / RowChunk;
-            if (dop <= 1 || chunks == 1)
-            {
-                Chunk((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, 0, m, n, k, alpha, accumulate);
-            }
-            else
-            {
-                WorkerPool.For(chunks, po, ch =>
-                    Chunk((float*)aa, lda, (float*)bb, ldb, (float*)cc, ldc, ch * RowChunk, Math.Min(m, (ch + 1) * RowChunk), n, k, alpha, accumulate));
-            }
+            Portable(a.Span, lda, b.Span, ldb, c.Span, ldc, 0, m, n, k, alpha, accumulate);
+            return;
+        }
+        int chunks = (m + RowChunk - 1) / RowChunk;
+        if (dop <= 1 || chunks == 1)
+        {
+            Chunk(a.Span, lda, b.Span, ldb, c.Span, ldc, 0, m, n, k, alpha, accumulate);
+        }
+        else
+        {
+            WorkerPool.For(chunks, po, ch =>
+                Chunk(a.Span, lda, b.Span, ldb, c.Span, ldc, ch * RowChunk, Math.Min(m, (ch + 1) * RowChunk), n, k, alpha, accumulate));
         }
     }
 
-    private static unsafe void Portable(float* a, int lda, float* b, int ldb, float* c, int ldc, int m0, int m1, int n, int k, float alpha, bool accumulate)
+    /// <summary>The kernels index the operands without bounds checks, so a <paramref name="rows"/> ×
+    /// <paramref name="cols"/> matrix with row stride <paramref name="ld"/> is validated against its buffer once, here.</summary>
+    private static void CheckExtent(int length, int rows, int cols, int ld, string name)
+    {
+        if (rows > 0 && cols > 0 && (ld < cols || length < (long)(rows - 1) * ld + cols))
+        {
+            throw new ArgumentException($"Buffer of {length} floats is too small for {rows} x {cols} (row stride {ld}).", name);
+        }
+    }
+
+    private static void Portable(ReadOnlySpan<float> a, int lda, ReadOnlySpan<float> b, int ldb, Span<float> c, int ldc, int m0, int m1, int n, int k, float alpha, bool accumulate)
     {
         for (int i = m0; i < m1; i++)
         {
-            var crow = new Span<float>(c + (long)i * ldc, n);
+            var crow = c.Slice(i * ldc, n);
             if (!accumulate)
             {
                 crow.Clear();
             }
             for (int p = 0; p < k; p++)
             {
-                float av = a[(long)i * lda + p];
-                var brow = new ReadOnlySpan<float>(b + (long)p * ldb, n);
+                float av = a[i * lda + p];
+                var brow = b.Slice(p * ldb, n);
                 for (int j = 0; j < n; j++)
                 {
                     crow[j] = MathF.FusedMultiplyAdd(av, brow[j], crow[j]);
@@ -90,99 +98,88 @@ internal static class SGemm
         }
     }
 
-    private static unsafe void Chunk(float* a, int lda, float* b, int ldb, float* c, int ldc, int m0, int m1, int n, int k, float alpha, bool accumulate, float* prepacked = null)
+    /// <summary>Rows <paramref name="m0"/>..<paramref name="m1"/> of C (extents already validated). With
+    /// <paramref name="prepacked"/>, B is ignored and the panels are read from there instead.</summary>
+    private static void Chunk(ReadOnlySpan<float> a, int lda, ReadOnlySpan<float> b, int ldb, Span<float> c, int ldc, int m0, int m1, int n, int k, float alpha, bool accumulate, ReadOnlySpan<float> prepacked = default)
     {
         int nr = NR;
-        var packArr = ArrayPool<float>.Shared.Rent(KC * nr + 16);
-        float* tile = stackalloc float[12 * 32];
-        float* aTile = stackalloc float[12 * 256];   // ragged 12-row tiles: A rows staged contiguously (KC ≤ 256)
-        try
+        bool usePrepacked = !prepacked.IsEmpty;
+        var pack = usePrepacked ? default : AlignedScratch<float>.Get(KC * nr);
+        Span<float> tile = stackalloc float[12 * 32];
+        Span<float> aTile = stackalloc float[12 * 256];   // ragged 12-row tiles: A rows staged contiguously (KC ≤ 256)
+        ref float ar = ref MemoryMarshal.GetReference(a);
+        ref float cr = ref MemoryMarshal.GetReference(c);
+        ref float tr = ref MemoryMarshal.GetReference(tile);
+        for (int j0 = 0; j0 < n; j0 += nr)
         {
-            fixed (float* packBase = packArr)
+            int nc = Math.Min(nr, n - j0);
+            for (int k0 = 0; k0 < k; k0 += KC)
             {
-                // 64-byte align the packed panel.
-                float* pack = (float*)(((nint)packBase + 63) & ~(nint)63);
-                for (int j0 = 0; j0 < n; j0 += nr)
+                int kc = Math.Min(KC, k - k0);
+                bool first = k0 == 0 && !accumulate;
+                bool last = k0 + kc >= k;
+                ref float panel = ref MemoryMarshal.GetReference(pack);
+                if (usePrepacked)
                 {
-                    int nc = Math.Min(nr, n - j0);
-                    for (int k0 = 0; k0 < k; k0 += KC)
+                    panel = ref MemoryMarshal.GetReference(prepacked.Slice((j0 / nr * k + k0) * nr, kc * nr));
+                }
+                else
+                {
+                    PackB(b, ldb, k0, kc, j0, nc, nr, pack);
+                }
+                for (int i = m0; i < m1; i += MR)
+                {
+                    int rows = Math.Min(MR, m1 - i);
+                    ref float a0 = ref Unsafe.Add(ref ar, (nint)i * lda + k0);
+                    bool full = rows == MR && nc == nr;
+                    ref float cDst = ref full ? ref Unsafe.Add(ref cr, (nint)i * ldc + j0) : ref tr;
+                    int cStride = full ? ldc : nr;
+                    if (!full)
                     {
-                        int kc = Math.Min(KC, k - k0);
-                        bool first = k0 == 0 && !accumulate;
-                        bool last = k0 + kc >= k;
-                        float* panel = pack;
-                        if (prepacked != null)
+                        // Ragged tile: stage the existing partial sums in the scratch tile.
+                        for (int r = 0; r < MR; r++)
                         {
-                            panel = prepacked + ((long)(j0 / nr) * k + k0) * nr;
+                            for (int cc = 0; cc < nr; cc++)
+                            {
+                                tile[r * nr + cc] = !first && r < rows && cc < nc ? c[(i + r) * ldc + j0 + cc] : 0f;
+                            }
+                        }
+                    }
+                    if (UseAvx512)
+                    {
+                        if (rows < MR)
+                        {
+                            // Rows past the end of a ragged tile repeat the last valid A row (results discarded).
+                            for (int r = 0; r < MR; r++)
+                            {
+                                a.Slice((i + Math.Min(r, rows - 1)) * lda + k0, kc).CopyTo(aTile.Slice(r * kc, kc));
+                            }
+                            Kernel12x32(ref MemoryMarshal.GetReference(aTile), kc, ref panel, kc, ref cDst, cStride, first && full, last ? alpha : 1f);
                         }
                         else
                         {
-                            PackB(b, ldb, k0, kc, j0, nc, nr, pack);
+                            Kernel12x32(ref a0, lda, ref panel, kc, ref cDst, cStride, first && full, last ? alpha : 1f);
                         }
-                        for (int i = m0; i < m1; i += MR)
+                    }
+                    else
+                    {
+                        // Rows past the end of a ragged tile re-read the last valid A row (results discarded).
+                        ref float a1 = ref Unsafe.Add(ref a0, (nint)Math.Min(1, rows - 1) * lda);
+                        ref float a2 = ref Unsafe.Add(ref a0, (nint)Math.Min(2, rows - 1) * lda);
+                        ref float a3 = ref Unsafe.Add(ref a0, (nint)Math.Min(3, rows - 1) * lda);
+                        ref float a4 = ref Unsafe.Add(ref a0, (nint)Math.Min(4, rows - 1) * lda);
+                        ref float a5 = ref Unsafe.Add(ref a0, (nint)Math.Min(5, rows - 1) * lda);
+                        Kernel6x16(ref a0, ref a1, ref a2, ref a3, ref a4, ref a5, ref panel, kc, ref cDst, cStride, first && full, last ? alpha : 1f);
+                    }
+                    if (!full)
+                    {
+                        for (int r = 0; r < rows; r++)
                         {
-                            int rows = Math.Min(MR, m1 - i);
-                            float* a0 = a + (long)i * lda + k0;
-                            bool full = rows == MR && nc == nr;
-                            float* cDst = full ? c + (long)i * ldc + j0 : tile;
-                            int cStride = full ? ldc : nr;
-                            if (!full)
-                            {
-                                // Ragged tile: stage the existing partial sums in the scratch tile.
-                                for (int r = 0; r < MR; r++)
-                                {
-                                    for (int cc = 0; cc < nr; cc++)
-                                    {
-                                        tile[r * nr + cc] = !first && r < rows && cc < nc ? c[(long)(i + r) * ldc + j0 + cc] : 0f;
-                                    }
-                                }
-                            }
-                            if (UseAvx512)
-                            {
-                                float* at = a0;
-                                int ldt = lda;
-                                if (rows < MR)
-                                {
-                                    // Rows past the end of a ragged tile repeat the last valid A row (results discarded).
-                                    for (int r = 0; r < MR; r++)
-                                    {
-                                        new ReadOnlySpan<float>(a0 + (long)Math.Min(r, rows - 1) * lda, kc).CopyTo(new Span<float>(aTile + r * kc, kc));
-                                    }
-                                    at = aTile;
-                                    ldt = kc;
-                                }
-                                Kernel12x32(at, ldt, panel, kc, cDst, cStride, first && full, last ? alpha : 1f);
-                                if (!full)
-                                {
-                                    for (int r = 0; r < rows; r++)
-                                    {
-                                        new ReadOnlySpan<float>(tile + r * nr, nc).CopyTo(new Span<float>(c + (long)(i + r) * ldc + j0, nc));
-                                    }
-                                }
-                                continue;
-                            }
-                            // Rows past the end of a ragged tile re-read the last valid A row (results discarded).
-                            float* a1 = a0 + (long)Math.Min(1, rows - 1) * lda;
-                            float* a2 = a0 + (long)Math.Min(2, rows - 1) * lda;
-                            float* a3 = a0 + (long)Math.Min(3, rows - 1) * lda;
-                            float* a4 = a0 + (long)Math.Min(4, rows - 1) * lda;
-                            float* a5 = a0 + (long)Math.Min(5, rows - 1) * lda;
-                            Kernel6x16(a0, a1, a2, a3, a4, a5, panel, kc, cDst, cStride, first && full, last ? alpha : 1f);
-                            if (!full)
-                            {
-                                for (int r = 0; r < rows; r++)
-                                {
-                                    new ReadOnlySpan<float>(tile + r * nr, nc).CopyTo(new Span<float>(c + (long)(i + r) * ldc + j0, nc));
-                                }
-                            }
+                            tile.Slice(r * nr, nc).CopyTo(c.Slice((i + r) * ldc + j0, nc));
                         }
                     }
                 }
             }
-        }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(packArr);
         }
     }
 
@@ -202,15 +199,11 @@ internal static class SGemm
     /// the panel data in <paramref name="dst"/>, chosen to be 64-byte aligned at packing time (the array is not
     /// pinned, so the kernels use unaligned loads and alignment is only a performance hint).
     /// </summary>
-    public static unsafe int PackB(ReadOnlySpan<float> b, int ldb, int k, int n, bool transposed, float[] dst)
+    public static int PackB(ReadOnlySpan<float> b, int ldb, int k, int n, bool transposed, float[] dst)
     {
         int nr = NR;
-        int offset;
-        fixed (float* d0 = dst)
-        {
-            offset = (int)((((nint)d0 + 63) & ~(nint)63) - (nint)d0) / sizeof(float);
-        }
-        var d = dst.AsSpan(offset);
+        int offset = Simd.AlignOffset(dst);
+        var d = dst.AsSpan(offset, (n + nr - 1) / nr * nr * k);
         for (int j0 = 0, panel = 0; j0 < n; j0 += nr, panel++)
         {
             int nc = Math.Min(nr, n - j0);
@@ -243,42 +236,28 @@ internal static class SGemm
 
     /// <summary><see cref="Multiply"/> (single-threaded, <c>C = alpha · A·B</c>) with a B packed by
     /// <see cref="PackB(ReadOnlySpan{float}, int, int, int, bool, float[])"/>; same arithmetic, so the same bits.</summary>
-    public static unsafe void MultiplyPacked(ReadOnlySpan<float> a, int lda, float[] packed, int packedOffset, Span<float> c, int ldc, int m, int n, int k, float alpha = 1f)
+    public static void MultiplyPacked(ReadOnlySpan<float> a, int lda, float[] packed, int packedOffset, Span<float> c, int ldc, int m, int n, int k, float alpha = 1f)
     {
         if (m == 0 || n == 0)
         {
             return;
         }
-        fixed (float* ap = a)
-        fixed (float* bp = packed)
-        fixed (float* cp = c)
-        {
-            Chunk(ap, lda, null, 0, cp, ldc, 0, m, n, k, alpha, accumulate: false, prepacked: bp + packedOffset);
-        }
+        CheckExtent(a.Length, m, k, lda, nameof(a));
+        CheckExtent(c.Length, m, n, ldc, nameof(c));
+        var panels = packed.AsSpan(packedOffset, (n + NR - 1) / NR * NR * k);
+        Chunk(a, lda, default, 0, c, ldc, 0, m, n, k, alpha, accumulate: false, prepacked: panels);
     }
 
     /// <summary>Copies B[k0..k0+kc, j0..j0+nc] into a contiguous kc × nr panel (zero padded).</summary>
-    private static unsafe void PackB(float* b, int ldb, int k0, int kc, int j0, int nc, int nr, float* dst)
+    private static void PackB(ReadOnlySpan<float> b, int ldb, int k0, int kc, int j0, int nc, int nr, Span<float> dst)
     {
         for (int p = 0; p < kc; p++)
         {
-            float* src = b + (long)(k0 + p) * ldb + j0;
-            float* d = dst + p * nr;
-            if (nc == nr)
+            var d = dst.Slice(p * nr, nr);
+            b.Slice((k0 + p) * ldb + j0, nc).CopyTo(d);
+            if (nc < nr)
             {
-                Buffer.MemoryCopy(src, d, nr * sizeof(float), nr * sizeof(float));
-            }
-            else
-            {
-                int cc = 0;
-                for (; cc < nc; cc++)
-                {
-                    d[cc] = src[cc];
-                }
-                for (; cc < nr; cc++)
-                {
-                    d[cc] = 0f;
-                }
+                d.Slice(nc).Clear();
             }
         }
     }
@@ -286,11 +265,12 @@ internal static class SGemm
     /// <summary>C[12×32] (=|+=) A[12×kc]·Bpack[kc×32] (A rows <paramref name="lda"/> apart), then scaled by
     /// <paramref name="scale"/>: 24 accumulators, 2 B loads and 12 broadcasts per k step.</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void Kernel12x32(float* a, int lda, float* bp, int kc, float* c, int ldc, bool overwrite, float scale)
+    private static void Kernel12x32(ref float a, int lda, ref float bp, int kc, ref float c, int ldc, bool overwrite, float scale)
     {
         Vector512<float> c00, c01, c10, c11, c20, c21, c30, c31, c40, c41, c50, c51;
         Vector512<float> d00, d01, d10, d11, d20, d21, d30, d31, d40, d41, d50, d51;
-        float* d = c + 6 * ldc;
+        nuint l1 = (nuint)ldc, l2 = 2 * l1, l3 = 3 * l1, l4 = 4 * l1, l5 = 5 * l1;
+        ref float d = ref Unsafe.Add(ref c, 6 * (nint)ldc);
         if (overwrite)
         {
             c00 = c01 = c10 = c11 = c20 = c21 = c30 = c31 = c40 = c41 = c50 = c51 = Vector512<float>.Zero;
@@ -298,48 +278,48 @@ internal static class SGemm
         }
         else
         {
-            c00 = Avx512F.LoadVector512(c); c01 = Avx512F.LoadVector512(c + 16);
-            c10 = Avx512F.LoadVector512(c + ldc); c11 = Avx512F.LoadVector512(c + ldc + 16);
-            c20 = Avx512F.LoadVector512(c + 2 * ldc); c21 = Avx512F.LoadVector512(c + 2 * ldc + 16);
-            c30 = Avx512F.LoadVector512(c + 3 * ldc); c31 = Avx512F.LoadVector512(c + 3 * ldc + 16);
-            c40 = Avx512F.LoadVector512(c + 4 * ldc); c41 = Avx512F.LoadVector512(c + 4 * ldc + 16);
-            c50 = Avx512F.LoadVector512(c + 5 * ldc); c51 = Avx512F.LoadVector512(c + 5 * ldc + 16);
-            d00 = Avx512F.LoadVector512(d); d01 = Avx512F.LoadVector512(d + 16);
-            d10 = Avx512F.LoadVector512(d + ldc); d11 = Avx512F.LoadVector512(d + ldc + 16);
-            d20 = Avx512F.LoadVector512(d + 2 * ldc); d21 = Avx512F.LoadVector512(d + 2 * ldc + 16);
-            d30 = Avx512F.LoadVector512(d + 3 * ldc); d31 = Avx512F.LoadVector512(d + 3 * ldc + 16);
-            d40 = Avx512F.LoadVector512(d + 4 * ldc); d41 = Avx512F.LoadVector512(d + 4 * ldc + 16);
-            d50 = Avx512F.LoadVector512(d + 5 * ldc); d51 = Avx512F.LoadVector512(d + 5 * ldc + 16);
+            c00 = Vector512.LoadUnsafe(ref c); c01 = Vector512.LoadUnsafe(ref c, 16);
+            c10 = Vector512.LoadUnsafe(ref c, l1); c11 = Vector512.LoadUnsafe(ref c, l1 + 16);
+            c20 = Vector512.LoadUnsafe(ref c, l2); c21 = Vector512.LoadUnsafe(ref c, l2 + 16);
+            c30 = Vector512.LoadUnsafe(ref c, l3); c31 = Vector512.LoadUnsafe(ref c, l3 + 16);
+            c40 = Vector512.LoadUnsafe(ref c, l4); c41 = Vector512.LoadUnsafe(ref c, l4 + 16);
+            c50 = Vector512.LoadUnsafe(ref c, l5); c51 = Vector512.LoadUnsafe(ref c, l5 + 16);
+            d00 = Vector512.LoadUnsafe(ref d); d01 = Vector512.LoadUnsafe(ref d, 16);
+            d10 = Vector512.LoadUnsafe(ref d, l1); d11 = Vector512.LoadUnsafe(ref d, l1 + 16);
+            d20 = Vector512.LoadUnsafe(ref d, l2); d21 = Vector512.LoadUnsafe(ref d, l2 + 16);
+            d30 = Vector512.LoadUnsafe(ref d, l3); d31 = Vector512.LoadUnsafe(ref d, l3 + 16);
+            d40 = Vector512.LoadUnsafe(ref d, l4); d41 = Vector512.LoadUnsafe(ref d, l4 + 16);
+            d50 = Vector512.LoadUnsafe(ref d, l5); d51 = Vector512.LoadUnsafe(ref d, l5 + 16);
         }
-        float* a6 = a + 6 * lda;
+        ref float a6 = ref Unsafe.Add(ref a, 6 * (nint)lda);
         for (int p = 0; p < kc; p++)
         {
-            var b0 = Avx512F.LoadVector512(bp);
-            var b1 = Avx512F.LoadVector512(bp + 16);
-            bp += 32;
-            var x = Vector512.Create(a[p]);
+            var b0 = Vector512.LoadUnsafe(ref bp);
+            var b1 = Vector512.LoadUnsafe(ref bp, 16);
+            bp = ref Unsafe.Add(ref bp, 32);
+            var x = Vector512.Create(Unsafe.Add(ref a, p));
             c00 = Avx512F.FusedMultiplyAdd(x, b0, c00); c01 = Avx512F.FusedMultiplyAdd(x, b1, c01);
-            x = Vector512.Create(a[lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a, lda + p));
             c10 = Avx512F.FusedMultiplyAdd(x, b0, c10); c11 = Avx512F.FusedMultiplyAdd(x, b1, c11);
-            x = Vector512.Create(a[2 * lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a, 2 * lda + p));
             c20 = Avx512F.FusedMultiplyAdd(x, b0, c20); c21 = Avx512F.FusedMultiplyAdd(x, b1, c21);
-            x = Vector512.Create(a[3 * lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a, 3 * lda + p));
             c30 = Avx512F.FusedMultiplyAdd(x, b0, c30); c31 = Avx512F.FusedMultiplyAdd(x, b1, c31);
-            x = Vector512.Create(a[4 * lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a, 4 * lda + p));
             c40 = Avx512F.FusedMultiplyAdd(x, b0, c40); c41 = Avx512F.FusedMultiplyAdd(x, b1, c41);
-            x = Vector512.Create(a[5 * lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a, 5 * lda + p));
             c50 = Avx512F.FusedMultiplyAdd(x, b0, c50); c51 = Avx512F.FusedMultiplyAdd(x, b1, c51);
-            x = Vector512.Create(a6[p]);
+            x = Vector512.Create(Unsafe.Add(ref a6, p));
             d00 = Avx512F.FusedMultiplyAdd(x, b0, d00); d01 = Avx512F.FusedMultiplyAdd(x, b1, d01);
-            x = Vector512.Create(a6[lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a6, lda + p));
             d10 = Avx512F.FusedMultiplyAdd(x, b0, d10); d11 = Avx512F.FusedMultiplyAdd(x, b1, d11);
-            x = Vector512.Create(a6[2 * lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a6, 2 * lda + p));
             d20 = Avx512F.FusedMultiplyAdd(x, b0, d20); d21 = Avx512F.FusedMultiplyAdd(x, b1, d21);
-            x = Vector512.Create(a6[3 * lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a6, 3 * lda + p));
             d30 = Avx512F.FusedMultiplyAdd(x, b0, d30); d31 = Avx512F.FusedMultiplyAdd(x, b1, d31);
-            x = Vector512.Create(a6[4 * lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a6, 4 * lda + p));
             d40 = Avx512F.FusedMultiplyAdd(x, b0, d40); d41 = Avx512F.FusedMultiplyAdd(x, b1, d41);
-            x = Vector512.Create(a6[5 * lda + p]);
+            x = Vector512.Create(Unsafe.Add(ref a6, 5 * lda + p));
             d50 = Avx512F.FusedMultiplyAdd(x, b0, d50); d51 = Avx512F.FusedMultiplyAdd(x, b1, d51);
         }
         if (scale != 1f)
@@ -348,59 +328,60 @@ internal static class SGemm
             c00 *= s; c01 *= s; c10 *= s; c11 *= s; c20 *= s; c21 *= s; c30 *= s; c31 *= s; c40 *= s; c41 *= s; c50 *= s; c51 *= s;
             d00 *= s; d01 *= s; d10 *= s; d11 *= s; d20 *= s; d21 *= s; d30 *= s; d31 *= s; d40 *= s; d41 *= s; d50 *= s; d51 *= s;
         }
-        Avx512F.Store(c, c00); Avx512F.Store(c + 16, c01);
-        Avx512F.Store(c + ldc, c10); Avx512F.Store(c + ldc + 16, c11);
-        Avx512F.Store(c + 2 * ldc, c20); Avx512F.Store(c + 2 * ldc + 16, c21);
-        Avx512F.Store(c + 3 * ldc, c30); Avx512F.Store(c + 3 * ldc + 16, c31);
-        Avx512F.Store(c + 4 * ldc, c40); Avx512F.Store(c + 4 * ldc + 16, c41);
-        Avx512F.Store(c + 5 * ldc, c50); Avx512F.Store(c + 5 * ldc + 16, c51);
-        Avx512F.Store(d, d00); Avx512F.Store(d + 16, d01);
-        Avx512F.Store(d + ldc, d10); Avx512F.Store(d + ldc + 16, d11);
-        Avx512F.Store(d + 2 * ldc, d20); Avx512F.Store(d + 2 * ldc + 16, d21);
-        Avx512F.Store(d + 3 * ldc, d30); Avx512F.Store(d + 3 * ldc + 16, d31);
-        Avx512F.Store(d + 4 * ldc, d40); Avx512F.Store(d + 4 * ldc + 16, d41);
-        Avx512F.Store(d + 5 * ldc, d50); Avx512F.Store(d + 5 * ldc + 16, d51);
+        c00.StoreUnsafe(ref c); c01.StoreUnsafe(ref c, 16);
+        c10.StoreUnsafe(ref c, l1); c11.StoreUnsafe(ref c, l1 + 16);
+        c20.StoreUnsafe(ref c, l2); c21.StoreUnsafe(ref c, l2 + 16);
+        c30.StoreUnsafe(ref c, l3); c31.StoreUnsafe(ref c, l3 + 16);
+        c40.StoreUnsafe(ref c, l4); c41.StoreUnsafe(ref c, l4 + 16);
+        c50.StoreUnsafe(ref c, l5); c51.StoreUnsafe(ref c, l5 + 16);
+        d00.StoreUnsafe(ref d); d01.StoreUnsafe(ref d, 16);
+        d10.StoreUnsafe(ref d, l1); d11.StoreUnsafe(ref d, l1 + 16);
+        d20.StoreUnsafe(ref d, l2); d21.StoreUnsafe(ref d, l2 + 16);
+        d30.StoreUnsafe(ref d, l3); d31.StoreUnsafe(ref d, l3 + 16);
+        d40.StoreUnsafe(ref d, l4); d41.StoreUnsafe(ref d, l4 + 16);
+        d50.StoreUnsafe(ref d, l5); d51.StoreUnsafe(ref d, l5 + 16);
     }
 
     /// <summary>C[6×16] (=|+=) A[6×kc]·Bpack[kc×16], then scaled by <paramref name="scale"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void Kernel6x16(float* a0, float* a1, float* a2, float* a3, float* a4, float* a5, float* bp, int kc, float* c, int ldc, bool overwrite, float scale)
+    private static void Kernel6x16(ref float a0, ref float a1, ref float a2, ref float a3, ref float a4, ref float a5, ref float bp, int kc, ref float c, int ldc, bool overwrite, float scale)
     {
         Vector256<float> c00, c01, c10, c11, c20, c21, c30, c31, c40, c41, c50, c51;
+        nuint l1 = (nuint)ldc, l2 = 2 * l1, l3 = 3 * l1, l4 = 4 * l1, l5 = 5 * l1;
         if (overwrite)
         {
             c00 = c01 = c10 = c11 = c20 = c21 = c30 = c31 = c40 = c41 = c50 = c51 = Vector256<float>.Zero;
         }
         else
         {
-            c00 = Avx.LoadVector256(c); c01 = Avx.LoadVector256(c + 8);
-            c10 = Avx.LoadVector256(c + ldc); c11 = Avx.LoadVector256(c + ldc + 8);
-            c20 = Avx.LoadVector256(c + 2 * ldc); c21 = Avx.LoadVector256(c + 2 * ldc + 8);
-            c30 = Avx.LoadVector256(c + 3 * ldc); c31 = Avx.LoadVector256(c + 3 * ldc + 8);
-            c40 = Avx.LoadVector256(c + 4 * ldc); c41 = Avx.LoadVector256(c + 4 * ldc + 8);
-            c50 = Avx.LoadVector256(c + 5 * ldc); c51 = Avx.LoadVector256(c + 5 * ldc + 8);
+            c00 = Vector256.LoadUnsafe(ref c); c01 = Vector256.LoadUnsafe(ref c, 8);
+            c10 = Vector256.LoadUnsafe(ref c, l1); c11 = Vector256.LoadUnsafe(ref c, l1 + 8);
+            c20 = Vector256.LoadUnsafe(ref c, l2); c21 = Vector256.LoadUnsafe(ref c, l2 + 8);
+            c30 = Vector256.LoadUnsafe(ref c, l3); c31 = Vector256.LoadUnsafe(ref c, l3 + 8);
+            c40 = Vector256.LoadUnsafe(ref c, l4); c41 = Vector256.LoadUnsafe(ref c, l4 + 8);
+            c50 = Vector256.LoadUnsafe(ref c, l5); c51 = Vector256.LoadUnsafe(ref c, l5 + 8);
         }
         for (int p = 0; p < kc; p++)
         {
-            var b0 = Avx.LoadVector256(bp);
-            var b1 = Avx.LoadVector256(bp + 8);
-            bp += 16;
-            var x = Vector256.Create(a0[p]);
+            var b0 = Vector256.LoadUnsafe(ref bp);
+            var b1 = Vector256.LoadUnsafe(ref bp, 8);
+            bp = ref Unsafe.Add(ref bp, 16);
+            var x = Vector256.Create(Unsafe.Add(ref a0, p));
             c00 = Fma.MultiplyAdd(x, b0, c00);
             c01 = Fma.MultiplyAdd(x, b1, c01);
-            x = Vector256.Create(a1[p]);
+            x = Vector256.Create(Unsafe.Add(ref a1, p));
             c10 = Fma.MultiplyAdd(x, b0, c10);
             c11 = Fma.MultiplyAdd(x, b1, c11);
-            x = Vector256.Create(a2[p]);
+            x = Vector256.Create(Unsafe.Add(ref a2, p));
             c20 = Fma.MultiplyAdd(x, b0, c20);
             c21 = Fma.MultiplyAdd(x, b1, c21);
-            x = Vector256.Create(a3[p]);
+            x = Vector256.Create(Unsafe.Add(ref a3, p));
             c30 = Fma.MultiplyAdd(x, b0, c30);
             c31 = Fma.MultiplyAdd(x, b1, c31);
-            x = Vector256.Create(a4[p]);
+            x = Vector256.Create(Unsafe.Add(ref a4, p));
             c40 = Fma.MultiplyAdd(x, b0, c40);
             c41 = Fma.MultiplyAdd(x, b1, c41);
-            x = Vector256.Create(a5[p]);
+            x = Vector256.Create(Unsafe.Add(ref a5, p));
             c50 = Fma.MultiplyAdd(x, b0, c50);
             c51 = Fma.MultiplyAdd(x, b1, c51);
         }
@@ -410,12 +391,12 @@ internal static class SGemm
             c00 *= s; c01 *= s; c10 *= s; c11 *= s; c20 *= s; c21 *= s;
             c30 *= s; c31 *= s; c40 *= s; c41 *= s; c50 *= s; c51 *= s;
         }
-        Avx.Store(c, c00); Avx.Store(c + 8, c01);
-        Avx.Store(c + ldc, c10); Avx.Store(c + ldc + 8, c11);
-        Avx.Store(c + 2 * ldc, c20); Avx.Store(c + 2 * ldc + 8, c21);
-        Avx.Store(c + 3 * ldc, c30); Avx.Store(c + 3 * ldc + 8, c31);
-        Avx.Store(c + 4 * ldc, c40); Avx.Store(c + 4 * ldc + 8, c41);
-        Avx.Store(c + 5 * ldc, c50); Avx.Store(c + 5 * ldc + 8, c51);
+        c00.StoreUnsafe(ref c); c01.StoreUnsafe(ref c, 8);
+        c10.StoreUnsafe(ref c, l1); c11.StoreUnsafe(ref c, l1 + 8);
+        c20.StoreUnsafe(ref c, l2); c21.StoreUnsafe(ref c, l2 + 8);
+        c30.StoreUnsafe(ref c, l3); c31.StoreUnsafe(ref c, l3 + 8);
+        c40.StoreUnsafe(ref c, l4); c41.StoreUnsafe(ref c, l4 + 8);
+        c50.StoreUnsafe(ref c, l5); c51.StoreUnsafe(ref c, l5 + 8);
     }
 
     /// <summary>Writes the transpose of an <c>[rows, cols]</c> block (row stride <paramref name="lds"/>) into

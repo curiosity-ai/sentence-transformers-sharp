@@ -548,6 +548,9 @@ and the TFLite flatbuffers inside it, with weights taken directly from the int4 
   which routes the heavy `FULLY_CONNECTED` / `BATCH_MATMUL` ops through the same kernels.
 - **Inputs:** the SentencePiece BPE tokenizer, the image decoders and resizer, and the audio front-end
   are C# ports of the libraries the reference runtime uses.
+- **No `unsafe` code:** the package compiles without `AllowUnsafeBlocks`. Kernels take spans and
+  arrays, check their extents once at entry, and use `Vector*.LoadUnsafe`/`StoreUnsafe` on refs in the
+  inner loops, so nothing is pinned.
 
 ## Contributing & building
 
