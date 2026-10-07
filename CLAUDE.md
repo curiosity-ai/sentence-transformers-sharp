@@ -5,8 +5,9 @@ Guidance for Claude Code (and other contributors) when working in this repositor
 ## Repository layout
 
 - `SentenceTransformers/` — the core library, published to NuGet as the `SentenceTransformers` package (tokenizers, ONNX inference, autograd/LoRA training engine).
-- `SentenceTransformers.<Model>/` (MiniLM, ArcticXs, Qwen3, Harrier.Small, Harrier.Medium, Harrier.Small.Pure, Bert.Pure, MiniLMForTest) — per-model wrapper packages, each published as its own NuGet package.
+- `SentenceTransformers.<Model>/` (MiniLM, ArcticXs, Qwen3, Harrier.Small, Harrier.Medium, Harrier.Small.Pure, Bert.Pure, EmbeddingGemma2, MiniLMForTest) — per-model wrapper packages, each published as its own NuGet package.
 - `SentenceTransformers.Test*/`, `SentenceTransformers.Benchmark*/`, `SentenceTransformers.LoraTraining/` — internal test, benchmark, and training projects (not published).
+- `scripts/generate_embeddinggemma2_reference.py` — regenerates the EmbeddingGemma2 parity fixtures (`SentenceTransformers.Tests/Resources/embeddinggemma2`) and per-layer dumps from Google's `litert-lm` Python runtime.
 - `.devops/azure-pipelines.yml` — CI: builds and publishes all packages with a shared CalVer version (`yy.M.<buildId>`).
 
 ## Referencing the core SentenceTransformers library

@@ -27,6 +27,7 @@
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small\SentenceTransformers.Harrier.Small.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Harrier.Small.Pure\SentenceTransformers.Harrier.Small.Pure.csproj" />
     <ProjectReference Include="..\SentenceTransformers.Bert.Pure\SentenceTransformers.Bert.Pure.csproj" />
+    <ProjectReference Include="..\SentenceTransformers.EmbeddingGemma2\SentenceTransformers.EmbeddingGemma2.csproj" />
   </ItemGroup>
 
   <!--
@@ -42,6 +43,13 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\SentenceTransformers.Harrier.Small\Resources\tokenizer.json" Link="Resources\harrier-small-tokenizer.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- EmbeddingGemma 2 parity fixtures (scripts/generate_embeddinggemma2_reference.py). -->
+  <ItemGroup>
+    <None Include="Resources\embeddinggemma2\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
