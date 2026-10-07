@@ -323,10 +323,21 @@ internal static class QGemm
         fixed (float* yp = y)
         fixed (byte* xp = x.Data)
         fixed (sbyte* pdp = w.PanelData)
+        fixed (int* rsp = w.RowSum)
+        fixed (float* wsp = w.Scale)
+        fixed (float* bp = w.Bias)
+        fixed (float* rqp = rq?.Scale)
+        fixed (int* xzp = x.ZeroPoint)
+        fixed (float* xsp = x.Scale)
         {
             var yPtr = (nint)yp;
             var xPtr = (nint)xp;
             var pdPtr = (nint)pdp;
+            var epi = new Epilogue
+            {
+                RowSum = rsp, WScale = wsp, Bias = bp, RqScale = rqp, RqOut = rq?.OutputScale ?? 0f,
+                XZero = xzp, XScale = xsp, Y = yp, Ldy = ldy, Channels = m,
+            };
             void Item(int it)
             {
                 int p = it / groups, g = it % groups;
@@ -365,7 +376,7 @@ internal static class QGemm
                         }
                         for (int i = 0; i < valid; i++)
                         {
-                            StoreRow(x, w, (float*)yPtr, ldy, r0 + i, col0, acc + i * 32, 32, rq);
+                            epi.Row(r0 + i, col0, acc + i * 32, 32);
                         }
                     }
                     else
@@ -383,7 +394,7 @@ internal static class QGemm
                             }
                             for (int i = 0; i < valid; i++)
                             {
-                                StoreRow(x, w, (float*)yPtr, ldy, r0 + i, col0 + half * 16, acc + i * 16, 16, rq);
+                                epi.Row(r0 + i, col0 + half * 16, acc + i * 16, 16);
                             }
                         }
                     }
@@ -548,58 +559,89 @@ internal static class QGemm
         c00.Store(acc); c01.Store(acc + 8); c10.Store(acc + 16); c11.Store(acc + 24); c20.Store(acc + 32); c21.Store(acc + 40);
     }
 
-    /// <summary>Epilogue for <paramref name="count"/> consecutive channels of one row (the same per-element
-    /// arithmetic as <see cref="Store"/>, 16, 4 or 1 lanes at a time); channels at or past <c>Rows</c> are padding.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void StoreRow(QuantizedActivations x, QuantizedMatrix w, float* y, int ldy, int row, int col0, int* acc, int count, Requantization rq)
+    /// <summary>
+    /// The panel kernels' epilogue with every array pinned once per GEMM: the arithmetic of <see cref="Store"/>, lane
+    /// for lane (16, 4 or 1 channels at a time), so the results are identical.
+    /// </summary>
+    private unsafe struct Epilogue
     {
-        int m = w.Rows, c = 0;
-        if (UseAvx512)
-        {
-            for (; c + 16 <= count && col0 + c + 16 <= m; c += 16)
-            {
-                Store1x16(x, w, y, ldy, row, col0 + c, Vector512.Load(acc + c), rq);
-            }
-        }
-        for (; c + 4 <= count && col0 + c + 4 <= m; c += 4)
-        {
-            Store1x4(x, w, y, ldy, row, col0 + c, Vector128.Load(acc + c), rq);
-        }
-        for (; c < count && col0 + c < m; c++)
-        {
-            Store(x, w, y, ldy, row, col0 + c, acc[c], rq);
-        }
-    }
+        public int* RowSum;
+        public float* WScale, Bias, RqScale;
+        public float RqOut;
+        public int* XZero;
+        public float* XScale;
+        public float* Y;
+        public int Ldy, Channels;
 
-    /// <summary><see cref="Store1x4"/> for 16 consecutive columns.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void Store1x16(QuantizedActivations x, QuantizedMatrix w, float* y, int ldy, int row, int col, Vector512<int> acc, Requantization rq)
-    {
-        fixed (int* rsp = w.RowSum)
+        /// <summary><paramref name="count"/> consecutive channels of activation row <paramref name="row"/> from
+        /// <paramref name="col0"/>; channels at or past <see cref="Channels"/> are padding.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        public readonly void Row(int row, int col0, int* acc, int count)
         {
-            var corr = acc - Vector512.Create(128 + x.ZeroPoint[row]) * Vector512.Load(rsp + col);
-            float* dst = y + (long)row * ldy + col;
-            if (rq is not null)
+            int n = Math.Min(count, Channels - col0);
+            int zx = 128 + XZero[row];
+            float xs = XScale[row];
+            float* dst = Y + (long)row * Ldy + col0;
+            int* rs = RowSum + col0;
+            int c = 0;
+            if (Vector512.IsHardwareAccelerated)
             {
-                fixed (float* sp = rq.Scale)
+                for (; c + 16 <= n; c += 16)
                 {
-                    var v = Vector512.Round(Vector512.ConvertToSingle(corr) * Vector512.Load(sp + col));
-                    var r = Vector512.ConvertToInt32(Vector512.Min(Vector512.Max(v, Vector512.Create(-128f)), Vector512.Create(127f)));
-                    (Vector512.ConvertToSingle(r) * Vector512.Create(rq.OutputScale)).Store(dst);
-                }
-                return;
-            }
-            fixed (float* swp = w.Scale)
-            {
-                var v = Vector512.ConvertToSingle(corr) * Vector512.Create(x.Scale[row]) * Vector512.Load(swp + col);
-                if (w.Bias is not null)
-                {
-                    fixed (float* bp = w.Bias)
+                    var corr = Vector512.Load(acc + c) - Vector512.Create(zx) * Vector512.Load(rs + c);
+                    if (RqScale != null)
                     {
-                        v += Vector512.Load(bp + col);
+                        var v = Vector512.Round(Vector512.ConvertToSingle(corr) * Vector512.Load(RqScale + col0 + c));
+                        var r = Vector512.ConvertToInt32(Vector512.Min(Vector512.Max(v, Vector512.Create(-128f)), Vector512.Create(127f)));
+                        (Vector512.ConvertToSingle(r) * Vector512.Create(RqOut)).Store(dst + c);
+                    }
+                    else
+                    {
+                        var v = Vector512.ConvertToSingle(corr) * Vector512.Create(xs) * Vector512.Load(WScale + col0 + c);
+                        if (Bias != null)
+                        {
+                            v += Vector512.Load(Bias + col0 + c);
+                        }
+                        v.Store(dst + c);
                     }
                 }
-                v.Store(dst);
+            }
+            for (; c + 4 <= n; c += 4)
+            {
+                var corr = Vector128.Load(acc + c) - Vector128.Create(zx) * Vector128.Load(rs + c);
+                if (RqScale != null)
+                {
+                    var v = Vector128.Round(Vector128.ConvertToSingle(corr) * Vector128.Load(RqScale + col0 + c));
+                    var r = Vector128.ConvertToInt32(Vector128.Min(Vector128.Max(v, Vector128.Create(-128f)), Vector128.Create(127f)));
+                    (Vector128.ConvertToSingle(r) * Vector128.Create(RqOut)).Store(dst + c);
+                }
+                else
+                {
+                    var v = Vector128.ConvertToSingle(corr) * Vector128.Create(xs) * Vector128.Load(WScale + col0 + c);
+                    if (Bias != null)
+                    {
+                        v += Vector128.Load(Bias + col0 + c);
+                    }
+                    v.Store(dst + c);
+                }
+            }
+            for (; c < n; c++)
+            {
+                int corr = acc[c] - zx * rs[c];
+                if (RqScale != null)
+                {
+                    int r = (int)Math.Clamp(MathF.Round((float)corr * RqScale[col0 + c], MidpointRounding.ToEven), -128f, 127f);
+                    dst[c] = r * RqOut;
+                }
+                else
+                {
+                    float v = (float)corr * xs * WScale[col0 + c];
+                    if (Bias != null)
+                    {
+                        v += Bias[col0 + c];
+                    }
+                    dst[c] = v;
+                }
             }
         }
     }
